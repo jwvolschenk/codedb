@@ -32,4 +32,4 @@ python3 scripts/e2e_mcp_test.py \
 - `src/mcp.zig` — file read/search (path traversal, scope boundaries)
 - `src/telemetry.zig` — data collection and transmission (must match docs)
 - `src/snapshot.zig` — sensitive file filtering
-- `install/install.sh` — binary download and config modification
+- `scripts/setup-codedb.sh` — binary download and config modification
