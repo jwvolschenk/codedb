@@ -38,7 +38,6 @@ const cases = [_]Case{
     .{ .tool = .codedb_snapshot, .name = "codedb_snapshot", .args_json = "{}", .iterations = 20 },
     .{ .tool = .codedb_bundle, .name = "codedb_bundle", .args_json = "{\"ops\":[{\"tool\":\"codedb_outline\",\"arguments\":{\"path\":\"src/main.zig\"}},{\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"telemetry\",\"max_results\":5}},{\"tool\":\"codedb_word\",\"arguments\":{\"word\":\"Telemetry\"}}]}", .iterations = 50 },
     .{ .tool = .codedb_find, .name = "codedb_find", .args_json = "{\"query\":\"main\"}", .iterations = 100 },
-    .{ .tool = .codedb_context, .name = "codedb_context", .args_json = "{\"task\":\"trace recordToolCall execution path through writePositionalAll and the SpinLock acquisition in Telemetry — what is the hot path\"}", .iterations = 50 },
 };
 
 pub fn main(init: std.process.Init.Minimal) !void {
@@ -74,7 +73,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var store = Store.init(allocator);
     defer store.deinit();
 
-    var explorer = Explorer.init(allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var explorer = Explorer.init(allocator);
     defer explorer.deinit();
 
     var agents = AgentRegistry.init(allocator);
@@ -83,11 +82,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     try watcher.initialScan(io, &store, &explorer, tmp_root, allocator, false);
 
-    var bench_ctx = mcp.BenchContext.init(allocator, tmp_root, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var bench_ctx = mcp.BenchContext.init(allocator, tmp_root);
     defer bench_ctx.deinit();
-
-    try std.process.setCurrentPath(io, tmp_root);
-    defer std.process.setCurrentPath(io, repo_root) catch {};
 
     var telem_off = telemetry.Telemetry{ .enabled = false };
     var telem_on = telemetry.Telemetry{ .enabled = true };

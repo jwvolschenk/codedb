@@ -1,9 +1,0 @@
-{
-  "file": "src/flask/helpers.py",
-  "function": "url_for",
-  "snippet": "def url_for(\n    endpoint: str,\n    *,\n    _anchor: str | None = None,\n    _method: str | None = None,\n    _scheme: str | None = None,\n    _external: bool | None = None,\n    **values: t.Any,\n) -> str:",
-  "returns": "Returns a URL string built from the given endpoint name and values, with optional anchor, HTTP method, scheme, and internal/external control.",
-  "tool_calls": 2,
-  "wall_seconds": 4,
-  "tokens": 2100
-}

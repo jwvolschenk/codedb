@@ -86,6 +86,45 @@ register_codex() {
   printf "  ${G}✓${N} codex        ${D}→ $config${N}\n"
 }
 
+register_antigravity() {
+  local codedb_bin="$1"
+  local config_dir="$HOME/.gemini"
+  
+  if [ ! -d "$config_dir" ]; then
+    return
+  fi
+
+  # Primary config path for Antigravity
+  local config="$config_dir/config/mcp_config.json"
+  local legacy_config="$config_dir/antigravity-cli/mcp_config.json"
+
+  if [ -f "$legacy_config" ] && [ ! -f "$config" ]; then
+    config="$legacy_config"
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    return
+  fi
+
+  python3 - "$config" "$codedb_bin" << 'PYEOF'
+import json, sys, os
+config_path, codedb_bin = sys.argv[1], sys.argv[2]
+try:
+    with open(config_path) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+servers = data.setdefault("mcpServers", {})
+servers["codedb"] = {"command": codedb_bin, "args": ["mcp"]}
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PYEOF
+
+  printf "  ${G}✓${N} antigravity  ${D}→ $config${N}\n"
+}
+
 register_gemini() {
   local codedb_bin="$1"
   local config_dir="$HOME/.gemini"
@@ -215,6 +254,7 @@ main() {
   echo ""
   register_claude "$dest"
   register_codex "$dest"
+  register_antigravity "$dest"
   register_gemini "$dest"
   register_cursor "$dest"
   print_hook_notes "$dest"

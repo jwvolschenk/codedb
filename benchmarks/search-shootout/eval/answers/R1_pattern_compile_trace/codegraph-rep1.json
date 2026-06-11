@@ -1,8 +1,0 @@
-{
-  "entry_file": "src/regex/string.rs",
-  "entry_function": "new",
-  "trace": "Regex::new(re) at src/regex/string.rs:180 delegates immediately to RegexBuilder::new(re).build() (src/builders.rs:232), which forwards into the regex-automata meta-layer's Builder::build (regex-automata/src/meta/regex.rs:3416); that function first calls parse_with (regex-automata/src/util/syntax.rs:86) which drives regex-syntax's ParserBuilder through the pattern string producing an AST and then translating it to a high-level IR (Hir). The resulting Hir slices are handed to build_many_from_hir (regex-automata/src/meta/regex.rs:3600) which invokes strategy::new (regex-automata/src/meta/strategy.rs:78) to select a matching engine; strategy::new feeds the Hir to the Thompson NFA compiler (regex-automata/src/nfa/thompson/compiler.rs compile/build_many_from_hir \u2192 builder::build) to produce a Thompson NFA, then optionally determinizes it into a one-pass DFA or lazy/hybrid DFA, and wraps everything in an Arc<RegexI> holding the chosen strategy, which becomes the regex-automata meta::Regex (regex-automata/src/meta/regex.rs:235) that the top-level src/regex/string.rs Regex stores.",
-  "tool_calls": 18,
-  "wall_seconds": 45,
-  "tokens": 28000
-}

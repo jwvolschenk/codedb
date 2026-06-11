@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const cio = @import("cio.zig");
 const sty = @import("style.zig");
 
@@ -23,7 +24,7 @@ const NukeStats = struct {
 
 pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
     const out = Out{ .file = stdout, .alloc = allocator };
-    const home_env = cio.posixGetenv("HOME") orelse {
+    const home_env = cio.getHomeDir() orelse {
         out.p("{s}\xe2\x9c\x97{s} cannot determine HOME directory\n", .{ s.red, s.reset });
         std.process.exit(1);
     };
@@ -70,10 +71,13 @@ pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Alloca
     out.p("  deregistered tools    {d}\n", .{stats.integrations_removed});
     out.p("  removed binaries      {d}\n", .{stats.binaries_removed});
     out.p("  terminated processes  {d}\n", .{stats.killed_processes});
-    out.p("\n  to reinstall: {s}curl -fsSL https://codedb.codegraff.com/install.sh | bash{s}\n", .{ s.cyan, s.reset });
+    out.p("\n  to reinstall: {s}bash scripts/setup-codedb.sh{s}\n", .{ s.cyan, s.reset });
 }
 
 fn killOtherCodedbProcesses(allocator: std.mem.Allocator, self_pid: std.c.pid_t, self_exe: ?[]const u8) usize {
+    // Windows: pgrep/kill are Unix tools. Process management via taskkill
+    // is not implemented yet. Skip gracefully.
+    if (comptime builtin.os.tag == .windows) return 0;
     const executable_path = self_exe orelse return 0;
     var killed: usize = 0;
     var pid_buf: [32]u8 = undefined;
@@ -192,16 +196,6 @@ fn deregisterInstalledIntegrations(io: std.Io, allocator: std.mem.Allocator, hom
     const codex_config = std.fmt.allocPrint(allocator, "{s}/.codex/config.toml", .{home}) catch return removed;
     defer allocator.free(codex_config);
     if (deregisterCodexIntegrationFile(io, allocator, codex_config) catch false) removed += 1;
-
-    // Windsurf and Devin are registered via mcpsync; both store servers under a
-    // standard `mcpServers` object, so the JSON deregister handles them too.
-    const windsurf_config = std.fmt.allocPrint(allocator, "{s}/.codeium/windsurf/mcp_config.json", .{home}) catch return removed;
-    defer allocator.free(windsurf_config);
-    if (deregisterJsonIntegrationFile(io, allocator, windsurf_config) catch false) removed += 1;
-
-    const devin_config = std.fmt.allocPrint(allocator, "{s}/.config/devin/config.json", .{home}) catch return removed;
-    defer allocator.free(devin_config);
-    if (deregisterJsonIntegrationFile(io, allocator, devin_config) catch false) removed += 1;
 
     return removed;
 }

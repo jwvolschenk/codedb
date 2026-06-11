@@ -15,8 +15,8 @@ const std = @import("std");
 pub const Config = struct {
     /// Cap per-file version history in the Store. Default 100.
     max_versions: usize = 100,
-    /// Cap on files kept in the Explorer's in-memory content cache. Default 16384.
-    max_cached: u32 = 16384,
+    /// Cap on files kept in the Explorer's in-memory content cache. Default 1000.
+    max_cached: u32 = 1000,
     /// When true, append one JSON line per searchContent invocation to
     /// <data_dir>/rerank-traces.jsonl. v0 logger for offline rerank-tuning
     /// experiments. Off by default — opt in via .codedbrc.
@@ -34,7 +34,12 @@ pub const Config = struct {
             if (line.len == 0 or line[0] == '#') continue;
             const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
             const key = std.mem.trim(u8, line[0..eq], " \t");
-            const val = std.mem.trim(u8, line[eq + 1 ..], " \t");
+            // Strip inline comments (# ...) from the value
+            var val_raw = line[eq + 1 ..];
+            if (std.mem.indexOfScalar(u8, val_raw, '#')) |comment_pos| {
+                val_raw = val_raw[0..comment_pos];
+            }
+            const val = std.mem.trim(u8, val_raw, " \t");
             if (std.mem.eql(u8, key, "max_versions")) {
                 cfg.max_versions = std.fmt.parseInt(usize, val, 10) catch return error.InvalidMaxVersions;
                 if (cfg.max_versions == 0) return error.InvalidMaxVersions;
@@ -110,13 +115,13 @@ const testing = std.testing;
 test "config: defaults" {
     const cfg = Config.default;
     try testing.expectEqual(@as(usize, 100), cfg.max_versions);
-    try testing.expectEqual(@as(u32, 16384), cfg.max_cached);
+    try testing.expectEqual(@as(u32, 1000), cfg.max_cached);
 }
 
 test "config: parse single key" {
     const cfg = try Config.parse("max_versions = 42\n");
     try testing.expectEqual(@as(usize, 42), cfg.max_versions);
-    try testing.expectEqual(@as(u32, 16384), cfg.max_cached);
+    try testing.expectEqual(@as(u32, 1000), cfg.max_cached);
 }
 
 test "config: parse both keys with comments and whitespace" {

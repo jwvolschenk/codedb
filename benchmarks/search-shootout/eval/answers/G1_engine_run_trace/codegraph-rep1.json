@@ -1,8 +1,0 @@
-{
-  "entry_file": "gin.go",
-  "entry_function": "Engine.Run",
-  "trace": "Engine.Run (gin.go:540) resolves the listen address, calls engine.updateRouteTrees() to finalize the radix-tree router, then constructs an http.Server with the engine set as the Handler via engine.Handler() and calls server.ListenAndServe() to bind the TCP socket and begin accepting connections. For each incoming request the Go net/http machinery invokes Engine.ServeHTTP (gin.go:662), which retrieves a pooled *Context, attaches the ResponseWriter and *http.Request, and delegates to engine.handleHTTPRequest(c) to match the route and execute the handler chain.",
-  "tool_calls": 4,
-  "wall_seconds": 12,
-  "tokens": 2800
-}

@@ -1,15 +1,5 @@
 # codedb Agent Guidelines
 
-## What codedb is (and isn't)
-
-codedb is a **code-intelligence and context tool, not an editor.** It exists to
-help agents *find and understand* code — structural search, symbol/caller
-lookup, dependency graph, outlines, and task-shaped context — so they can edit
-with their own native tools. `codedb_edit` is a fallback for clients with no
-native editing capability, not the primary path. Keep that framing consistent
-across tool descriptions, the MCP `initialize` instructions, the README, and
-these docs.
-
 ## Review guidelines
 
 - Flag any security issues: injection, file traversal, untrusted input, secret exposure

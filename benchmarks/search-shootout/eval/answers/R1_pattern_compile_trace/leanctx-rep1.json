@@ -1,9 +1,0 @@
-{
-  "entry_file": "src/regex/string.rs",
-  "entry_function": "Regex::new",
-  "trace": "Regex::new delegates to RegexBuilder::build() (src/builders.rs -> Builder::build_one_string), which calls regex-automata's meta Builder::build_many_from_hir. First, regex-automata/src/util/syntax.rs parse() runs regex-syntax's AST parser then HIR translator to produce a Hir. Next, nfa/thompson/compiler.rs Compiler::build_from_hir() walks the Hir tree to emit a Thompson NFA. Finally, meta/strategy.rs Strategy::new() consumes the NFA and RegexInfo to select and construct a concrete matcher (one-pass DFA, lazy hybrid DFA, full DFA, or backtracking NFA) wrapped in an Arc<dyn Strategy>.",
-  "tool_calls": 22,
-  "wall_seconds": 68,
-  "tokens": 32596,
-  "notes": "lean-ctx alternation patterns returned 0 matches"
-}

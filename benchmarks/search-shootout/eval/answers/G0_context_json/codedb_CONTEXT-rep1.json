@@ -1,9 +1,0 @@
-{
-  "file": "context.go",
-  "function": "(*Context).JSON",
-  "snippet": "// JSON serializes the given struct as JSON into the response body.\n// It also sets the Content-Type as \"application/json\".\nfunc (c *Context) JSON(code int, obj any) {\n\tc.Render(code, render.JSON{Data: obj})\n}",
-  "returns": "Serializes `obj` as JSON into the HTTP response body, sets the status code to `code`, and sets Content-Type to application/json.",
-  "tool_calls": 2,
-  "wall_seconds": 1,
-  "tokens": 950
-}

@@ -1,9 +1,0 @@
-{
-  "file": "packages/react-reconciler/src/ReactFiberWorkLoop.js",
-  "function": "scheduleUpdateOnFiber",
-  "snippet": "  // Mark that the root has a pending update.\n  markRootUpdated(root, lane);\n  ...\n  ensureRootIsScheduled(root);\n  resetRenderTimer();",
-  "trace": "When the useState setter is called, the bound dispatcher in ReactFiberHooks.js (dispatchSetState) enqueues the update via enqueueConcurrentHookUpdate and locates the FiberRoot, then calls scheduleUpdateOnFiber(root, fiber, lane) in ReactFiberWorkLoop.js. scheduleUpdateOnFiber first calls markRootUpdated to record the pending lane on the root, then calls ensureRootIsScheduled(root) which posts a task to the Scheduler (via scheduleCallback) to run the reconciler work loop. This is the handoff point where a React state update becomes a scheduled asynchronous (or synchronous, for legacy mode) re-render task.",
-  "tool_calls": 18,
-  "wall_seconds": 45,
-  "tokens": 12000
-}

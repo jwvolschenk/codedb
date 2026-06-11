@@ -1,9 +1,0 @@
-{
-  "file": "packages/react-reconciler/src/ReactFiberWorkLoop.js",
-  "function": "scheduleUpdateOnFiber",
-  "snippet": "export function scheduleUpdateOnFiber(\n  root: FiberRoot,\n  fiber: Fiber,\n  lane: Lane,\n): void {",
-  "trace": "When setX(v) is called, React invokes dispatchSetState (bound to the fiber and its update queue at mount time in mountState via dispatchSetState.bind(null, currentlyRenderingFiber, ...)), which creates an Update object and enqueues it via enqueueConcurrentHookUpdate, then calls scheduleUpdateOnFiber(root, fiber, lane). scheduleUpdateOnFiber in ReactFiberWorkLoop.js is the central scheduling function: it calls markRootUpdated to record the pending lane on the FiberRoot, then either synchronously flushes work or schedules an async callback through the Scheduler, triggering the render loop.",
-  "tool_calls": 2,
-  "wall_seconds": 12,
-  "tokens": 1500
-}

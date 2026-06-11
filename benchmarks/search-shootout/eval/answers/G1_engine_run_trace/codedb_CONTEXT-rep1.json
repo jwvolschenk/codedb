@@ -1,8 +1,0 @@
-{
-  "entry_file": "gin.go",
-  "entry_function": "Engine.Run",
-  "trace": "Engine.Run (gin.go:538) resolves the listen address, creates an http.Server with engine.Handler() as the handler, then calls server.ListenAndServe() (gin.go:554) which begins accepting TCP connections on the given address. For each incoming HTTP request, Go's net/http package calls Engine.ServeHTTP (gin.go:662), which resets and reuses a Context from the sync.Pool, runs the matched route's middleware/handler chain, and then returns the Context to the pool.",
-  "tool_calls": 2,
-  "wall_seconds": 1,
-  "tokens": 950
-}

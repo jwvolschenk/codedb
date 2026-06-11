@@ -104,6 +104,45 @@ register_codex() {
   printf "  ${G}✓${N} codex        ${D}→ $config${N}\n"
 }
 
+register_antigravity() {
+  local codedb_bin="$1"
+  local config_dir="$HOME/.gemini"
+  
+  if [ ! -d "$config_dir" ]; then
+    return
+  fi
+
+  # Primary config path for Antigravity
+  local config="$config_dir/config/mcp_config.json"
+  local legacy_config="$config_dir/antigravity-cli/mcp_config.json"
+
+  if [ -f "$legacy_config" ] && [ ! -f "$config" ]; then
+    config="$legacy_config"
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    return
+  fi
+
+  python3 - "$config" "$codedb_bin" << 'PYEOF'
+import json, sys, os
+config_path, codedb_bin = sys.argv[1], sys.argv[2]
+try:
+    with open(config_path) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+servers = data.setdefault("mcpServers", {})
+servers["codedb"] = {"command": codedb_bin, "args": ["mcp"]}
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PYEOF
+
+  printf "  ${G}✓${N} antigravity  ${D}→ $config${N}\n"
+}
+
 register_gemini() {
   local codedb_bin="$1"
   local config_dir="$HOME/.gemini"
@@ -168,150 +207,18 @@ PYEOF
   printf "  ${G}✓${N} cursor       ${D}→ $config${N}\n"
 }
 
-register_windsurf_devin() {
-  local codedb_bin="$1"
-  # Windsurf and Devin both use a standard mcpServers JSON object, so we register
-  # codedb directly (additively, like the tools above) rather than through
-  # mcpsync. Direct writes only touch the codedb entry — they can't drop a
-  # server's nested env/headers — and add no external dependency. Each is
-  # registered only when the tool is actually present.
-  if ! command -v python3 >/dev/null 2>&1; then
-    printf "  ${D}windsurf/devin: skip (python3 not found)${N}\n"
-    return
-  fi
-  if [ -d "$HOME/.codeium/windsurf" ]; then
-    _register_json_mcp "$HOME/.codeium/windsurf/mcp_config.json" "$codedb_bin" "windsurf"
-  fi
-  if [ -d "$HOME/.config/devin" ]; then
-    _register_json_mcp "$HOME/.config/devin/config.json" "$codedb_bin" "devin"
-  fi
-}
-
-_register_json_mcp() {
-  local config="$1"
-  local codedb_bin="$2"
-  local label="$3"
-  python3 - "$config" "$codedb_bin" << 'PYEOF'
-import json, sys, os
-config_path, codedb_bin = sys.argv[1], sys.argv[2]
-try:
-    with open(config_path) as f:
-        data = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    data = {}
-servers = data.setdefault("mcpServers", {})
-servers["codedb"] = {"command": codedb_bin, "args": ["mcp"]}
-d = os.path.dirname(config_path)
-if d:
-    os.makedirs(d, exist_ok=True)
-with open(config_path, "w") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-PYEOF
-  printf "  ${G}✓${N} %-12s ${D}→ %s${N}\n" "$label" "$config"
-}
-
-register_hooks() {
-  if ! command -v python3 >/dev/null 2>&1; then
-    printf "  ${D}hooks:   skip (python3 not found)${N}\n"
-    return
-  fi
-  python3 << 'PYEOF'
-import json, os, stat
-
-home = os.path.expanduser("~")
-hooks_dir = os.path.join(home, ".claude", "hooks")
-settings_path = os.path.join(home, ".claude", "settings.json")
-os.makedirs(hooks_dir, exist_ok=True)
-
-scripts = {
-    "codedb-block-legacy.sh": r'''#!/bin/bash
-command -v jq >/dev/null 2>&1 || exit 0
-command -v codedb >/dev/null 2>&1 || exit 0
-INPUT=$(cat)
-CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
-STRIPPED=$(echo "$CMD" | sed -E 's/^[[:space:]]*(env|sudo|command|builtin|exec|nohup)[[:space:]]+//')
-STRIPPED=$(echo "$STRIPPED" | sed -E 's/^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+//')
-FIRST=$(echo "$STRIPPED" | awk '{print $1}')
-case "$FIRST" in
-  grep|rg|egrep|fgrep) echo "BLOCKED: Use mcp__codedb__codedb_search instead of $FIRST. If codedb MCP is not connected, use Bash directly." >&2; exit 2 ;;
-  cat) echo "BLOCKED: Use mcp__codedb__codedb_read instead of cat. If codedb MCP is not connected, use Bash directly." >&2; exit 2 ;;
-  head|tail) echo "BLOCKED: Use mcp__codedb__codedb_read with line_start/line_end instead of $FIRST. If codedb MCP is not connected, use Bash directly." >&2; exit 2 ;;
-  sed|awk) echo "BLOCKED: Use mcp__codedb__codedb_edit instead of $FIRST. If codedb MCP is not connected, use Bash directly." >&2; exit 2 ;;
-  find) echo "BLOCKED: Use mcp__codedb__codedb_find or mcp__codedb__codedb_glob instead of find. If codedb MCP is not connected, use Bash directly." >&2; exit 2 ;;
-esac
-exit 0
-''',
-    "codedb-warmup.sh": r'''#!/bin/bash
-command -v codedb >/dev/null 2>&1 || exit 0
-codedb . status >/dev/null 2>&1 &
-exit 0
-''',
-}
-
-for name, content in scripts.items():
-    path = os.path.join(hooks_dir, name)
-    with open(path, "w") as f:
-        f.write(content)
-    os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-try:
-    with open(settings_path) as f:
-        data = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    data = {}
-
-hooks = data.setdefault("hooks", {})
-
-# Merge codedb hooks without clobbering existing hooks from other tools.
-# If a competing legacy-tools hook is already registered for the same
-# event/matcher (e.g. muonry's block-legacy-tools.sh), insert codedb's
-# entry at the FRONT of the list so its redirect wins the race; otherwise
-# append. Re-runs will also reshuffle an already-registered codedb hook
-# to the front if a competitor has appeared since the previous install.
-COMPETITOR_MARKERS = ("block-legacy-tools", "muonry", "zigrep", "zigread")
-
-def merge_hook(event, new_entry):
-    existing = hooks.get(event, [])
-    cmd = new_entry["hooks"][0]["command"]
-    matcher = new_entry.get("matcher", "")
-    competes = any(
-        e.get("matcher", "") == matcher
-        and any(any(m in h.get("command", "") for m in COMPETITOR_MARKERS) for h in e.get("hooks", []))
-        for e in existing
-    )
-    idx = None
-    for i, e in enumerate(existing):
-        if any(cmd in h.get("command", "") for h in e.get("hooks", [])):
-            idx = i
-            break
-    if idx is not None:
-        if competes and idx != 0:
-            existing.insert(0, existing.pop(idx))
-            hooks[event] = existing
-        return
-    if competes:
-        existing.insert(0, new_entry)
-    else:
-        existing.append(new_entry)
-    hooks[event] = existing
-
-merge_hook("PreToolUse", {"matcher": "Bash", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-block-legacy.sh"}]})
-merge_hook("SessionStart", {"matcher": "", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-warmup.sh"}]})
-
-with open(settings_path, "w") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-PYEOF
-  printf "  ${G}✓${N} hooks        ${D}→ ~/.claude/hooks/ + settings.json${N}\n"
-}
-
 print_hook_notes() {
   local codedb_bin="$1"
 
   echo ""
   printf "  ${W}mcp command${N}\n"
   printf "  ${C}$codedb_bin mcp${N}\n"
+  echo ""
+  printf "  ${W}optional hooks${N}\n"
+  printf "  ${D}codex${N}        enable [features].codex_hooks in ~/.codex/config.toml\n"
+  printf "  ${D}codex paths${N}  ~/.codex/hooks.json or <repo>/.codex/hooks.json\n"
+  printf "  ${D}claude paths${N} ~/.claude/settings.json or <repo>/.claude/settings.json\n"
+  printf "  ${D}examples${N}     https://github.com/justrach/codedb/blob/release/0.2.579/docs/hooks-labs.md\n"
 }
 
 main() {
@@ -391,10 +298,9 @@ main() {
   echo ""
   register_claude "$dest"
   register_codex "$dest"
+  register_antigravity "$dest"
   register_gemini "$dest"
   register_cursor "$dest"
-  register_windsurf_devin "$dest"
-  register_hooks
   print_hook_notes "$dest"
 
   # Check PATH

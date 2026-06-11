@@ -1,9 +1,0 @@
-{
-  "entry_file": "src/regex/string.rs",
-  "entry_function": "Regex::new",
-  "trace": "Regex::new delegates immediately to RegexBuilder, as shown at src/regex/string.rs:181: `RegexBuilder::new(re).build()`. RegexBuilder::build calls the internal Builder::build_one_string (src/builders.rs:233: `self.builder.build_one_string()`), which constructs a regex_automata::meta::Regex. Inside meta::Regex construction (regex-automata/src/meta/regex.rs), the builder parses the pattern into an HIR, then selects and instantiates a concrete matching strategy via strategy::new, as seen at src/meta/regex.rs:3610: `let strat = strategy::new(&info, &hirs)?;` \u2014 strategy::new (regex-automata/src/meta/strategy.rs:78) evaluates the HIR properties and picks among Pre (prefilter-only), Core (NFA/DFA hybrid), ReverseAnchored, or other specialized strategies, building the NFA and optional DFA wrappers via build_many_from_hir (strategy.rs:471).",
-  "tool_calls": 11,
-  "wall_seconds": 10,
-  "tokens": 27312,
-  "notes": "Full chain with quoted source lines and verified line numbers."
-}

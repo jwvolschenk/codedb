@@ -1,9 +1,0 @@
-{
-  "file": "src/regex/string.rs",
-  "function": "find_iter",
-  "snippet": "    pub fn find_iter<'r, 'h>(&'r self, haystack: &'h str) -> Matches<'r, 'h> {\n        Matches { haystack, it: self.meta.find_iter(haystack) }\n    }",
-  "returns": "Returns a `Matches` iterator that yields each non-overlapping `Match` found in the haystack `&str`, in left-to-right order.",
-  "tool_calls": 4,
-  "wall_seconds": 12,
-  "tokens": 2100
-}

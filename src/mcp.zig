@@ -12,13 +12,10 @@ pub const Root = mcp_lib.mcp.Root;
 const Store = @import("store.zig").Store;
 const explore_mod = @import("explore.zig");
 const Explorer = explore_mod.Explorer;
-const reader_md = @import("reader_md.zig");
 const AgentRegistry = @import("agent.zig").AgentRegistry;
 const snapshot_json = @import("snapshot_json.zig");
 const watcher = @import("watcher.zig");
 const edit_mod = @import("edit.zig");
-const linter_mod = @import("linter.zig");
-const linter_pref = @import("linter_pref.zig");
 const idx = @import("index.zig");
 const snapshot_mod = @import("snapshot.zig");
 const telemetry_mod = @import("telemetry.zig");
@@ -87,15 +84,6 @@ const SnapshotCache = struct {
         defer self.mu.unlock();
         const bytes = self.bytes orelse return false;
         if (self.seq != seq) return false;
-        if (out.items.len == 0) {
-            // The MCP dispatch buffer is consumed before it is deinitialized,
-            // and snapshot cache owns these bytes until cache deinit/replacement.
-            // Expose a borrowed view to avoid memcpying multi-hundred-KB snapshots
-            // on every warm codedb_snapshot call.
-            out.items = bytes;
-            out.capacity = 0;
-            return true;
-        }
         out.appendSlice(alloc, bytes) catch return false;
         return true;
     }
@@ -112,24 +100,15 @@ const SnapshotCache = struct {
                 self.bytes = null;
             }
             self.seq = std.math.maxInt(u64);
-            if (out.items.len == 0) {
-                out.* = std.ArrayList(u8).fromOwnedSlice(fresh);
-            } else {
-                out.appendSlice(alloc, fresh) catch {};
-                alloc.free(fresh);
-            }
+            out.appendSlice(alloc, fresh) catch {};
+            alloc.free(fresh);
             return;
         }
 
         if (self.bytes) |bytes| {
             if (self.seq == seq) {
                 alloc.free(fresh);
-                if (out.items.len == 0) {
-                    out.items = bytes;
-                    out.capacity = 0;
-                } else {
-                    out.appendSlice(alloc, bytes) catch {};
-                }
+                out.appendSlice(alloc, bytes) catch {};
                 return;
             }
             alloc.free(bytes);
@@ -137,65 +116,7 @@ const SnapshotCache = struct {
 
         self.seq = seq;
         self.bytes = fresh;
-        if (out.items.len == 0) {
-            out.items = fresh;
-            out.capacity = 0;
-        } else {
-            out.appendSlice(alloc, fresh) catch {};
-        }
-    }
-};
-
-const DepsCache = struct {
-    seq: u64 = std.math.maxInt(u64),
-    path: ?[]u8 = null,
-    bytes: ?[]u8 = null,
-    mu: cio.Mutex = .{},
-
-    fn deinit(self: *DepsCache, alloc: std.mem.Allocator) void {
-        if (self.path) |path| {
-            alloc.free(path);
-            self.path = null;
-        }
-        if (self.bytes) |bytes| {
-            alloc.free(bytes);
-            self.bytes = null;
-        }
-    }
-
-    fn appendIfFresh(self: *DepsCache, out: *std.ArrayList(u8), seq: u64, path: []const u8) bool {
-        self.mu.lock();
-        defer self.mu.unlock();
-
-        const cached_path = self.path orelse return false;
-        const cached_bytes = self.bytes orelse return false;
-        if (self.seq != seq or !std.mem.eql(u8, cached_path, path)) return false;
-
-        // The dispatch buffer is consumed before deinit. Borrowing avoids
-        // spending more time copying the tiny deps result than dispatching it.
-        if (out.items.len == 0) {
-            out.items = cached_bytes;
-            out.capacity = 0;
-            return true;
-        }
-        return false;
-    }
-
-    fn put(self: *DepsCache, alloc: std.mem.Allocator, seq: u64, path: []const u8, bytes: []const u8) void {
-        const owned_path = alloc.dupe(u8, path) catch return;
-        const owned_bytes = alloc.dupe(u8, bytes) catch {
-            alloc.free(owned_path);
-            return;
-        };
-
-        self.mu.lock();
-        defer self.mu.unlock();
-
-        if (self.path) |old_path| alloc.free(old_path);
-        if (self.bytes) |old_bytes| alloc.free(old_bytes);
-        self.seq = seq;
-        self.path = owned_path;
-        self.bytes = owned_bytes;
+        out.appendSlice(alloc, fresh) catch {};
     }
 };
 
@@ -203,12 +124,11 @@ const ProjectCtx = struct {
     explorer: *Explorer,
     store: *Store,
     snapshot_cache: *SnapshotCache,
-    deps_cache: *DepsCache,
 };
 
 fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]u8 {
     const hash = std.hash.Wyhash.hash(0, project_path);
-    const home = cio.posixGetenv("HOME") orelse {
+    const home = cio.getHomeDir() orelse {
         return std.fmt.allocPrint(allocator, "{s}/.codedb", .{project_path}) catch null;
     };
 
@@ -270,7 +190,7 @@ fn loadProjectWordIndexFromDiskIfPresent(io: std.Io, explorer: *Explorer, projec
         return;
     }
 
-    if (idx.WordIndex.mmapFromDisk(io, data_dir, allocator) orelse idx.WordIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
+    if (idx.WordIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
         explorer.replaceWordIndex(loaded);
     } else {
         explorer.disableWordIndexDiskLoad();
@@ -282,10 +202,6 @@ fn shouldLoadWordIndexForSearch(args: *const std.json.ObjectMap) bool {
     const query = getStr(args, "query") orelse return false;
     if (query.len < 2 or query.len > 256) return false;
 
-    // Single identifiers (legacy) AND multi-word / natural-language queries
-    // (which route to the BM25 ranked path) both resolve through the word
-    // index, so allow spaces between terms. Reject other punctuation so plain
-    // literal-substring searches still skip the load.
     var saw_word_char = false;
     for (query) |c| {
         const is_word_char =
@@ -293,8 +209,8 @@ fn shouldLoadWordIndexForSearch(args: *const std.json.ObjectMap) bool {
             (c >= 'A' and c <= 'Z') or
             (c >= '0' and c <= '9') or
             c == '_';
-        if (!is_word_char and c != ' ') return false;
-        if (is_word_char and c != '_') saw_word_char = true;
+        if (!is_word_char) return false;
+        if (c != '_') saw_word_char = true;
     }
     return saw_word_char;
 }
@@ -307,7 +223,6 @@ const ProjectCache = struct {
         explorer: Explorer,
         store: Store,
         snapshot_cache: SnapshotCache,
-        deps_cache: DepsCache,
         last_used: i64,
     };
 
@@ -316,34 +231,19 @@ const ProjectCache = struct {
     entries: [MAX_CACHED]?*Entry,
     default_path: []const u8,
     default_snapshot_cache: SnapshotCache,
-    default_deps_cache: DepsCache,
-    content_cache_capacity: u32,
-    // External-linter state for this connection (trial/graph-based-codedb).
-    // LinterSession.enabled is seeded from the persisted preference in run().
-    // The diagnostics cache uses c_allocator (malloc, thread-safe) because a
-    // detached worker thread writes to it off the request path.
-    linter: linter_mod.LinterSession = .{},
-    diag: linter_mod.DiagnosticsCache,
 
-    fn init(alloc_: std.mem.Allocator, default_path_: []const u8, content_cache_capacity_: u32) ProjectCache {
+    fn init(alloc_: std.mem.Allocator, default_path_: []const u8) ProjectCache {
         return .{
             .mu = .{},
             .alloc = alloc_,
             .entries = [_]?*Entry{null} ** MAX_CACHED,
             .default_path = default_path_,
             .default_snapshot_cache = .{},
-            .default_deps_cache = .{},
-            .content_cache_capacity = content_cache_capacity_,
-            .linter = .{},
-            .diag = linter_mod.DiagnosticsCache.init(std.heap.c_allocator),
         };
     }
 
     fn deinit(self: *ProjectCache) void {
-        // Drain in-flight linter workers BEFORE freeing anything they touch.
-        self.diag.deinit();
         self.default_snapshot_cache.deinit(self.alloc);
-        self.default_deps_cache.deinit(self.alloc);
         for (&self.entries) |*slot| {
             if (slot.*) |entry| {
                 self.destroyEntry(entry);
@@ -354,7 +254,6 @@ const ProjectCache = struct {
 
     fn destroyEntry(self: *ProjectCache, entry: *Entry) void {
         entry.snapshot_cache.deinit(self.alloc);
-        entry.deps_cache.deinit(self.alloc);
         entry.explorer.deinit();
         entry.store.deinit();
         self.alloc.free(entry.path);
@@ -383,7 +282,7 @@ const ProjectCache = struct {
         default_exp: *Explorer,
         default_store: *Store,
     ) !ProjectCtx {
-        const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache };
+        const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache };
         if (!root_policy.isIndexableRoot(p))
             return error.PathNotAllowed;
 
@@ -395,7 +294,7 @@ const ProjectCache = struct {
             if (slot.*) |entry| {
                 if (std.mem.eql(u8, entry.path, p)) {
                     entry.last_used = now;
-                    return ProjectCtx{ .explorer = &entry.explorer, .store = &entry.store, .snapshot_cache = &entry.snapshot_cache, .deps_cache = &entry.deps_cache };
+                    return ProjectCtx{ .explorer = &entry.explorer, .store = &entry.store, .snapshot_cache = &entry.snapshot_cache };
                 }
             }
         }
@@ -406,11 +305,10 @@ const ProjectCache = struct {
             self.alloc.destroy(new_entry);
             return error.OutOfMemory;
         };
-        new_entry.explorer = Explorer.init(self.alloc, self.content_cache_capacity);
+        new_entry.explorer = Explorer.init(self.alloc);
         new_entry.explorer.setRoot(io, p);
         new_entry.store = Store.init(self.alloc);
         new_entry.snapshot_cache = .{};
-        new_entry.deps_cache = .{};
         new_entry.last_used = now;
 
         var snap_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -427,7 +325,7 @@ const ProjectCache = struct {
             const hash = std.hash.Wyhash.hash(0, p);
             var central_buf: [std.fs.max_path_bytes]u8 = undefined;
             const loaded_central = blk: {
-                const home = cio.posixGetenv("HOME") orelse break :blk false;
+                const home = cio.getHomeDir() orelse break :blk false;
                 const central = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch break :blk false;
                 break :blk snapshot_mod.loadSnapshot(io, central, &new_entry.explorer, &new_entry.store, self.alloc);
             };
@@ -437,13 +335,16 @@ const ProjectCache = struct {
                 self.alloc.free(new_entry.path);
                 self.alloc.destroy(new_entry);
                 if (std.mem.eql(u8, p, self.default_path) and default_store.currentSeq() > 0) {
-                    return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache };
+                    return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache };
                 }
                 return error.SnapshotLoadFailed;
             }
         }
 
         loadProjectTrigramFromDiskIfPresent(io, &new_entry.explorer, p, self.alloc);
+
+        // Rebuild TypeIndex and TypeGraph from loaded outlines
+        new_entry.explorer.rebuildTypeIndexes();
 
         // Release raw file contents retained by the snapshot load — outlines,
         // trigram index, and word index are sufficient for all query tools.
@@ -478,16 +379,16 @@ const ProjectCache = struct {
         }
 
         self.entries[target_slot] = new_entry;
-        return ProjectCtx{ .explorer = &new_entry.explorer, .store = &new_entry.store, .snapshot_cache = &new_entry.snapshot_cache, .deps_cache = &new_entry.deps_cache };
+        return ProjectCtx{ .explorer = &new_entry.explorer, .store = &new_entry.store, .snapshot_cache = &new_entry.snapshot_cache };
     }
 };
 
 pub const BenchContext = struct {
     cache: ProjectCache,
 
-    pub fn init(alloc: std.mem.Allocator, default_path: []const u8, content_cache_capacity: u32) BenchContext {
+    pub fn init(alloc: std.mem.Allocator, default_path: []const u8) BenchContext {
         return .{
-            .cache = ProjectCache.init(alloc, default_path, content_cache_capacity),
+            .cache = ProjectCache.init(alloc, default_path),
         };
     }
 
@@ -506,22 +407,7 @@ pub const BenchContext = struct {
         explorer: *Explorer,
         agents: *AgentRegistry,
     ) void {
-        dispatch(io, alloc, tool, args, out, store, explorer, agents, &self.cache, null, 1);
-    }
-
-    pub fn runHandleCall(
-        self: *BenchContext,
-        io: std.Io,
-        alloc: std.mem.Allocator,
-        root: *const std.json.ObjectMap,
-        stdout: cio.File,
-        id: ?std.json.Value,
-        store: *Store,
-        explorer: *Explorer,
-        agents: *AgentRegistry,
-        telem: *telemetry_mod.Telemetry,
-    ) void {
-        handleCall(io, alloc, root, stdout, id, store, explorer, agents, &self.cache, telem, null, 1);
+        dispatch(io, alloc, tool, args, out, store, explorer, agents, &self.cache, null);
     }
 
     pub fn runToolCall(
@@ -540,7 +426,7 @@ pub const BenchContext = struct {
         defer out.deinit(alloc);
 
         const t0 = cio.nanoTimestamp();
-        dispatch(io, alloc, tool, args, &out, store, explorer, agents, &self.cache, null, 1);
+        dispatch(io, alloc, tool, args, &out, store, explorer, agents, &self.cache, null);
         const elapsed = cio.nanoTimestamp() - t0;
 
         const is_error = std.mem.startsWith(u8, out.items, "error:");
@@ -565,8 +451,10 @@ pub const BenchContext = struct {
         result.appendSlice(alloc, "{\"content\":[") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = 0 };
 
         if (summary.items.len > 0) {
+            const clean_summary = stripAnsiCodes(alloc, summary.items);
+            defer alloc.free(clean_summary);
             result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
-            mcpj.writeEscaped(alloc, &result, summary.items);
+            mcpj.writeEscaped(alloc, &result, clean_summary);
             result.appendSlice(alloc, "\"},") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
         }
 
@@ -575,8 +463,10 @@ pub const BenchContext = struct {
         result.appendSlice(alloc, "\"}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
 
         if (guidance.items.len > 0) {
+            const clean_guidance = stripAnsiCodes(alloc, guidance.items);
+            defer alloc.free(clean_guidance);
             result.appendSlice(alloc, ",{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
-            mcpj.writeEscaped(alloc, &result, guidance.items);
+            mcpj.writeEscaped(alloc, &result, clean_guidance);
             result.appendSlice(alloc, "\"}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
         }
 
@@ -591,6 +481,9 @@ pub const Tool = enum {
     codedb_tree,
     codedb_outline,
     codedb_symbol,
+    codedb_hierarchy,
+    codedb_routes,
+    codedb_config_xref,
     codedb_search,
     codedb_word,
     codedb_callers,
@@ -601,6 +494,7 @@ pub const Tool = enum {
     codedb_changes,
     codedb_status,
     codedb_snapshot,
+    codedb_types,
     codedb_bundle,
     codedb_remote,
     codedb_projects,
@@ -609,35 +503,35 @@ pub const Tool = enum {
     codedb_query,
     codedb_glob,
     codedb_ls,
-    codedb_context,
-    codedb_diagnostics,
 };
 
 pub const tools_list =
     \\{"tools":[
     \\{"name":"codedb_tree","description":"Whole-repo file tree with per-file language, line counts, and symbol counts. Use to orient in an unfamiliar project.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_outline","description":"Symbol outline of one file: functions, structs, enums, imports, consts with line numbers. 4-15x smaller than reading the raw file. Run before codedb_read to find the lines you actually need. Pass skeleton=true for a signature view — each symbol's declaration line with its body elided as '{ … N lines }', so a 2,000-line file collapses to ~one line per symbol.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"skeleton":{"type":"boolean","description":"Signature view: each symbol's declaration line with its body elided as '{ … N lines }'. Lossless at the API surface; codedb_read the range to expand a body (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
-    \\{"name":"codedb_symbol","description":"Find where a named symbol is defined across the index. Returns file, line, and kind. Pass body=true for source. Pick this over codedb_search when you have an exact identifier.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name to search for (exact match)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
-    \\{"name":"codedb_search","description":"Substring full-text search across the index (regex if regex=true). For one identifier prefer codedb_word; for a definition prefer codedb_symbol. Scope with path_glob to filter by language.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
-    \\{"name":"codedb_word","description":"Exact-identifier lookup via inverted index — every occurrence of one word, O(1). Use for single identifiers; use codedb_search for substrings or phrases.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
-    \\{"name":"codedb_callers","description":"Find every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
-    \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE tight block (keywords used + symbol definitions + ranked files + top file:line snippets). Replaces 3-5 sequential search/word/symbol calls — use for first-touch orientation on a new task. For narrow follow-ups stick with codedb_search/codedb_symbol.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]}},
-    \\{"name":"codedb_diagnostics","description":"Fetch the latest linter diagnostics for a file, produced off the edit path (ruff/biome/etc.) after a recent codedb_edit. Call right after an edit to surface real errors the change may have introduced (undefined names, type/lint issues) on top of codedb's built-in checks. Returns 'no diagnostics available yet' when none are cached or external linters are disabled.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to fetch diagnostics for"}},"required":["path"]}},
+    \\{"name":"codedb_outline","description":"Symbol outline of one file: functions, structs, enums, imports, consts with line numbers. Set grouped=true for sectioned output by symbol kind. Run before codedb_read to find the lines you actually need.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"grouped":{"type":"boolean","description":"Group symbols into sections with line ranges and counts (default: false)."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+    \\{"name":"codedb_symbol","description":"Find where a named symbol is defined across the index. Returns file, line, kind, detail, and decorators when captured. Pass body=true for source. Pick this over codedb_search when you have an exact identifier.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name to search for (exact match)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"decorator_filter":{"type":"string","description":"Only return symbols whose captured decorator/attribute contains this text, e.g. HttpPost or [Authorize]."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
+    \\{"name":"codedb_hierarchy","description":"Class/interface hierarchy lookup. For a class-like symbol, reports direct bases and indexed direct derived/implementing types inferred from declaration detail.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Class, interface, trait, or type symbol name"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
+    \\{"name":"codedb_routes","description":"Framework route map. v1 extracts ASP.NET Core MVC routes from C# controller/action attributes captured in the index.","inputSchema":{"type":"object","properties":{"framework":{"type":"string","enum":["aspnet"],"description":"Route extractor to use. Currently only aspnet is supported."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+    \\{"name":"codedb_config_xref","description":"Framework config key cross-reference. v1 compares ASP.NET appsettings*.json keys against IConfiguration reads in C# files.","inputSchema":{"type":"object","properties":{"framework":{"type":"string","enum":["aspnet"],"description":"Config extractor to use. Currently only aspnet is supported."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+    \\{"name":"codedb_search","description":"Substring full-text search across the index (regex if regex=true). For one identifier prefer codedb_word; for a definition prefer codedb_symbol. Scope with path_glob to filter by language.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Maximum results to return (default: 50, start with 10 for broad queries)"},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig' or 'src/**/*.zig'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+    \\{"name":"codedb_word","description":"Exact-identifier lookup via inverted index — every occurrence of one word, O(1). Use for single identifiers; use codedb_search for substrings or phrases. For common identifiers (50+ hits), pass path_glob to scope results. Results are capped at 50 \\u2014 use path_glob to narrow.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. **/*.cs or src/Controllers/*.cs. Auto-promotes bare patterns."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
+    \\{"name":"codedb_callers","description":"Find every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 50)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
     \\{"name":"codedb_hot","description":"Most recently modified files in the project, newest first.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_deps","description":"Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set transitive=true for the full BFS blast radius.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"imported_by (default): who imports this file. depends_on: what this file imports."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth for transitive queries (default: unlimited)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
     \\{"name":"codedb_read","description":"Read file contents, optionally a line range. Run codedb_outline first to pick the range — large files burn tokens fast. Pass if_hash to skip re-reads when the file is unchanged.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
-    \\{"name":"codedb_edit","description":"Fallback editor — prefer your own native file-editing tool. codedb is a context/navigation tool, not an editor; reach for codedb_edit only when no native edit capability is available. When you do edit through codedb, op=str_replace with old_string/new_string is safest (old_string must match exactly once) — it cannot mis-target surrounding lines the way a range replace can. Also supports line ops: replace (range), insert (after line), delete (range), and create (author a new file from content). The result includes a syntax-health warning if the edit unbalances delimiters or drops a still-used import — heed it and re-read before continuing. Pass if_hash from the latest codedb_read to reject stale-line edits. Set dry_run=true for a diff preview.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to edit"},"op":{"type":"string","enum":["str_replace","replace","insert","delete","create"],"description":"Edit operation. str_replace=anchored (old_string/new_string); replace/delete use range; insert uses after; create=author a NEW file from content (errors if the path already exists)."},"content":{"type":"string","description":"New content (for replace/insert/create)"},"old_string":{"type":"string","description":"For op=str_replace: exact text to find; must occur exactly once in the file."},"new_string":{"type":"string","description":"For op=str_replace: replacement text for old_string."},"range_start":{"type":"integer","description":"Start line number (for replace/delete, 1-indexed)"},"range_end":{"type":"integer","description":"End line number (for replace/delete, 1-indexed)"},"after":{"type":"integer","description":"Insert after this line number (for insert)"},"if_hash":{"type":"string","description":"Hex hash from codedb_read's 'hash:' line. Edit is rejected with HashMismatch if the file has changed since."},"dry_run":{"type":"boolean","description":"If true, return a diff preview without writing. Disk and store are untouched. Default: false."}},"required":["path","op"]}},
+    \\{"name":"codedb_edit","description":"Line-based file edit: replace (range), insert (after line), or delete (range). Pass if_hash from the latest codedb_read to reject stale-line edits. Set dry_run=true for a diff preview.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to edit"},"op":{"type":"string","enum":["replace","insert","delete"],"description":"Edit operation type"},"content":{"type":"string","description":"New content (for replace/insert)"},"range_start":{"type":"integer","description":"Start line number (for replace/delete, 1-indexed)"},"range_end":{"type":"integer","description":"End line number (for replace/delete, 1-indexed)"},"after":{"type":"integer","description":"Insert after this line number (for insert)"},"if_hash":{"type":"string","description":"Hex hash from codedb_read's 'hash:' line. Edit is rejected with HashMismatch if the file has changed since."},"dry_run":{"type":"boolean","description":"If true, return a diff preview without writing. Disk and store are untouched. Default: false."}},"required":["path","op"]}},
     \\{"name":"codedb_changes","description":"Files changed since a given sequence number. Pair with codedb_status to poll for updates.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"}},"required":[]}},
-    \\{"name":"codedb_status","description":"Current indexed-file count, sequence number, and scan phase.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+    \\{"name":"codedb_status","description":"Current indexed-file count, sequence number, scan phase, and active ignore/skip rules.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_snapshot","description":"Pre-rendered JSON snapshot of the entire index — tree, outlines, symbols, deps. For caching or shipping to edge workers.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+    \\{"name":"codedb_types","description":"Type-based queries. return_type: find all functions returning a type. param_type: find all functions accepting a type. Both are exact match. Returns symbol name, file, line, and the matched type.","inputSchema":{"type":"object","properties":{"return_type":{"type":"string","description":"Find all symbols with this return type (exact match, e.g. 'Task<UserDto>')"},"param_type":{"type":"string","description":"Find all symbols accepting this param type (exact match, e.g. 'ILogger')"},"max_results":{"type":"integer","description":"Maximum results (default: 50)"},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":[]}},
     \\{"name":"codedb_bundle","description":"Run up to 20 codedb_* calls in one round-trip. Each op is either MCP-style {\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}} or inline {\"tool\":\"codedb_search\",\"query\":\"Agent\"} — both are accepted. Example: {\"ops\":[{\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}},{\"tool\":\"codedb_outline\",\"arguments\":{\"path\":\"src/main.zig\"}}]}. Best for parallel outline/symbol/search; avoid bundling large codedb_read calls — responses are not size-capped. If a sub-op reports `received keys: []`, the wrapper field is misnamed: use `arguments` (MCP spec), not `args`.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","description":"Sub-tool calls to dispatch (max 20). Each item must have `tool` AND `arguments` (pass `{}` if the sub-tool takes none). Inline args alongside `tool` are still accepted as a fallback.","items":{"type":"object","properties":{"tool":{"type":"string","description":"codedb_* tool name to invoke (e.g. codedb_outline, codedb_symbol, codedb_search, codedb_word, codedb_callers, codedb_read, codedb_deps, codedb_tree, codedb_hot, codedb_status, codedb_changes). Required."},"arguments":{"type":"object","description":"Per-call args matching that tool's inputSchema. Field MUST be named `arguments` (MCP `tools/call` convention) — `args` is silently ignored. Pass `{}` only if the sub-tool takes no arguments. Required."}},"required":["tool","arguments"]}},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["ops"]}},
     \\{"name":"codedb_remote","description":"Query indexed public repos via api.wiki.codes. Pass action= one of: tree, outline, search, read, symbol, deps, score, cves, commits, branches, dep-history, policy, actions. Use action=actions first if unsure what a repo supports.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"GitHub repo in owner/repo format (e.g. vercel/next.js) or a raw wiki slug such as chromium."},"action":{"type":"string","enum":["tree","outline","search","read","actions","symbol","policy","deps","score","cves","commits","branches","dep-history"],"description":"What to query from api.wiki.codes: actions, tree, search, outline, read, symbol, policy, deps, score, cves, commits, branches, dep-history."},"query":{"type":"string","description":"Action-specific argument. search: text query. symbol: identifier name. outline: file path."},"path":{"type":"string","description":"For action=read: the file path to fetch."},"lines":{"type":"string","description":"For action=read: line range like '10-60' (1-indexed, inclusive). Omit for full file."},"limit":{"type":"integer","description":"For search/tree/deps/commits/branches/dep-history: cap the number of items returned (server may enforce its own ceiling)."},"offset":{"type":"integer","description":"For tree/deps/commits/branches/dep-history: skip the first N items (pagination)."},"prefix":{"type":"string","description":"For tree: only return paths starting with this prefix (e.g. 'src/')."},"expand":{"type":"boolean","description":"For tree: when true, return the full file list. When false returns a compact directory summary when supported."},"since":{"type":"string","description":"For commits/dep-history: ISO timestamp or commit SHA to start from."},"scope":{"type":"string","enum":["runtime","all"],"description":"For score/cves only. Defaults to runtime; use all to include dev/tooling dependencies."},"backend":{"type":"string","enum":["wiki"],"description":"Deprecated compatibility field. Only 'wiki' is accepted; requests always use api.wiki.codes."}},"required":["repo","action"]}},
     \\{"name":"codedb_projects","description":"List every locally indexed project on this machine: path, data-dir hash, snapshot presence.","inputSchema":{"type":"object","properties":{},"required":[]}},
-    \\{"name":"codedb_index","description":"Index a local FOLDER (not a file). Builds outlines, trigrams, word index, and writes codedb.snapshot. After indexing, query it via the project= param on any other tool.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the FOLDER (not a file) to index, e.g. /Users/you/myproject"}},"required":["path"]}},
+    \\{"name":"codedb_index","description":"Index a local FOLDER (not a file). Builds outlines, trigrams, word index, and writes codedb.snapshot. After indexing, query it via the project= param on any other tool. Pass force=true to delete existing snapshots (in-repo and central cache) and do a full re-index — use when parsers are updated or .codedbignore changed.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the FOLDER (not a file) to index, e.g. /Users/you/myproject"},"force":{"type":"boolean","description":"Delete existing snapshots and force a full re-index (default: false). Use after updating parsers, changing .codedbignore, or when the index seems stale."}},"required":["path"]}},
     \\{"name":"codedb_find","description":"Fuzzy FILE-NAME search ONLY — typo-tolerant subsequence match against indexed file paths. NOT a content/symbol search: 'rerank' will NOT find files containing rerankSignalScore unless the filename itself contains 'rerank'. For symbol lookups use codedb_word/codedb_symbol; for content use codedb_search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy filename query (e.g. 'authmidlware' for auth_middleware.go, 'test_auth', 'main.zig'). Matched against path basenames, not file contents."},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
-    \\{"name":"codedb_query","description":"Composable pipeline — chain ops where each step feeds the next. Ops: find, search, filter, deps, outline, read, sort, limit. Replaces multi-call workflows with one request.","inputSchema":{"type":"object","properties":{"pipeline":{"type":"array","items":{"type":"object"},"description":"Array of pipeline steps. Each step has 'op' (find/search/filter/deps/outline/read/sort/limit) and op-specific params. Steps execute in order, each filtering/transforming the file set from the previous step. deps op: {\"op\":\"deps\",\"direction\":\"imported_by|depends_on\",\"transitive\":true,\"max_depth\":3}"},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":["pipeline"]}},
-    \\{"name":"codedb_glob","description":"Match indexed paths against a glob: * (no /), ** (across /), ? (one char), {a,b} alternatives. Sorted lexicographically. Use when you know the path shape; codedb_find for fuzzy names.","inputSchema":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. 'src/**/*.zig', '**/*.{yaml,yml}', 'tests/test_*.py')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 200)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["pattern"]}},
-    \\{"name":"codedb_ls","description":"List immediate children of a directory: dirs first (alphabetical), then files with language and line/symbol counts. Drill down level-by-level when codedb_tree is too verbose.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}}
+    \\{"name":"codedb_query","description":"Composable pipeline — chain ops where each step feeds the next. Ops: find, search, filter, deps, outline, read, sort, limit, word, symbol, callers, type_search, type_compat. Replaces multi-call workflows with one request. search/word/callers steps track hit line numbers; the read step's context_lines param reads N lines of context around those tracked hits instead of reading from the start. type_search finds symbols by return_type or param_type (exact match). type_compat finds all types that implement/extend a given base type via the type graph. Example: [{\"op\":\"search\",\"query\":\"TODO\"},{\"op\":\"read\",\"context_lines\":3}] shows 3 lines around each TODO hit. [{\"op\":\"callers\",\"name\":\"handleRequest\"},{\"op\":\"read\",\"context_lines\":5}] finds all callers and reads 5 lines of context around each call site. callers op: filters to real call sites (excludes definitions, non-call languages); use standalone or after a filter step to scope to specific files.","inputSchema":{"type":"object","properties":{"pipeline":{"type":"array","items":{"type":"object"},"description":"Array of pipeline steps. Each step has 'op' (find/search/filter/deps/outline/read/sort/limit/word/symbol/callers) and op-specific params. Steps execute in order, each filtering/transforming the file set from the previous step. deps op: {\"op\":\"deps\",\"direction\":\"imported_by|depends_on\",\"transitive\":true,\"max_depth\":3}"},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":["pipeline"]}},
+    \\{"name":"codedb_glob","description":"Match indexed paths against a glob: * (no /), ** (across /), ? (one char). Sorted lexicographically. Use when you know the path shape; codedb_find for fuzzy names.","inputSchema":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. 'src/**/*.zig', '*.md', 'tests/test_*.py')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 200)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["pattern"]}},
+    \\{"name":"codedb_ls","description":"List immediate children of a directory with deterministic file descriptors. Set ranked=true to sort by hotspot score and annotate dependents/symbol centrality.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"ranked":{"type":"boolean","description":"Sort by hotspot score instead of alphabetically, and include score/dependent counts (default: false)."},"no_descriptor":{"type":"boolean","description":"Suppress deterministic descriptor text in file rows (default: false)."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}}
     \\]}
 ;
 
@@ -767,8 +661,6 @@ pub var last_activity: std.atomic.Value(i64) = std.atomic.Value(i64).init(0);
 /// How often the watchdog checks whether the MCP client disconnected.
 pub const dead_client_poll_ms: u64 = 1000;
 
-pub var stdout_broken: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
-
 // ── Serve-first scan state (issue #207) ─────────────────────────────────────
 //
 // MCP serves immediately on startup; the file walk + index build runs in a
@@ -823,12 +715,9 @@ const Session = struct {
     client_roots_list_changed: bool = false,
     client_name: ?[]const u8 = null,
     pending_roots_id: ?i64 = null,
+    roots_requested_at: i64 = 0,
     roots: std.ArrayList(Root) = .empty,
     deferred_scan: ?*DeferredScan = null,
-    /// Per-session advisory-lock owner for codedb_edit (#528 audit). Set to a
-    /// distinct registered agent id at session start; defaults to 1 so any path
-    /// that constructs a Session without registering still uses __filesystem__.
-    edit_agent_id: u64 = 1,
 
     fn freeRoots(self: *Session) void {
         for (self.roots.items) |r| {
@@ -851,20 +740,15 @@ pub fn run(
     explorer: *Explorer,
     agents: *AgentRegistry,
     default_path: []const u8,
-    content_cache_capacity: u32,
     telem: *telemetry_mod.Telemetry,
     deferred_scan: ?*DeferredScan,
-    shutdown: *std.atomic.Value(bool),
 ) void {
     const stdout = cio.File.stdout();
     const stdin = std.Io.File.stdin();
     last_activity.store(cio.milliTimestamp(), .release);
 
-    var cache = ProjectCache.init(alloc, default_path, content_cache_capacity);
+    var cache = ProjectCache.init(alloc, default_path);
     defer cache.deinit();
-    // Seed the external-linter opt-in from the persisted preference. The server
-    // never prompts/installs — that happens at install / `codedb update` time.
-    cache.linter.enabled = linter_pref.enabledFromPref(linter_pref.read(io, alloc));
 
     // Build the `tools/list` payload. The discriminated `oneOf` on the
     // codedb_bundle ops items (issue #437) is incompatible with OpenAI's
@@ -899,17 +783,12 @@ pub fn run(
         .stdout = stdout,
         .deferred_scan = deferred_scan,
     };
-    // #528 audit: give this MCP session a distinct advisory-lock owner so that
-    // concurrent edits from separate connections (if a multi-connection MCP
-    // transport is added) serialize correctly instead of all sharing the
-    // startup __filesystem__ agent. Falls back to 1 (__filesystem__).
-    session.edit_agent_id = agents.register("mcp-session") catch 1;
     defer session.deinit();
 
     var read_buf: [4096]u8 = undefined;
     var stdin_reader = stdin.reader(io, &read_buf);
 
-    while (!stdout_broken.load(.acquire) and !shutdown.load(.acquire)) {
+    while (true) {
         const msg = mcpj.readLineBuf(alloc, &stdin_reader.interface) orelse break;
         last_activity.store(cio.milliTimestamp(), .release);
         defer alloc.free(msg);
@@ -962,7 +841,19 @@ pub fn run(
         } else if (mcpj.eql(method, "tools/list")) {
             if (!is_notification) writeResult(alloc, stdout, id, tools_list_response);
         } else if (mcpj.eql(method, "tools/call")) {
-            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, session.edit_agent_id);
+            // If we requested roots but the client never replied, timeout and
+            // fire the deferred scan with cwd fallback after 3 seconds.
+            if (session.pending_roots_id != null and session.deferred_scan != null) {
+                const elapsed = cio.milliTimestamp() - session.roots_requested_at;
+                if (elapsed > 3000) {
+                    session.pending_roots_id = null;
+                    if (session.deferred_scan) |ds| {
+                        const empty_roots: []const Root = &.{};
+                        _ = triggerDeferredScanWithFallback(ds, empty_roots, ds.fallback_cwd);
+                    }
+                }
+            }
+            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan);
         } else if (mcpj.eql(method, "ping")) {
             if (!is_notification) writeResult(alloc, stdout, id, "{}");
         } else {
@@ -992,57 +883,18 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
             s.client_name = name;
         }
     }
-    // #505 / #506: negotiate the protocol version with the client.
-    // Old versions of opencode/Zed reject a server reply with a NEWER
-    // protocolVersion than they sent. Echo the client's version back when
-    // we recognize it; otherwise fall back to the latest we support.
-    var negotiated: []const u8 = "2025-06-18";
-    proto: {
-        const p = root.get("params") orelse break :proto;
-        if (p != .object) break :proto;
-        const requested = mcpj.getStr(&p.object, "protocolVersion") orelse break :proto;
-        if (negotiateProtocolVersion(requested)) |v| negotiated = v;
-    }
     const init_result = std.fmt.allocPrint(s.alloc,
-        \\{{"protocolVersion":"{s}","capabilities":{{"tools":{{"listChanged":false}}}},"serverInfo":{{"name":"codedb","version":"{s}"}},"instructions":"codedb is a code-intelligence and context tool — not your editor. Use it to understand the codebase before you change it: search, symbol/caller lookup, dependency graph, outlines, and codedb_context for task-shaped orientation. Make edits with your own native file tools. codedb_edit is only a fallback for clients with no native editing."}}
-    , .{ negotiated, release_info.semver }) catch return;
+        \\{{"protocolVersion":"2025-06-18","capabilities":{{"tools":{{"listChanged":false}}}},"serverInfo":{{"name":"codedb","version":"{s}"}}}}
+    , .{release_info.semver}) catch return;
     defer s.alloc.free(init_result);
     writeResult(s.alloc, s.stdout, id, init_result);
-}
-
-/// Versions of the MCP spec this server has been verified against. Listed
-/// newest-first because clients that send a newer version than we know
-/// should still get our newest known version back, not an old one.
-const SUPPORTED_PROTOCOL_VERSIONS = [_][]const u8{
-    "2025-06-18",
-    "2025-03-26",
-    "2024-11-05",
-};
-
-/// Pick the protocol version to send back in initialize. Returns the
-/// client's requested version if we recognize it, the latest version we
-/// know about if the request is newer than that, or null if the request
-/// looks malformed and the caller should fall back to a default. See
-/// #505 / #506 — older clients (Zed, certain opencode versions) reject
-/// a server reply with a protocolVersion they don't understand.
-pub fn negotiateProtocolVersion(requested: []const u8) ?[]const u8 {
-    if (requested.len == 0) return null;
-    for (SUPPORTED_PROTOCOL_VERSIONS) |v| {
-        if (std.mem.eql(u8, v, requested)) return v;
-    }
-    // Unknown version. If it looks like a future date (lex-greater than our
-    // latest), reply with our latest. Otherwise reply with our oldest known
-    // version so older clients at least get a compatible-shaped response.
-    if (std.mem.order(u8, requested, SUPPORTED_PROTOCOL_VERSIONS[0]) == .gt) {
-        return SUPPORTED_PROTOCOL_VERSIONS[0];
-    }
-    return SUPPORTED_PROTOCOL_VERSIONS[SUPPORTED_PROTOCOL_VERSIONS.len - 1];
 }
 
 fn requestRoots(s: *Session) void {
     const rid = s.next_id;
     s.next_id += 1;
     s.pending_roots_id = rid;
+    s.roots_requested_at = cio.milliTimestamp();
     writeRequest(s.alloc, s.stdout, rid, "roots/list", "{}");
 }
 
@@ -1106,10 +958,7 @@ fn writeRequest(alloc: std.mem.Allocator, stdout: cio.File, id: i64, method: []c
     buf.appendSlice(alloc, "\",\"params\":") catch return;
     buf.appendSlice(alloc, params) catch return;
     buf.appendSlice(alloc, "}\n") catch return;
-    stdout.writeAll(buf.items) catch {
-        stdout_broken.store(true, .release);
-        return;
-    };
+    stdout.writeAll(buf.items) catch {};
 }
 
 fn handleCall(
@@ -1124,7 +973,6 @@ fn handleCall(
     cache: *ProjectCache,
     telem: *telemetry_mod.Telemetry,
     deferred_scan: ?*DeferredScan,
-    edit_agent_id: u64,
 ) void {
     const is_notification = id == null;
 
@@ -1142,17 +990,12 @@ fn handleCall(
         if (!is_notification) writeError(alloc, stdout, id, -32602, "Missing tool name");
         return;
     };
-    var args_value: std.json.Value = .{ .object = .empty };
-    var inline_args: std.json.ObjectMap = .empty;
-    defer inline_args.deinit(alloc);
-    const args = selectDirectCallArgs(alloc, params, &args_value, &inline_args) catch |err| {
-        if (!is_notification) writeError(alloc, stdout, id, -32602, switch (err) {
-            error.ArgumentsMustBeObject => "arguments must be object",
-            error.ArgsMustBeObject => "args must be object",
-            error.OutOfMemory => "out of memory",
-        });
+    var args_value = params.get("arguments") orelse std.json.Value{ .object = .empty };
+    if (args_value != .object) {
+        if (!is_notification) writeError(alloc, stdout, id, -32602, "arguments must be object");
         return;
-    };
+    }
+    const args = &args_value.object;
 
     const tool = std.meta.stringToEnum(Tool, name) orelse {
         if (!is_notification) writeError(alloc, stdout, id, -32602, "Unknown tool");
@@ -1163,15 +1006,11 @@ fn handleCall(
     defer out.deinit(alloc);
 
     const t0 = cio.nanoTimestamp();
-    dispatch(io, alloc, tool, args, &out, store, explorer, agents, cache, deferred_scan, edit_agent_id);
+    dispatch(io, alloc, tool, args, &out, store, explorer, agents, cache, deferred_scan);
     const elapsed = cio.nanoTimestamp() - t0;
 
     const is_error = std.mem.startsWith(u8, out.items, "error:");
     telem.recordToolCall(name, elapsed, is_error, out.items.len);
-
-    if (std.mem.eql(u8, name, "codedb_search") or std.mem.eql(u8, name, "codedb_find") or std.mem.eql(u8, name, "codedb_word")) {
-        telem.recordSearchBreakdown(explorer.last_search_breakdown);
-    }
 
     // Query + file access tracking WAL
     if (!is_error) {
@@ -1187,109 +1026,52 @@ fn handleCall(
     }
     if (is_notification) return;
 
-    const lean = mcpLeanMode();
-
-    // Block 1: Human-readable colored summary (ANSI — preview pane always
-    // renders it). Skipped in lean mode (agents don't render ANSI; the
-    // summary duplicates info that's already in Block 2).
+    // Block 1: Human-readable colored summary (ANSI — preview pane always renders it)
     var summary: std.ArrayList(u8) = .empty;
     defer summary.deinit(alloc);
-    if (!lean) {
-        summary.ensureTotalCapacity(alloc, 256) catch {};
-        summary.appendSlice(alloc, if (is_error) MCP_RED ++ MCP_CROSS ++ " " ++ MCP_RESET else MCP_GREEN ++ MCP_CHECK ++ " " ++ MCP_RESET) catch {};
-        summary.appendSlice(alloc, mcpToolIcon(name)) catch {};
-        mcpGenerateSummary(alloc, name, args, out.items, is_error, &summary);
-        var dur_buf: [96]u8 = undefined;
-        summary.appendSlice(alloc, mcpFormatDuration(&dur_buf, elapsed)) catch {};
-    }
+    summary.ensureTotalCapacity(alloc, 256) catch {};
+    summary.appendSlice(alloc, if (is_error) MCP_RED ++ MCP_CROSS ++ " " ++ MCP_RESET else MCP_GREEN ++ MCP_CHECK ++ " " ++ MCP_RESET) catch {};
+    summary.appendSlice(alloc, mcpToolIcon(name)) catch {};
+    mcpGenerateSummary(alloc, name, args, out.items, is_error, &summary);
+    var dur_buf: [96]u8 = undefined;
+    summary.appendSlice(alloc, mcpFormatDuration(&dur_buf, elapsed)) catch {};
 
-    // Block 3: Guidance hints. Skipped in lean mode for same reason.
+    // Block 3: Guidance hints
     var guidance: std.ArrayList(u8) = .empty;
     defer guidance.deinit(alloc);
-    if (!lean) {
-        mcpGenerateGuidance(alloc, name, args, out.items, is_error, &guidance);
-    }
+    mcpGenerateGuidance(alloc, name, args, out.items, is_error, &guidance);
 
-    // Assemble MCP content envelope (1 block in lean mode, up to 3 otherwise).
+    // Assemble 3-block MCP content envelope
     var result: std.ArrayList(u8) = .empty;
     defer result.deinit(alloc);
     result.ensureTotalCapacity(alloc, out.items.len + summary.items.len + guidance.items.len + 256) catch {};
     result.appendSlice(alloc, "{\"content\":[") catch return;
 
-    // Block 1 (summary — audience: user; spec-canonical signal that
-    // token-conscious clients can strip)
+    // Block 1 (summary — stripped of ANSI codes for agent consumption)
     if (summary.items.len > 0) {
-        result.appendSlice(alloc, "{\"type\":\"text\",\"annotations\":{\"audience\":[\"user\"]},\"text\":\"") catch return;
-        mcpj.writeEscaped(alloc, &result, summary.items);
+        const clean_summary = stripAnsiCodes(alloc, summary.items);
+        defer alloc.free(clean_summary);
+        result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return;
+        mcpj.writeEscaped(alloc, &result, clean_summary);
         result.appendSlice(alloc, "\"},") catch return;
     }
 
-    // Block 2 (raw data — audience: assistant; this is what the model
-    // actually consumes)
-    result.appendSlice(alloc, "{\"type\":\"text\",\"annotations\":{\"audience\":[\"assistant\"]},\"text\":\"") catch return;
+    // Block 2 (raw data — no colors, zero extra tokens to model)
+    result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return;
     mcpj.writeEscaped(alloc, &result, out.items);
     result.appendSlice(alloc, "\"}") catch return;
 
-    // Block 3 (guidance — audience: user)
+    // Block 3 (guidance — stripped of ANSI codes for agent consumption)
     if (guidance.items.len > 0) {
-        result.appendSlice(alloc, ",{\"type\":\"text\",\"annotations\":{\"audience\":[\"user\"]},\"text\":\"") catch return;
-        mcpj.writeEscaped(alloc, &result, guidance.items);
+        const clean_guidance = stripAnsiCodes(alloc, guidance.items);
+        defer alloc.free(clean_guidance);
+        result.appendSlice(alloc, ",{\"type\":\"text\",\"text\":\"") catch return;
+        mcpj.writeEscaped(alloc, &result, clean_guidance);
         result.appendSlice(alloc, "\"}") catch return;
     }
 
     result.appendSlice(alloc, if (is_error) "],\"isError\":true}" else "],\"isError\":false}") catch return;
     writeResult(alloc, stdout, id, result.items);
-}
-
-fn isDirectCallAdminKey(key: []const u8) bool {
-    return std.mem.eql(u8, key, "name") or
-        std.mem.eql(u8, key, "arguments") or
-        std.mem.eql(u8, key, "args") or
-        std.mem.eql(u8, key, "_meta") or
-        std.mem.eql(u8, key, "task");
-}
-
-fn copyDirectInlineArgs(
-    alloc: std.mem.Allocator,
-    params: *const std.json.ObjectMap,
-    inline_args: *std.json.ObjectMap,
-) !bool {
-    var copied = false;
-    var it = params.iterator();
-    while (it.next()) |entry| {
-        const key = entry.key_ptr.*;
-        if (isDirectCallAdminKey(key)) continue;
-        try inline_args.put(alloc, key, entry.value_ptr.*);
-        copied = true;
-    }
-    return copied;
-}
-
-fn selectDirectCallArgs(
-    alloc: std.mem.Allocator,
-    params: *const std.json.ObjectMap,
-    args_value: *std.json.Value,
-    inline_args: *std.json.ObjectMap,
-) (error{ ArgumentsMustBeObject, ArgsMustBeObject } || std.mem.Allocator.Error)!*const std.json.ObjectMap {
-    if (params.get("arguments")) |arguments_val| {
-        if (arguments_val != .object) return error.ArgumentsMustBeObject;
-        if (arguments_val.object.count() > 0) {
-            args_value.* = arguments_val;
-            return &args_value.object;
-        }
-        if (try copyDirectInlineArgs(alloc, params, inline_args)) return inline_args;
-    } else {
-        if (try copyDirectInlineArgs(alloc, params, inline_args)) return inline_args;
-    }
-
-    if (params.get("args")) |args_val| {
-        if (args_val != .object) return error.ArgsMustBeObject;
-        args_value.* = args_val;
-        return &args_value.object;
-    }
-
-    args_value.* = .{ .object = .empty };
-    return &args_value.object;
 }
 
 fn dispatch(
@@ -1303,47 +1085,19 @@ fn dispatch(
     agents: *AgentRegistry,
     cache: *ProjectCache,
     deferred_scan: ?*DeferredScan,
-    edit_agent_id: u64,
 ) void {
     const project_path = getStr(args, "project");
-    const ctx = if (project_path) |path|
-        cache.get(io, path, default_explorer, default_store) catch |err| {
-            out.appendSlice(alloc, "error: failed to load project: ") catch {};
-            out.appendSlice(alloc, @errorName(err)) catch {};
-            return;
-        }
-    else
-        ProjectCtx{
-            .explorer = default_explorer,
-            .store = default_store,
-            .snapshot_cache = &cache.default_snapshot_cache,
-            .deps_cache = &cache.default_deps_cache,
-        };
-
-    if (project_path == null and tool == .codedb_deps and args.count() == 1) {
-        const keys = args.keys();
-        const values = args.values();
-        if (keys.len == 1 and std.mem.eql(u8, keys[0], "path") and values[0] == .string) {
-            waitForScanReady(scan_wait_timeout_ms);
-            const scan_ready = getScanState() == .ready;
-            const seq = if (scan_ready) default_store.currentSeq() else 0;
-            if (scan_ready and ctx.deps_cache.appendIfFresh(out, seq, values[0].string)) return;
-
-            handleDepsPathOnly(alloc, values[0].string, out, default_explorer);
-            if (scan_ready) {
-                ctx.deps_cache.put(alloc, seq, values[0].string, out.items);
-            } else {
-                appendScanProgressHint(alloc, out, tool);
-            }
-            return;
-        }
-    }
+    const ctx = cache.get(io, project_path, default_explorer, default_store) catch |err| {
+        out.appendSlice(alloc, "error: failed to load project: ") catch {};
+        out.appendSlice(alloc, @errorName(err)) catch {};
+        return;
+    };
 
     if (toolDependsOnScannedIndex(tool) and project_path == null) {
         waitForScanReady(scan_wait_timeout_ms);
     }
 
-    if (tool == .codedb_word or tool == .codedb_context or (tool == .codedb_search and shouldLoadWordIndexForSearch(args))) {
+    if (tool == .codedb_word or (tool == .codedb_search and shouldLoadWordIndexForSearch(args))) {
         const effective_project = project_path orelse cache.default_path;
         loadProjectWordIndexFromDiskIfPresent(io, ctx.explorer, effective_project, alloc);
     }
@@ -1352,17 +1106,21 @@ fn dispatch(
         .codedb_tree => handleTree(alloc, out, ctx.explorer),
         .codedb_outline => handleOutline(alloc, args, out, ctx.explorer),
         .codedb_symbol => handleSymbol(alloc, args, out, ctx.explorer),
+        .codedb_hierarchy => handleHierarchy(alloc, args, out, ctx.explorer),
+        .codedb_routes => handleRoutes(alloc, args, out, ctx.explorer),
+        .codedb_config_xref => handleConfigXref(alloc, args, out, ctx.explorer),
         .codedb_search => handleSearch(alloc, args, out, ctx.explorer),
         .codedb_word => handleWord(alloc, args, out, ctx.explorer),
         .codedb_callers => handleCallers(alloc, args, out, ctx.explorer),
         .codedb_hot => handleHot(alloc, args, out, ctx.store, ctx.explorer),
         .codedb_deps => handleDeps(alloc, args, out, ctx.explorer),
         .codedb_read => handleRead(io, alloc, args, out, ctx.explorer),
-        .codedb_edit => handleEdit(io, alloc, args, out, default_store, default_explorer, agents, cache, edit_agent_id),
+        .codedb_edit => handleEdit(io, alloc, args, out, default_store, default_explorer, agents),
         .codedb_changes => handleChanges(alloc, args, out, default_store),
         .codedb_status => handleStatus(alloc, out, ctx.store, ctx.explorer),
         .codedb_snapshot => handleSnapshot(alloc, out, ctx.explorer, ctx.store, ctx.snapshot_cache),
-        .codedb_bundle => handleBundle(io, alloc, args, out, ctx.store, ctx.explorer, agents, cache, deferred_scan, edit_agent_id),
+        .codedb_types => handleTypes(alloc, args, out, ctx.explorer),
+        .codedb_bundle => handleBundle(io, alloc, args, out, ctx.store, ctx.explorer, agents, cache, deferred_scan),
         .codedb_remote => handleRemote(alloc, args, out),
         .codedb_projects => handleProjects(io, alloc, out),
         .codedb_index => handleIndex(io, alloc, args, out, cache, default_store, default_explorer, deferred_scan),
@@ -1370,8 +1128,6 @@ fn dispatch(
         .codedb_query => handleQuery(alloc, args, out, ctx.explorer, ctx.store),
         .codedb_glob => handleGlob(alloc, args, out, ctx.explorer),
         .codedb_ls => handleLs(alloc, args, out, ctx.explorer),
-        .codedb_context => handleContext(io, alloc, args, out, ctx.explorer, project_path orelse cache.default_path),
-        .codedb_diagnostics => handleDiagnostics(alloc, args, out, cache),
     }
     appendScanProgressHint(alloc, out, tool);
 }
@@ -1397,7 +1153,7 @@ fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), too
 
 fn toolDependsOnScannedIndex(tool: Tool) bool {
     return switch (tool) {
-        .codedb_search, .codedb_word, .codedb_callers, .codedb_outline, .codedb_symbol, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps => true,
+        .codedb_search, .codedb_word, .codedb_callers, .codedb_outline, .codedb_symbol, .codedb_hierarchy, .codedb_routes, .codedb_config_xref, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps, .codedb_types => true,
         else => false,
     };
 }
@@ -1405,9 +1161,12 @@ fn toolDependsOnScannedIndex(tool: Tool) bool {
 // ── Tool handlers ───────────────────────────────────────────────────────────
 
 fn handleTree(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *Explorer) void {
-    explorer.renderTree(alloc, out, false) catch {
+    const tree = explorer.getTree(alloc, false) catch {
         out.appendSlice(alloc, "error: failed to get tree") catch {};
+        return;
     };
+    defer alloc.free(tree);
+    out.appendSlice(alloc, tree) catch {};
 }
 
 fn handleOutline(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
@@ -1417,23 +1176,115 @@ fn handleOutline(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
         return;
     };
     const compact = getBool(args, "compact");
-    const skeleton = getBool(args, "skeleton");
-    const found = if (skeleton)
-        explorer.renderSkeleton(path, alloc, out) catch {
-            out.appendSlice(alloc, "error: outline retrieval failed") catch {};
-            return;
-        }
-    else
-        explorer.renderOutline(path, alloc, out, compact) catch {
-            out.appendSlice(alloc, "error: outline retrieval failed") catch {};
-            return;
-        };
-    if (!found) {
+    const grouped = getBool(args, "grouped");
+    var outline = explorer.getOutline(path, alloc) catch {
+        out.appendSlice(alloc, "error: outline retrieval failed") catch {};
+        return;
+    } orelse {
         out.appendSlice(alloc, "error: file not indexed: ") catch {};
         out.appendSlice(alloc, path) catch {};
+        // Issue #356-2: fuzzy path fallback — surface top matches so the
+        // caller can self-correct without a separate codedb_find round-trip.
         appendFuzzyPathSuggestions(alloc, out, explorer, path);
+        // Issue #356-p3: stale-index recovery hint. The most common cause of
+        // 'not indexed' once you've ruled out a typo is a freshly-added file
+        // the watcher hasn't seen yet — pointing at codedb_index makes the
+        // recovery action explicit.
         out.appendSlice(alloc, "\nhint: try codedb_index if the file was added recently\n") catch {};
         return;
+    };
+    defer outline.deinit();
+    const w = cio.listWriter(out, alloc);
+    w.print("{s} ({s}, {d} lines, {d} bytes)", .{
+        outline.path, @tagName(outline.language), outline.line_count, outline.byte_size,
+    }) catch {};
+    if (explore_mod.Explorer.isStubLikeOutline(&outline)) w.writeAll(" [stub]") catch {};
+    const descriptor = explore_mod.Explorer.buildOutlineDescriptor(alloc, &outline) catch null;
+    defer if (descriptor) |d| alloc.free(d);
+    if (descriptor) |d| w.print(" — {s}", .{d}) catch {};
+    w.writeAll("\n") catch {};
+    if (grouped) {
+        writeGroupedOutline(alloc, out, &outline, compact);
+        return;
+    }
+    for (outline.symbols.items) |sym| {
+        if (compact) {
+            w.print("  L{d}: {s} {s}\n", .{ sym.line_start, @tagName(sym.kind), sym.name }) catch {};
+        } else {
+            w.print("  L{d}: {s} {s}", .{ sym.line_start, @tagName(sym.kind), sym.name }) catch {};
+            if (sym.return_type) |rt| w.print(" -> {s}", .{rt}) catch {};
+            if (sym.param_types.len > 0) {
+                w.writeAll(" (") catch {};
+                for (sym.param_types, 0..) |pt, i| {
+                    if (i > 0) w.writeAll(", ") catch {};
+                    w.print("{s}", .{pt}) catch {};
+                }
+                w.writeAll(")") catch {};
+            }
+            if (sym.detail) |d| w.print("  // {s}", .{d}) catch {};
+            writeDecoratorsInline(w, sym.decorators);
+            w.writeAll("\n") catch {};
+        }
+    }
+}
+
+fn writeGroupedOutline(alloc: std.mem.Allocator, out: *std.ArrayList(u8), outline: *const explore_mod.FileOutline, compact: bool) void {
+    const kinds = [_]explore_mod.SymbolKind{
+        .class_def,
+        .interface_def,
+        .trait_def,
+        .struct_def,
+        .enum_def,
+        .union_def,
+        .impl_block,
+        .method,
+        .function,
+        .test_decl,
+        .constant,
+        .variable,
+        .type_alias,
+        .macro_def,
+        .import,
+        .comment_block,
+    };
+    const w = cio.listWriter(out, alloc);
+    var emitted_any = false;
+    for (kinds) |kind| {
+        var count_for_kind: usize = 0;
+        var line_start: u32 = std.math.maxInt(u32);
+        var line_end: u32 = 0;
+        for (outline.symbols.items) |sym| {
+            if (sym.kind != kind) continue;
+            count_for_kind += 1;
+            line_start = @min(line_start, sym.line_start);
+            line_end = @max(line_end, sym.line_end);
+        }
+        if (count_for_kind == 0) continue;
+        emitted_any = true;
+        w.print("  [{s}] L{d}-L{d} ({d} symbols)\n", .{ @tagName(kind), line_start, line_end, count_for_kind }) catch {};
+        for (outline.symbols.items) |sym| {
+            if (sym.kind != kind) continue;
+            if (compact) {
+                w.print("    L{d}: {s}\n", .{ sym.line_start, sym.name }) catch {};
+            } else {
+                w.print("    L{d}: {s}", .{ sym.line_start, sym.name }) catch {};
+                if (sym.return_type) |rt| w.print(" -> {s}", .{rt}) catch {};
+                if (sym.param_types.len > 0) {
+                    w.writeAll(" (") catch {};
+                    for (sym.param_types, 0..) |pt, i| {
+                        if (i > 0) w.writeAll(", ") catch {};
+                        w.print("{s}", .{pt}) catch {};
+                    }
+                    w.writeAll(")") catch {};
+                }
+                if (sym.detail) |d| w.print("  // {s}", .{d}) catch {};
+                writeDecoratorsInline(w, sym.decorators);
+                w.writeAll("\n") catch {};
+            }
+        }
+    }
+    if (!emitted_any) {
+        w.writeAll("  (no symbols)\n") catch {};
     }
 }
 
@@ -1444,34 +1295,57 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         return;
     };
     const include_body = getBool(args, "body");
-    if (!include_body) {
-        const rendered = explorer.renderSymbols(name, alloc, out) catch {
-            out.appendSlice(alloc, "error: search failed") catch {};
-            return;
-        };
-        if (!rendered) {
-            out.appendSlice(alloc, "no results for: ") catch {};
-            out.appendSlice(alloc, name) catch {};
-        }
-        return;
-    }
+    const decorator_filter = getStr(args, "decorator_filter");
     const results = explorer.findAllSymbols(name, alloc) catch {
         out.appendSlice(alloc, "error: search failed") catch {};
         return;
     };
-    defer alloc.free(results);
+    defer {
+        for (results) |r| {
+            alloc.free(r.path);
+            alloc.free(r.symbol.name);
+            if (r.symbol.detail) |d| alloc.free(d);
+            for (r.symbol.decorators) |decorator| alloc.free(decorator);
+            if (r.symbol.decorators.len > 0) alloc.free(r.symbol.decorators);
+            if (r.symbol.return_type) |rt| alloc.free(rt);
+            for (r.symbol.param_types) |pt| alloc.free(pt);
+            if (r.symbol.param_types.len > 0) alloc.free(r.symbol.param_types);
+        }
+        alloc.free(results);
+    }
 
-    if (results.len == 0) {
+    var visible_count: usize = 0;
+    for (results) |r| {
+        if (decorator_filter) |filter| {
+            if (!decoratorsContain(r.symbol.decorators, filter)) continue;
+        }
+        visible_count += 1;
+    }
+
+    if (visible_count == 0) {
         out.appendSlice(alloc, "no results for: ") catch {};
         out.appendSlice(alloc, name) catch {};
         return;
     }
 
     const w = cio.listWriter(out, alloc);
-    w.print("{d} results for '{s}':\n", .{ results.len, name }) catch {};
+    w.print("{d} results for '{s}':\n", .{ visible_count, name }) catch {};
     for (results) |r| {
+        if (decorator_filter) |filter| {
+            if (!decoratorsContain(r.symbol.decorators, filter)) continue;
+        }
         w.print("  {s}:{d} ({s})", .{ r.path, r.symbol.line_start, @tagName(r.symbol.kind) }) catch {};
+        if (r.symbol.return_type) |rt| w.print(" -> {s}", .{rt}) catch {};
+        if (r.symbol.param_types.len > 0) {
+            w.writeAll(" (") catch {};
+            for (r.symbol.param_types, 0..) |pt, i| {
+                if (i > 0) w.writeAll(", ") catch {};
+                w.print("{s}", .{pt}) catch {};
+            }
+            w.writeAll(")") catch {};
+        }
         if (r.symbol.detail) |d| w.print("  // {s}", .{d}) catch {};
+        writeDecoratorsInline(w, r.symbol.decorators);
         w.writeAll("\n") catch {};
         if (include_body) {
             const body = explorer.getSymbolBody(r.path, r.symbol.line_start, r.symbol.line_end, alloc) catch null;
@@ -1480,6 +1354,592 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                 out.appendSlice(alloc, b) catch {};
             }
         }
+    }
+}
+
+fn writeDecoratorsInline(w: anytype, decorators: []const []const u8) void {
+    if (decorators.len == 0) return;
+    w.writeAll("  decorators:") catch {};
+    for (decorators) |decorator| {
+        w.print(" {s}", .{decorator}) catch {};
+    }
+}
+
+fn decoratorsContain(decorators: []const []const u8, needle: []const u8) bool {
+    for (decorators) |decorator| {
+        if (std.mem.indexOf(u8, decorator, needle) != null) return true;
+    }
+    return false;
+}
+
+fn handleRoutes(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+    const framework = getStr(args, "framework") orelse "aspnet";
+    if (!std.mem.eql(u8, framework, "aspnet")) {
+        out.appendSlice(alloc, "error: unsupported framework; currently supported: aspnet") catch {};
+        return;
+    }
+
+    const w = cio.listWriter(out, alloc);
+    w.writeAll("ASP.NET routes:\n") catch {};
+
+    explorer.mu.lockShared();
+    defer explorer.mu.unlockShared();
+
+    var route_count: usize = 0;
+    var paths: std.ArrayList([]const u8) = .empty;
+    defer paths.deinit(alloc);
+    var iter = explorer.outlines.iterator();
+    while (iter.next()) |entry| {
+        if (entry.value_ptr.language == .c_sharp) paths.append(alloc, entry.key_ptr.*) catch {};
+    }
+    std.mem.sort([]const u8, paths.items, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lt);
+
+    for (paths.items) |path| {
+        const outline = explorer.outlines.get(path) orelse continue;
+        for (outline.symbols.items) |sym| {
+            if (sym.kind != .method) continue;
+            const method = aspNetHttpMethod(sym.decorators) orelse if (decoratorsContain(sym.decorators, "Route")) "ANY" else continue;
+            const controller = findEnclosingController(&outline, sym.line_start) orelse continue;
+            const action_template = aspNetRouteTemplate(sym.decorators) orelse "";
+            const class_template = aspNetRouteTemplate(controller.decorators) orelse "[controller]/[action]";
+            var route_buf: [512]u8 = undefined;
+            const route = formatAspNetRoute(&route_buf, class_template, action_template, controller.name, sym.name) orelse "";
+            const authorize = decoratorsContain(controller.decorators, "Authorize") or decoratorsContain(sym.decorators, "Authorize");
+            const antiforgery = decoratorsContain(sym.decorators, "ValidateAntiForgeryToken");
+            const missing_antiforgery = std.mem.eql(u8, method, "POST") and !antiforgery;
+            w.print("  {s} /{s} -> {s}.{s} ({s}:{d})", .{ method, route, controller.name, sym.name, path, sym.line_start }) catch {};
+            if (authorize) w.writeAll(" [authorize]") catch {};
+            if (antiforgery) w.writeAll(" [antiforgery]") catch {};
+            if (missing_antiforgery) w.writeAll(" [missing_antiforgery]") catch {};
+            w.writeAll("\n") catch {};
+            route_count += 1;
+        }
+    }
+
+    if (route_count == 0) {
+        w.writeAll("  (none)\n") catch {};
+    } else {
+        w.print("({d} routes)\n", .{route_count}) catch {};
+    }
+}
+
+const ConfigReadHit = struct {
+    key: []const u8,
+    path: []const u8,
+    line: u32,
+};
+
+fn handleConfigXref(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+    const framework = getStr(args, "framework") orelse "aspnet";
+    if (!std.mem.eql(u8, framework, "aspnet")) {
+        out.appendSlice(alloc, "error: unsupported framework; currently supported: aspnet") catch {};
+        return;
+    }
+
+    var definitions = std.StringHashMap(usize).init(alloc);
+    defer {
+        var iter = definitions.iterator();
+        while (iter.next()) |entry| alloc.free(entry.key_ptr.*);
+        definitions.deinit();
+    }
+
+    var reads = std.StringHashMap(usize).init(alloc);
+    defer {
+        var iter = reads.iterator();
+        while (iter.next()) |entry| alloc.free(entry.key_ptr.*);
+        reads.deinit();
+    }
+
+    var read_hits: std.ArrayList(ConfigReadHit) = .empty;
+    defer {
+        for (read_hits.items) |hit| {
+            alloc.free(hit.key);
+            alloc.free(hit.path);
+        }
+        read_hits.deinit(alloc);
+    }
+
+    explorer.mu.lockShared();
+    defer explorer.mu.unlockShared();
+
+    var paths: std.ArrayList([]const u8) = .empty;
+    defer paths.deinit(alloc);
+    var iter = explorer.outlines.iterator();
+    while (iter.next()) |entry| paths.append(alloc, entry.key_ptr.*) catch {};
+    std.mem.sort([]const u8, paths.items, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lt);
+
+    for (paths.items) |path| {
+        const outline = explorer.outlines.get(path) orelse continue;
+        const content = explorer.contents.get(path) orelse continue;
+        if (isAspNetConfigJsonPath(path, outline.language)) {
+            collectJsonConfigDefinitions(alloc, path, content, &definitions) catch {};
+        } else if (outline.language == .c_sharp) {
+            collectCSharpConfigReads(alloc, path, content, &reads, &read_hits) catch {};
+        }
+    }
+
+    const w = cio.listWriter(out, alloc);
+    w.writeAll("ASP.NET config xref:\n") catch {};
+    w.print("  definitions: {d}\n", .{definitions.count()}) catch {};
+    w.print("  reads: {d}\n", .{read_hits.items.len}) catch {};
+
+    w.writeAll("  read_sites:\n") catch {};
+    if (read_hits.items.len == 0) {
+        w.writeAll("    (none)\n") catch {};
+    } else {
+        for (read_hits.items) |hit| {
+            w.print("    {s}: {s}:{d}\n", .{ hit.key, hit.path, hit.line }) catch {};
+        }
+    }
+
+    w.writeAll("  unused_definitions:\n") catch {};
+    var unused_count: usize = 0;
+    const def_keys = sortedMapKeys(alloc, &definitions) catch &.{};
+    defer if (def_keys.len > 0) alloc.free(def_keys);
+    for (def_keys) |key| {
+        if (reads.contains(key)) continue;
+        w.print("    {s}\n", .{key}) catch {};
+        unused_count += 1;
+    }
+    if (unused_count == 0) w.writeAll("    (none)\n") catch {};
+
+    w.writeAll("  missing_definitions:\n") catch {};
+    var missing_count: usize = 0;
+    const read_keys = sortedMapKeys(alloc, &reads) catch &.{};
+    defer if (read_keys.len > 0) alloc.free(read_keys);
+    for (read_keys) |key| {
+        if (definitions.contains(key)) continue;
+        w.print("    {s}\n", .{key}) catch {};
+        missing_count += 1;
+    }
+    if (missing_count == 0) w.writeAll("    (none)\n") catch {};
+}
+
+fn sortedMapKeys(alloc: std.mem.Allocator, map: *const std.StringHashMap(usize)) ![][]const u8 {
+    var keys: std.ArrayList([]const u8) = .empty;
+    errdefer keys.deinit(alloc);
+    try keys.ensureTotalCapacity(alloc, map.count());
+    var iter = map.keyIterator();
+    while (iter.next()) |key| keys.appendAssumeCapacity(key.*);
+    std.mem.sort([]const u8, keys.items, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lt);
+    return keys.toOwnedSlice(alloc);
+}
+
+fn isAspNetConfigJsonPath(path: []const u8, language: explore_mod.Language) bool {
+    if (language != .json) return false;
+    const base = std.fs.path.basename(path);
+    return std.mem.startsWith(u8, base, "appsettings") and std.mem.endsWith(u8, base, ".json");
+}
+
+fn collectJsonConfigDefinitions(alloc: std.mem.Allocator, path: []const u8, content: []const u8, definitions: *std.StringHashMap(usize)) !void {
+    _ = path;
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, content, .{}) catch return;
+    defer parsed.deinit();
+
+    var stack: std.ArrayList([]const u8) = .empty;
+    defer stack.deinit(alloc);
+    try walkJsonConfigValue(alloc, &parsed.value, &stack, definitions);
+}
+
+fn walkJsonConfigValue(alloc: std.mem.Allocator, value: *const std.json.Value, stack: *std.ArrayList([]const u8), definitions: *std.StringHashMap(usize)) !void {
+    switch (value.*) {
+        .object => |object| {
+            var iter = object.iterator();
+            while (iter.next()) |entry| {
+                try stack.append(alloc, entry.key_ptr.*);
+                try walkJsonConfigValue(alloc, entry.value_ptr, stack, definitions);
+                _ = stack.pop();
+            }
+        },
+        .array => |array| {
+            for (array.items) |*item| try walkJsonConfigValue(alloc, item, stack, definitions);
+        },
+        else => {
+            if (stack.items.len == 0) return;
+            const key = try joinConfigPath(alloc, stack.items);
+            errdefer alloc.free(key);
+            try incrementOwnedKey(alloc, definitions, key);
+        },
+    }
+}
+
+fn collectCSharpConfigReads(
+    alloc: std.mem.Allocator,
+    path: []const u8,
+    content: []const u8,
+    reads: *std.StringHashMap(usize),
+    read_hits: *std.ArrayList(ConfigReadHit),
+) !void {
+    var line_num: u32 = 1;
+    var start: usize = 0;
+    while (start <= content.len) {
+        const end = std.mem.indexOfScalarPos(u8, content, start, '\n') orelse content.len;
+        const line = content[start..end];
+        try collectConfigReadsFromLine(alloc, path, line, line_num, reads, read_hits);
+        if (end == content.len) break;
+        start = end + 1;
+        line_num += 1;
+    }
+}
+
+fn collectConfigReadsFromLine(
+    alloc: std.mem.Allocator,
+    path: []const u8,
+    line: []const u8,
+    line_num: u32,
+    reads: *std.StringHashMap(usize),
+    read_hits: *std.ArrayList(ConfigReadHit),
+) !void {
+    if (!containsAsciiIgnoreCase(line, "configuration")) return;
+    var pos: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, line, pos, '"')) |start_quote| {
+        const end_quote = std.mem.indexOfScalarPos(u8, line, start_quote + 1, '"') orelse break;
+        const key = line[start_quote + 1 .. end_quote];
+        pos = end_quote + 1;
+        if (!looksLikeConfigKey(key)) continue;
+        const owned_key = try alloc.dupe(u8, key);
+        errdefer alloc.free(owned_key);
+        try incrementOwnedKey(alloc, reads, owned_key);
+        try read_hits.append(alloc, .{
+            .key = try alloc.dupe(u8, key),
+            .path = try alloc.dupe(u8, path),
+            .line = line_num,
+        });
+    }
+}
+
+fn containsAsciiIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var j: usize = 0;
+        while (j < needle.len) : (j += 1) {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(needle[j])) break;
+        }
+        if (j == needle.len) return true;
+    }
+    return false;
+}
+
+fn looksLikeConfigKey(key: []const u8) bool {
+    if (key.len == 0) return false;
+    if (key.len > 256) return false;
+    for (key) |c| {
+        if (std.ascii.isAlphanumeric(c) or c == ':' or c == '_' or c == '-' or c == '.') continue;
+        return false;
+    }
+    return true;
+}
+
+fn joinConfigPath(alloc: std.mem.Allocator, parts: []const []const u8) ![]u8 {
+    var len: usize = 0;
+    for (parts, 0..) |part, i| len += part.len + if (i == 0) @as(usize, 0) else @as(usize, 1);
+    var out = try alloc.alloc(u8, len);
+    var pos: usize = 0;
+    for (parts, 0..) |part, i| {
+        if (i > 0) {
+            out[pos] = ':';
+            pos += 1;
+        }
+        @memcpy(out[pos .. pos + part.len], part);
+        pos += part.len;
+    }
+    return out;
+}
+
+fn incrementOwnedKey(alloc: std.mem.Allocator, map: *std.StringHashMap(usize), owned_key: []const u8) !void {
+    const gop = try map.getOrPut(owned_key);
+    if (gop.found_existing) {
+        alloc.free(owned_key);
+        gop.value_ptr.* += 1;
+    } else {
+        gop.value_ptr.* = 1;
+    }
+}
+
+fn findEnclosingController(outline: *const explore_mod.FileOutline, line_num: u32) ?explore_mod.Symbol {
+    var best: ?explore_mod.Symbol = null;
+    var best_span: u32 = std.math.maxInt(u32);
+    for (outline.symbols.items) |sym| {
+        if (sym.kind != .class_def) continue;
+        if (!std.mem.endsWith(u8, sym.name, "Controller")) continue;
+        if (sym.line_start > line_num or sym.line_end < line_num) continue;
+        const span = sym.line_end - sym.line_start;
+        if (span < best_span) {
+            best = sym;
+            best_span = span;
+        }
+    }
+    return best;
+}
+
+fn aspNetHttpMethod(decorators: []const []const u8) ?[]const u8 {
+    for (decorators) |decorator| {
+        if (std.mem.indexOf(u8, decorator, "HttpGet") != null) return "GET";
+        if (std.mem.indexOf(u8, decorator, "HttpPost") != null) return "POST";
+        if (std.mem.indexOf(u8, decorator, "HttpPut") != null) return "PUT";
+        if (std.mem.indexOf(u8, decorator, "HttpDelete") != null) return "DELETE";
+        if (std.mem.indexOf(u8, decorator, "HttpPatch") != null) return "PATCH";
+        if (std.mem.indexOf(u8, decorator, "HttpHead") != null) return "HEAD";
+    }
+    return null;
+}
+
+fn aspNetRouteTemplate(decorators: []const []const u8) ?[]const u8 {
+    for (decorators) |decorator| {
+        if (std.mem.indexOf(u8, decorator, "Route") == null and std.mem.indexOf(u8, decorator, "Http") == null) continue;
+        if (extractFirstQuoted(decorator)) |quoted| return quoted;
+        if (std.mem.indexOfScalar(u8, decorator, '(') == null) return "";
+    }
+    return null;
+}
+
+fn extractFirstQuoted(s: []const u8) ?[]const u8 {
+    const start = std.mem.indexOfScalar(u8, s, '"') orelse return null;
+    const end_rel = std.mem.indexOfScalar(u8, s[start + 1 ..], '"') orelse return null;
+    return s[start + 1 .. start + 1 + end_rel];
+}
+
+fn formatAspNetRoute(buf: []u8, class_template: []const u8, action_template: []const u8, controller_name: []const u8, action_name: []const u8) ?[]const u8 {
+    var out: std.ArrayList(u8) = .initBuffer(buf);
+    appendRouteTemplate(&out, class_template, controller_name, action_name) catch return null;
+    if (action_template.len > 0) {
+        if (out.items.len > 0 and out.items[out.items.len - 1] != '/') out.appendBounded('/') catch return null;
+        appendRouteTemplate(&out, action_template, controller_name, action_name) catch return null;
+    }
+    trimRouteSlashes(&out);
+    return out.items;
+}
+
+fn appendRouteTemplate(out: *std.ArrayList(u8), template: []const u8, controller_name: []const u8, action_name: []const u8) !void {
+    const controller = stripControllerSuffix(controller_name);
+    var i: usize = 0;
+    while (i < template.len) {
+        if (std.mem.startsWith(u8, template[i..], "[controller]")) {
+            try out.appendSliceBounded(controller);
+            i += "[controller]".len;
+        } else if (std.mem.startsWith(u8, template[i..], "[action]")) {
+            try out.appendSliceBounded(action_name);
+            i += "[action]".len;
+        } else {
+            try out.appendBounded(template[i]);
+            i += 1;
+        }
+    }
+}
+
+fn stripControllerSuffix(name: []const u8) []const u8 {
+    return if (std.mem.endsWith(u8, name, "Controller")) name[0 .. name.len - "Controller".len] else name;
+}
+
+fn trimRouteSlashes(out: *std.ArrayList(u8)) void {
+    while (out.items.len > 0 and out.items[0] == '/') {
+        _ = out.orderedRemove(0);
+    }
+    while (out.items.len > 0 and out.items[out.items.len - 1] == '/') {
+        out.items.len -= 1;
+    }
+}
+
+fn handleHierarchy(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+    const name = getStr(args, "name") orelse {
+        out.appendSlice(alloc, "error: missing 'name' argument") catch {};
+        appendBundleArgKeysDiagnostic(alloc, out, args);
+        return;
+    };
+    if (name.len == 0) {
+        out.appendSlice(alloc, "error: empty name — pass a non-empty 'name' string") catch {};
+        return;
+    }
+
+    const w = cio.listWriter(out, alloc);
+    explorer.mu.lockShared();
+    defer explorer.mu.unlockShared();
+
+    var found = false;
+    var derived_count: usize = 0;
+
+    w.print("hierarchy for '{s}':\n", .{name}) catch {};
+    w.writeAll("  definitions:\n") catch {};
+    var iter = explorer.outlines.iterator();
+    while (iter.next()) |entry| {
+        for (entry.value_ptr.symbols.items) |sym| {
+            if (!std.mem.eql(u8, sym.name, name)) continue;
+            if (!isHierarchySymbolKind(sym.kind)) continue;
+            found = true;
+            w.print("    {s}:{d} ({s})", .{ entry.key_ptr.*, sym.line_start, @tagName(sym.kind) }) catch {};
+            if (sym.detail) |detail| w.print("  // {s}", .{detail}) catch {};
+            w.writeAll("\n") catch {};
+            if (sym.detail) |detail| {
+                w.writeAll("      bases:\n") catch {};
+                const before = out.items.len;
+                writeHierarchyBaseNames(w, detail, sym.name, "        ");
+                if (out.items.len == before) w.writeAll("        (none)\n") catch {};
+            }
+        }
+    }
+
+    if (!found) {
+        w.writeAll("    (none)\n") catch {};
+    }
+
+    w.writeAll("  direct_derived:\n") catch {};
+    iter = explorer.outlines.iterator();
+    while (iter.next()) |entry| {
+        for (entry.value_ptr.symbols.items) |sym| {
+            if (!isHierarchySymbolKind(sym.kind)) continue;
+            if (std.mem.eql(u8, sym.name, name)) continue;
+            const detail = sym.detail orelse continue;
+            if (!hierarchyDetailMentionsBase(detail, sym.name, name)) continue;
+            derived_count += 1;
+            w.print("    {s}:{d} {s} ({s})", .{ entry.key_ptr.*, sym.line_start, sym.name, @tagName(sym.kind) }) catch {};
+            w.print("  // {s}\n", .{detail}) catch {};
+        }
+    }
+    if (derived_count == 0) {
+        w.writeAll("    (none)\n") catch {};
+    }
+}
+
+fn isHierarchySymbolKind(kind: explore_mod.SymbolKind) bool {
+    return switch (kind) {
+        .class_def, .interface_def, .trait_def, .struct_def => true,
+        else => false,
+    };
+}
+
+fn writeHierarchyBaseNames(w: anytype, detail: []const u8, self_name: []const u8, indent: []const u8) void {
+    var bases = hierarchyBasePortion(detail, self_name) orelse return;
+    bases = trimHierarchyBasePortion(bases);
+    var token_start: ?usize = null;
+    for (bases, 0..) |c, i| {
+        if (isHierarchyTokenChar(c)) {
+            if (token_start == null) token_start = i;
+        } else if (token_start) |start| {
+            writeHierarchyBaseToken(w, bases[start..i], self_name, indent);
+            token_start = null;
+        }
+    }
+    if (token_start) |start| {
+        writeHierarchyBaseToken(w, bases[start..], self_name, indent);
+    }
+}
+
+fn writeHierarchyBaseToken(w: anytype, raw_token: []const u8, self_name: []const u8, indent: []const u8) void {
+    const token = std.mem.trim(u8, raw_token, " \t\r\n");
+    if (token.len == 0) return;
+    if (isHierarchyKeyword(token)) return;
+    if (std.mem.eql(u8, token, self_name)) return;
+    w.print("{s}{s}\n", .{ indent, token }) catch {};
+}
+
+fn hierarchyDetailMentionsBase(detail: []const u8, self_name: []const u8, base_name: []const u8) bool {
+    var bases = hierarchyBasePortion(detail, self_name) orelse return false;
+    bases = trimHierarchyBasePortion(bases);
+    var token_start: ?usize = null;
+    for (bases, 0..) |c, i| {
+        if (isHierarchyTokenChar(c)) {
+            if (token_start == null) token_start = i;
+        } else if (token_start) |start| {
+            if (hierarchyTokenMatches(bases[start..i], base_name)) return true;
+            token_start = null;
+        }
+    }
+    if (token_start) |start| {
+        if (hierarchyTokenMatches(bases[start..], base_name)) return true;
+    }
+    return false;
+}
+
+fn hierarchyBasePortion(detail: []const u8, self_name: []const u8) ?[]const u8 {
+    _ = self_name;
+    if (std.mem.indexOf(u8, detail, " extends ")) |pos| return detail[pos + " extends ".len ..];
+    if (std.mem.indexOf(u8, detail, " implements ")) |pos| return detail[pos + " implements ".len ..];
+    if (std.mem.indexOfScalar(u8, detail, '(')) |open| {
+        if (std.mem.indexOfScalarPos(u8, detail, open + 1, ')')) |close| {
+            return detail[open + 1 .. close];
+        }
+    }
+    if (std.mem.indexOfScalar(u8, detail, ':')) |colon| {
+        return detail[colon + 1 ..];
+    }
+    return null;
+}
+
+fn trimHierarchyBasePortion(bases: []const u8) []const u8 {
+    var end = bases.len;
+    for (bases, 0..) |c, i| {
+        if (c == '{' or c == ';') {
+            end = i;
+            break;
+        }
+    }
+    return std.mem.trim(u8, bases[0..end], " \t\r\n");
+}
+
+fn hierarchyTokenMatches(raw_token: []const u8, target: []const u8) bool {
+    const token = std.mem.trim(u8, raw_token, " \t\r\n");
+    if (token.len == 0 or isHierarchyKeyword(token)) return false;
+    if (std.mem.eql(u8, token, target)) return true;
+    if (std.mem.endsWith(u8, token, target) and token.len > target.len) {
+        const sep = token[token.len - target.len - 1];
+        return sep == '.';
+    }
+    return false;
+}
+
+fn isHierarchyTokenChar(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_' or c == '.';
+}
+
+fn isHierarchyKeyword(token: []const u8) bool {
+    const keywords = [_][]const u8{ "public", "private", "protected", "internal", "abstract", "sealed", "partial", "class", "interface", "struct", "extends", "implements", "where", "new", "record", "readonly", "static", "final", "open", "data" };
+    for (keywords) |kw| {
+        if (std.mem.eql(u8, token, kw)) return true;
+    }
+    return false;
+}
+
+/// Append post-search hints: code syntax warnings and cross-pollution detection.
+fn appendSearchHints(alloc: std.mem.Allocator, out: *std.ArrayList(u8), query: []const u8, visible_count: usize, dir_count: usize) void {
+    const w = cio.listWriter(out, alloc);
+
+    // Hint 1: code syntax characters that break substring search
+    if (visible_count == 0) {
+        var has_brackets = false;
+        var has_slash = false;
+        var has_dot_suffix = false;
+        for (query) |c| {
+            if (c == '[' or c == ']' or c == '(' or c == ')' or c == '{' or c == '}') has_brackets = true;
+            if (c == '/') has_slash = true;
+        }
+        if (query.len > 1 and query[query.len - 1] == '.') has_dot_suffix = true;
+
+        if (has_brackets) {
+            w.print("\n  hint: query has brackets [](){{}} which are not indexed \u{2014} try stripping them and searching for the identifier inside, e.g. 'Route' instead of '[Route(\"/mqtt\")'\n", .{}) catch {};
+        } else if (has_slash and query.len <= 10) {
+            w.print("\n  hint: query contains '/' which is not indexed as part of identifiers \u{2014} try the path segment without slashes\n", .{}) catch {};
+        } else if (has_dot_suffix) {
+            w.print("\n  hint: trailing '.' is not indexed \u{2014} try without the dot\n", .{}) catch {};
+        }
+    }
+
+    // Hint 2: cross-pollution warning when results span many directories
+    if (visible_count >= 5 and dir_count >= 5) {
+        w.print("\n  warning: results span {d} different directories \u{2014} consider using path_glob to scope to a specific feature, e.g. path_glob=\"**/Portfolio*\"\n", .{dir_count}) catch {};
     }
 }
 
@@ -1503,14 +1963,9 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             return;
         }
     }
-    // Default trimmed from 50 -> 20 (Nov 2026). Bench data showed the
-    // median answer needed <10 results; the extra 40 were paid in tokens
-    // every call. Agents that want more can pass max_results explicitly.
-    const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else 20;
-    const offset_n: usize = if (getInt(args, "offset")) |n| @intCast(@max(0, @min(n, 100000))) else 0;
+    const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else 50;
     const scope = getBool(args, "scope");
     const compact = getBool(args, "compact");
-    const paths_only = getBool(args, "paths_only");
     const is_regex = getBool(args, "regex");
     const path_glob_raw = getStr(args, "path_glob");
     // Auto-promote basename-only patterns ('*.zig') to '**/*.zig' so they match
@@ -1527,8 +1982,8 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
     } else null;
 
     if (scope and is_regex) {
-        const results = explorer.searchContentRegexWithScope(query, alloc, max_results) catch |e| {
-            out.appendSlice(alloc, if (e == error.InvalidRegex) "error: invalid regex" else "error: scoped regex search failed") catch {};
+        const results = explorer.searchContentRegexWithScope(query, alloc, max_results) catch {
+            out.appendSlice(alloc, "error: scoped regex search failed") catch {};
             return;
         };
         defer {
@@ -1551,23 +2006,27 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
 
         const w = cio.listWriter(out, alloc);
         w.print("{d} results for '{s}':\n", .{ visible_total, query }) catch {};
+        var dir_set = std.StringHashMap(void).init(alloc);
+        defer dir_set.deinit();
         for (results) |r| {
             if (path_glob) |g| if (!globMatch(g, r.path)) continue;
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
-            if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-            } else if (r.scope_name) |sn| {
+            var dir_end: usize = r.path.len;
+            var di: usize = r.path.len;
+            while (di > 0) {
+                di -= 1;
+                if (r.path[di] == '/') { dir_end = di; break; }
+            }
+            dir_set.put(r.path[0..dir_end], {}) catch {};
+            if (r.scope_name) |sn| {
                 w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
                     r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
                 }) catch {};
             } else {
-                if (paths_only) {
-                    w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-                } else {
-                    w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-                }
+                w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
             }
         }
+        appendSearchHints(alloc, out, query, visible_total, dir_set.count());
     } else if (scope) {
         const results = explorer.searchContentWithScope(query, alloc, max_results) catch {
             out.appendSlice(alloc, "error: search failed") catch {};
@@ -1596,11 +2055,21 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         w.print("{d} results for '{s}':\n", .{ visible_total, query }) catch {};
         var file_counts = std.StringHashMap(u8).init(alloc);
         defer file_counts.deinit();
+        var dir_set = std.StringHashMap(void).init(alloc);
+        defer dir_set.deinit();
         const max_per_file: u8 = 5;
         var shown: usize = 0;
         for (results) |r| {
             if (path_glob) |g| if (!globMatch(g, r.path)) continue;
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+            // Track unique parent directories for cross-pollution detection
+            var dir_end: usize = r.path.len;
+            var di: usize = r.path.len;
+            while (di > 0) {
+                di -= 1;
+                if (r.path[di] == '/') { dir_end = di; break; }
+            }
+            dir_set.put(r.path[0..dir_end], {}) catch {};
             const gop = file_counts.getOrPut(r.path) catch continue;
             if (!gop.found_existing) gop.value_ptr.* = 0;
             gop.value_ptr.* += 1;
@@ -1610,27 +2079,22 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                 }
                 continue;
             }
-            if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-            } else if (r.scope_name) |sn| {
+            if (r.scope_name) |sn| {
                 w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
                     r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
                 }) catch {};
             } else {
-                if (paths_only) {
-                    w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-                } else {
-                    w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-                }
+                w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
             }
             shown += 1;
         }
         if (shown < visible_total) {
             w.print("({d} shown, {d} truncated by per-file cap)\n", .{ shown, visible_total - shown }) catch {};
         }
+        appendSearchHints(alloc, out, query, visible_total, dir_set.count());
     } else if (is_regex) {
-        const results = explorer.searchContentRegex(query, alloc, max_results) catch |e| {
-            out.appendSlice(alloc, if (e == error.InvalidRegex) "error: invalid regex" else "error: regex search failed") catch {};
+        const results = explorer.searchContentRegex(query, alloc, max_results) catch {
+            out.appendSlice(alloc, "error: regex search failed") catch {};
             return;
         };
         defer {
@@ -1654,11 +2118,20 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         w.print("{d} results for '{s}':\n", .{ visible_total, query }) catch {};
         var file_counts = std.StringHashMap(u8).init(alloc);
         defer file_counts.deinit();
+        var dir_set = std.StringHashMap(void).init(alloc);
+        defer dir_set.deinit();
         const max_per_file: u8 = 5;
         var shown: usize = 0;
         for (results) |r| {
             if (path_glob) |g| if (!globMatch(g, r.path)) continue;
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+            var dir_end: usize = r.path.len;
+            var di: usize = r.path.len;
+            while (di > 0) {
+                di -= 1;
+                if (r.path[di] == '/') { dir_end = di; break; }
+            }
+            dir_set.put(r.path[0..dir_end], {}) catch {};
             const gop = file_counts.getOrPut(r.path) catch continue;
             if (!gop.found_existing) gop.value_ptr.* = 0;
             gop.value_ptr.* += 1;
@@ -1668,116 +2141,54 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                 }
                 continue;
             }
-            if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-            } else {
-                w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-            }
+            w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
             shown += 1;
         }
         if (shown < visible_total) {
             w.print("({d} shown, {d} truncated by per-file cap)\n", .{ shown, visible_total - shown }) catch {};
         }
+        appendSearchHints(alloc, out, query, visible_total, dir_set.count());
     } else {
-        if (path_glob == null and !compact) {
-            const rendered = explorer.renderPlainSearch(query, alloc, out, max_results, paths_only) catch {
-                out.appendSlice(alloc, "error: search failed") catch {};
-                return;
-            };
-            if (rendered) return;
-        }
-
-        // Multi-word queries express natural-language / conceptual intent —
-        // rank them by BM25 (relevance) instead of raw substring order, which
-        // returns nothing for a phrase. Single-token queries keep literal
-        // substring matching so exact-identifier lookups still work.
-        const multiword = std.mem.indexOfScalar(u8, query, ' ') != null;
-        // Over-fetch by `offset` (+1) so we can page into a stable window and
-        // detect whether more results exist beyond this page. BM25 ranking is
-        // deterministic per query, so the offset is a stable, stateless cursor.
-        const fetch_count = @min(offset_n + max_results + 1, 100000);
-        const fetched = (if (multiword)
-            explorer.searchContentRanked(query, alloc, fetch_count)
-        else
-            explorer.searchContent(query, alloc, fetch_count)) catch {
+        const results = explorer.searchContent(query, alloc, max_results) catch {
             out.appendSlice(alloc, "error: search failed") catch {};
             return;
         };
         defer {
-            for (fetched) |r| {
+            for (results) |r| {
                 alloc.free(r.line_text);
                 alloc.free(r.path);
             }
-            alloc.free(fetched);
+            alloc.free(results);
         }
-        const page_lo = @min(offset_n, fetched.len);
-        const page_hi = @min(offset_n + max_results, fetched.len);
-        const results = fetched[page_lo..page_hi];
-        const has_more = fetched.len > page_hi;
 
         // Issue #422: header reflects post-filter count; "truncated" footer
         // only fires for per-file-cap, not for glob/compact filtering.
-        const simple_unfiltered = path_glob == null and !compact;
-        var visible_total: usize = if (simple_unfiltered) results.len else 0;
-        if (!simple_unfiltered) {
-            for (results) |r| {
-                if (path_glob) |g| if (!globMatch(g, r.path)) continue;
-                if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
-                visible_total += 1;
-            }
+        var visible_total: usize = 0;
+        for (results) |r| {
+            if (path_glob) |g| if (!globMatch(g, r.path)) continue;
+            if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+            visible_total += 1;
         }
 
-        out.ensureUnusedCapacity(alloc, 2048) catch {};
         const w = cio.listWriter(out, alloc);
         w.print("{d} results for '{s}':\n", .{ visible_total, query }) catch {};
-        if (has_more) {
-            w.print("  (more results — codedb_search query='{s}' offset={d} for the next page)\n", .{ query, page_hi }) catch {};
-        }
-        if (simple_unfiltered and results.len <= 64) {
-            const CountEntry = struct { path: []const u8, count: u8 };
-            var counts: [64]CountEntry = undefined;
-            var counts_len: usize = 0;
-            const max_per_file: u8 = 5;
-            var shown: usize = 0;
-            for (results) |r| {
-                var idx_opt: ?usize = null;
-                for (counts[0..counts_len], 0..) |entry, idx_i| {
-                    if (std.mem.eql(u8, entry.path, r.path)) {
-                        idx_opt = idx_i;
-                        break;
-                    }
-                }
-                const count_idx = idx_opt orelse blk: {
-                    counts[counts_len] = .{ .path = r.path, .count = 0 };
-                    counts_len += 1;
-                    break :blk counts_len - 1;
-                };
-                counts[count_idx].count += 1;
-                if (counts[count_idx].count > max_per_file) {
-                    if (counts[count_idx].count == max_per_file + 1) {
-                        w.print("  {s}: ... (more matches truncated)\n", .{r.path}) catch {};
-                    }
-                    continue;
-                }
-                if (paths_only) {
-                    w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-                } else {
-                    w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-                }
-                shown += 1;
-            }
-            if (shown < visible_total) {
-                w.print("({d} shown, {d} truncated by per-file cap)\n", .{ shown, visible_total - shown }) catch {};
-            }
-            return;
-        }
         var file_counts = std.StringHashMap(u8).init(alloc);
         defer file_counts.deinit();
+        var dir_set = std.StringHashMap(void).init(alloc);
+        defer dir_set.deinit();
         const max_per_file: u8 = 5;
         var shown: usize = 0;
         for (results) |r| {
             if (path_glob) |g| if (!globMatch(g, r.path)) continue;
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+            // Track unique parent directories for cross-pollution detection
+            var dir_end: usize = r.path.len;
+            var di: usize = r.path.len;
+            while (di > 0) {
+                di -= 1;
+                if (r.path[di] == '/') { dir_end = di; break; }
+            }
+            dir_set.put(r.path[0..dir_end], {}) catch {};
             const gop = file_counts.getOrPut(r.path) catch continue;
             if (!gop.found_existing) gop.value_ptr.* = 0;
             gop.value_ptr.* += 1;
@@ -1787,16 +2198,13 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                 }
                 continue;
             }
-            if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-            } else {
-                w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-            }
+            w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
             shown += 1;
         }
         if (shown < visible_total) {
             w.print("({d} shown, {d} truncated by per-file cap)\n", .{ shown, visible_total - shown }) catch {};
         }
+        appendSearchHints(alloc, out, query, visible_total, dir_set.count());
     }
 }
 
@@ -1806,10 +2214,52 @@ fn handleWord(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
         appendBundleArgKeysDiagnostic(alloc, out, args);
         return;
     };
-    explorer.renderWord(word, alloc, out) catch {
+    const hits = explorer.searchWord(word, alloc) catch {
         out.appendSlice(alloc, "error: word search failed") catch {};
         return;
     };
+    defer alloc.free(hits);
+
+    // Path glob filtering — scope results to matching files
+    const path_glob_raw = getStr(args, "path_glob");
+    var pg_buf: [256]u8 = undefined;
+    const path_glob: ?[]const u8 = if (path_glob_raw) |g| blk: {
+        if (std.mem.indexOfScalar(u8, g, '/') == null and g.len + 3 < pg_buf.len) {
+            const promoted = std.fmt.bufPrint(&pg_buf, "**/{s}", .{g}) catch break :blk g;
+            break :blk promoted;
+        }
+        break :blk g;
+    } else null;
+
+    explorer.mu.lockShared();
+    defer explorer.mu.unlockShared();
+
+    // Count visible hits after glob filter
+    var visible_total: usize = 0;
+    for (hits) |h| {
+        const p = explorer.word_index.hitPath(h);
+        if (path_glob) |g| if (!globMatch(g, p)) continue;
+        visible_total += 1;
+    }
+
+    const w = cio.listWriter(out, alloc);
+    const WORD_CAP: usize = 50;
+    if (visible_total > WORD_CAP) {
+        w.print("{d} hits for '{s}' (showing first {d}):\n", .{ visible_total, word, WORD_CAP }) catch {};
+    } else {
+        w.print("{d} hits for '{s}':\n", .{ visible_total, word }) catch {};
+    }
+    var shown: usize = 0;
+    for (hits) |h| {
+        const p = explorer.word_index.hitPath(h);
+        if (path_glob) |g| if (!globMatch(g, p)) continue;
+        if (shown >= WORD_CAP) break;
+        w.print("  {s}:{d}\n", .{ p, h.line_num }) catch {};
+        shown += 1;
+    }
+    if (visible_total > WORD_CAP) {
+        w.print("... ({d} more — use path_glob to scope results)\n", .{visible_total - WORD_CAP}) catch {};
+    }
 }
 
 fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
@@ -1829,9 +2279,7 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
             return;
         }
     }
-    // Default trimmed from 50 -> 30 (Nov 2026) to match typical caller
-    // counts in real codebases; rare hot symbols can still request more.
-    const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else 30;
+    const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else 50;
 
     const defs = explorer.findAllSymbols(name, alloc) catch {
         out.appendSlice(alloc, "error: symbol lookup failed") catch {};
@@ -1842,6 +2290,11 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
             alloc.free(d.path);
             alloc.free(d.symbol.name);
             if (d.symbol.detail) |dd| alloc.free(dd);
+            for (d.symbol.decorators) |decorator| alloc.free(decorator);
+            if (d.symbol.decorators.len > 0) alloc.free(d.symbol.decorators);
+            if (d.symbol.return_type) |rt| alloc.free(rt);
+            for (d.symbol.param_types) |pt| alloc.free(pt);
+            if (d.symbol.param_types.len > 0) alloc.free(d.symbol.param_types);
         }
         alloc.free(defs);
     }
@@ -1907,7 +2360,7 @@ fn isIdentChar(c: u8) bool {
 /// Returns true iff `needle` appears in `haystack` with non-identifier
 /// characters (or string boundary) on both sides — i.e. as a whole-word
 /// identifier match, not as a substring inside a longer identifier.
-fn hasWholeWordMatch(haystack: []const u8, needle: []const u8) bool {
+pub fn hasWholeWordMatch(haystack: []const u8, needle: []const u8) bool {
     if (needle.len == 0 or haystack.len < needle.len) return false;
     var search_from: usize = 0;
     while (std.mem.indexOfPos(u8, haystack, search_from, needle)) |pos| {
@@ -1924,449 +2377,28 @@ fn hasWholeWordMatch(haystack: []const u8, needle: []const u8) bool {
 /// data formats (json, yaml), markup/styling (markdown, css, scss),
 /// declarative schemas (protobuf), and unknown files — callers found
 /// inside these are mentions in prose or config, not real invocations.
-fn langHasCallSites(lang: explore_mod.Language) bool {
+pub fn langHasCallSites(lang: explore_mod.Language) bool {
     return switch (lang) {
         .markdown, .json, .yaml, .css, .scss, .protobuf, .unknown => false,
         else => true,
     };
 }
 
-// ── codedb_context ──────────────────────────────────────────────────────────
-// Task-shaped composer. Takes a natural-language task, extracts candidate
-// identifiers (camelCase / snake_case / "quoted strings"), and returns ONE
-// composite text block: keywords + symbol defs + ranked files + top sites.
-// Replaces 3-5 separate search/word/symbol calls; targets parity with
-// codegraph_context on per-task token economy.
-
-fn isContextIdentStart(c: u8) bool {
-    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_';
-}
-fn isContextIdentCont(c: u8) bool {
-    return isContextIdentStart(c) or (c >= '0' and c <= '9');
-}
-fn looksLikeContextIdentifier(tok: []const u8) bool {
-    // Filter out sentence-leading English words ("Find", "React", "Want")
-    // that incidentally start with a capital, while keeping real identifiers.
-    // Rules:
-    //   - snake_case (any underscore)              → always pass
-    //   - all-caps acronym, 3-8 chars (API, TODO)  → pass
-    //   - camelCase / PascalCase with an internal
-    //     lower→upper transition (getNextLanes)    → pass
-    //   - everything else                          → reject
-    if (tok.len < 3) return false;
-    if (std.mem.indexOfScalar(u8, tok, '_') != null) return true;
-    var all_upper = true;
-    for (tok) |c| {
-        if (c < 'A' or c > 'Z') {
-            all_upper = false;
-            break;
-        }
-    }
-    if (all_upper) return tok.len <= 8;
-    var i: usize = 1;
-    while (i < tok.len) : (i += 1) {
-        const prev_lower = tok[i - 1] >= 'a' and tok[i - 1] <= 'z';
-        const cur_upper = tok[i] >= 'A' and tok[i] <= 'Z';
-        if (prev_lower and cur_upper) return true;
-    }
-    return false;
-}
-
-// Cap at 3 candidates instead of 5. handleContext does one searchContent +
-// one findAllSymbols per candidate (the bench shows 30µs and ~5µs each on
-// codedb's own repo), so each extra candidate adds ~35µs of fixed cost
-// for diminishing return — the by_file ranking already heavily favors
-// the first 1–2 high-quality identifiers. End-to-end this drops
-// codedb_context from ~330µs → ~220µs on the standard bench task.
-const CONTEXT_MAX_CANDIDATES: usize = 3;
-// 20 was the original tier-search cap, but only CONTEXT_TOP_LINES_PER_FILE
-// (3) hits per file are ever kept after ranking — every additional result
-// is wasted work in search-content + per-file map churn. Empirically 8
-// covers the keep-window even on dense files.
-const CONTEXT_MAX_RESULTS_PER_KW: usize = 8;
-const CONTEXT_TOP_FILES: usize = 5;
-const CONTEXT_TOP_LINES_PER_FILE: usize = 3;
-
-fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
-    var seen = std.StringHashMap(void).init(alloc);
-    defer seen.deinit();
-    var i: usize = 0;
-    while (i < task.len) {
-        const c = task[i];
-        // Quoted strings — taken literally as identifiers.
-        if (c == '"' or c == '`') {
-            const q = c;
-            const start = i + 1;
-            var j = start;
-            while (j < task.len and task[j] != q) : (j += 1) {}
-            if (j > start and j - start <= 64 and j - start >= 3) {
-                const slice = task[start..j];
-                if (!seen.contains(slice)) {
-                    seen.put(slice, {}) catch {};
-                    out.append(alloc, slice) catch {};
-                    if (out.items.len >= CONTEXT_MAX_CANDIDATES) return;
-                }
-            }
-            i = j + 1;
-            continue;
-        }
-        // Identifier-like tokens.
-        if (isContextIdentStart(c)) {
-            const start = i;
-            while (i < task.len and isContextIdentCont(task[i])) : (i += 1) {}
-            const tok = task[start..i];
-            if (tok.len >= 3 and tok.len <= 64 and looksLikeContextIdentifier(tok) and !seen.contains(tok)) {
-                seen.put(tok, {}) catch {};
-                out.append(alloc, tok) catch {};
-                if (out.items.len >= CONTEXT_MAX_CANDIDATES) return;
-            }
-            continue;
-        }
-        i += 1;
-    }
-}
-
-fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, project_root: []const u8) void {
-    const task = getStr(args, "task") orelse {
-        out.appendSlice(alloc, "error: missing 'task' argument") catch {};
-        appendBundleArgKeysDiagnostic(alloc, out, args);
-        return;
-    };
-    if (task.len < 3 or task.len > 1024) {
-        out.appendSlice(alloc, "error: task must be 3-1024 chars") catch {};
-        return;
-    }
-
-    // reader.md prepend (experimental): if .codedb/reader.md exists and its
-    // declared source_hash matches the current source files, prepend its body
-    // to the response. Gives the agent one-shot orientation without paying
-    // exploratory search calls. See experiments/reader-md/SPEC.md.
-    //
-    // Critical-review I11 + n=2 vs-main eval (RESULTS-VS-MAIN-FINAL.md): on
-    // short narrow tasks like "find before_request" the composer's
-    // symbol_definitions section already pinpoints the answer, and reader.md's
-    // ~5 KB body becomes pure overhead — the T1 flask regression
-    // (+37% calls / +18% tokens) came entirely from this case.
-    //
-    // Gate: only prepend reader.md when the task is long enough to suggest
-    // exploration rather than a narrow lookup. 80 chars is the inflection
-    // point in the eval — T1's "find before_request decorator" is 28 chars,
-    // T2/T3 are 230+ chars.
-    const reader_md_gate = task.len > 80;
-    if (reader_md_gate) {
-        var reader_state = reader_md.load(io, alloc, project_root) catch null;
-        if (reader_state) |*r| {
-            defer r.free(alloc);
-            switch (r.state) {
-                .ready => {
-                    if (r.body) |b| {
-                        out.appendSlice(alloc, "<!-- reader.md (hash-verified): -->\n") catch {};
-                        out.appendSlice(alloc, b) catch {};
-                        out.appendSlice(alloc, "\n<!-- end reader.md -->\n\n") catch {};
-                    }
-                },
-                .stale => {
-                    out.appendSlice(alloc, "<!-- reader.md is stale (source_hash drifted). Regenerate by writing a new .codedb/reader.md with current source_hash. -->\n\n") catch {};
-                },
-                .malformed, .missing => {
-                    // Silent — reader.md is optional.
-                },
-            }
-        }
-    }
-    // Arena: every transient string in this handler lives here, no per-result
-    // free bookkeeping. Released at function exit.
-    var arena = std.heap.ArenaAllocator.init(alloc);
-    defer arena.deinit();
-    const A = arena.allocator();
-
-    var candidates: std.ArrayList([]const u8) = .empty;
-    extractContextCandidates(task, A, &candidates);
-    if (candidates.items.len == 0) {
-        out.appendSlice(alloc, "no candidate identifiers found in task — include symbol names (camelCase or snake_case) or \"quoted strings\" so the composer can extract keywords") catch {};
-        return;
-    }
-
-    const PerFileHit = struct { line: u32, text: []const u8 };
-    const PerFile = struct {
-        total: u32 = 0,
-        bm25: f32 = 0,
-        top: std.ArrayList(PerFileHit) = .empty,
-    };
-    var by_file = std.StringHashMap(PerFile).init(A);
-
-    const SymRef = struct { kw: []const u8, kind: []const u8, path: []const u8, line: u32, line_end: u32 };
-    var sym_refs: std.ArrayList(SymRef) = .empty;
-    var seen_syms = std.StringHashMap(void).init(A);
-
-    for (candidates.items) |kw| {
-        // Symbol definitions (best-effort; ignore failures).
-        if (explorer.findAllSymbols(kw, A)) |defs| {
-            const take = @min(defs.len, 3);
-            for (defs[0..take]) |d| {
-                const key = std.fmt.allocPrint(A, "{s}|{s}|{d}", .{ d.path, kw, d.symbol.line_start }) catch continue;
-                if (seen_syms.contains(key)) continue;
-                seen_syms.put(key, {}) catch continue;
-                sym_refs.append(A, .{
-                    .kw = kw,
-                    .kind = @tagName(d.symbol.kind),
-                    .path = d.path,
-                    .line = d.symbol.line_start,
-                    .line_end = d.symbol.line_end,
-                }) catch break;
-            }
-        } else |_| {}
-
-        // Content search — small per-keyword cap keeps the arena lean.
-        const hits = explorer.searchContentRanked(kw, A, CONTEXT_MAX_RESULTS_PER_KW) catch continue;
-        for (hits) |h| {
-            const gop = by_file.getOrPut(h.path) catch continue;
-            if (!gop.found_existing) gop.value_ptr.* = .{};
-            gop.value_ptr.total += 1;
-            gop.value_ptr.bm25 += h.score;
-            if (gop.value_ptr.top.items.len < CONTEXT_TOP_LINES_PER_FILE) {
-                gop.value_ptr.top.append(A, .{ .line = h.line_num, .text = h.line_text }) catch {};
-            }
-        }
-    }
-
-    // Rank files by a composite score: raw hits, +bonus when the file
-    // contains a symbol definition for any keyword (definition beats usage),
-    // −penalty for test/spec/doc files (agents kept picking test files over
-    // the real source on T3/F1/F3/G2). Final secondary sort by hits.
-    var symbol_files = std.StringHashMap(void).init(A);
-    for (sym_refs.items) |sr| symbol_files.put(sr.path, {}) catch {};
-
-    const FileRank = struct { path: []const u8, hits: u32, score: f32, top: []const PerFileHit };
-    var ranked: std.ArrayList(FileRank) = .empty;
-    var iter = by_file.iterator();
-    while (iter.next()) |entry| {
-        const path = entry.key_ptr.*;
-        // Rank by summed BM25 score, which already carries BM25+ and the
-        // path-relevance multiplier (test/doc down-weight + filename boost) from
-        // searchContentRanked. Files that DEFINE a keyword get the edge
-        // (definition beats usage — codedb_context's unique signal).
-        var score: f32 = entry.value_ptr.bm25;
-        if (symbol_files.contains(path)) score *= 1.5;
-        ranked.append(A, .{
-            .path = path,
-            .hits = entry.value_ptr.total,
-            .score = score,
-            .top = entry.value_ptr.top.items,
-        }) catch break;
-    }
-    std.mem.sort(FileRank, ranked.items, {}, struct {
-        fn lt(_: void, a: FileRank, b: FileRank) bool {
-            if (a.score != b.score) return a.score > b.score;
-            return a.hits > b.hits;
-        }
-    }.lt);
-    const top_n = @min(ranked.items.len, CONTEXT_TOP_FILES);
-
-    const w = cio.listWriter(out, alloc);
-    w.print("# Task\n{s}\n\n## Keywords used\n", .{task}) catch {};
-    for (candidates.items) |k| w.print("- {s}\n", .{k}) catch {};
-
-    if (sym_refs.items.len > 0) {
-        w.print("\n## Symbol definitions\n", .{}) catch {};
-        // Enhancement (closes T1 flask variance gap): when there are ≤3
-        // symbol definitions, inline each symbol's FULL body (capped at 40
-        // lines) so the agent doesn't need a follow-up `codedb_read`. For wider
-        // result sets this would bloat the response, so cap at 3.
-        const inline_bodies = sym_refs.items.len <= 3;
-        for (sym_refs.items) |sr| {
-            w.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
-            if (inline_bodies) {
-                if (explorer.getContent(sr.path, A) catch null) |content| {
-                    var cur_line: u32 = 1;
-                    var i: usize = 0;
-                    var line_start: ?usize = null;
-                    var captured: u32 = 0;
-                    const body_end: u32 = if (sr.line_end > sr.line) @min(sr.line_end, sr.line + 39) else sr.line;
-                    const max_lines: u32 = body_end - sr.line + 1;
-                    if (cur_line == sr.line) line_start = 0;
-                    while (i < content.len and captured < max_lines) : (i += 1) {
-                        if (content[i] == '\n') {
-                            if (line_start) |ls| {
-                                const line_end = i;
-                                w.print("       {d:>5} | {s}\n", .{ cur_line, content[ls..line_end] }) catch {};
-                                captured += 1;
-                            }
-                            cur_line += 1;
-                            if (cur_line >= sr.line and cur_line <= body_end) {
-                                line_start = i + 1;
-                            } else {
-                                line_start = null;
-                            }
-                        }
-                    }
-                    if (line_start) |ls| {
-                        if (captured < max_lines) {
-                            w.print("       {d:>5} | {s}\n", .{ cur_line, content[ls..] }) catch {};
-                        }
-                    }
-                }
-            }
-        }
-
-        // Callers section (closes the T1 flask agent-mean gap):
-        // For each ≤3 symbol_definitions, surface up to 2 non-definition,
-        // non-test call sites with their enclosing scope. The whole point of
-        // this section is to pre-resolve "where is this called from" so the
-        // agent doesn't need codedb_callers / outline / read follow-ups.
-        // Examples this targets directly:
-        //   T1 flask: before_request → preprocess_request in app.py
-        //   T2 regex: Builder::build → meta::Regex::new in regex.rs
-        // Callers section (closes the T1 flask agent-mean gap):
-        // For each ≤3 symbol_definitions, surface up to 2 non-definition,
-        // non-test, non-import call sites with their enclosing scope. The
-        // whole point of this section is to pre-resolve "where is this called
-        // from" so the agent doesn't need codedb_callers / outline / read
-        // follow-ups. Examples this targets directly:
-        //   T1 flask: before_request → preprocess_request in app.py
-        //   T2 regex: Builder::build → meta::Regex::new in regex.rs
-        if (inline_bodies) {
-            var any_callers = false;
-            var seen_caller = std.StringHashMap(void).init(A);
-            var total_shown: u32 = 0;
-            // Dedupe scoped searches by keyword — multiple sym_refs often
-            // share the same kw (same symbol defined in multiple files);
-            // running searchContentWithScope per sym_ref was 30 µs × 6
-            // searches = 180 µs of redundant work on the bench task.
-            var searched_kw = std.StringHashMap(void).init(A);
-            for (sym_refs.items) |sr| {
-                if (total_shown >= 6) break;
-                if (searched_kw.contains(sr.kw)) continue;
-                searched_kw.put(sr.kw, {}) catch {};
-                const scoped = explorer.searchContentWithScope(sr.kw, A, 30) catch continue;
-                var shown_for_sym: u32 = 0;
-                for (scoped) |r| {
-                    if (shown_for_sym >= 2 or total_shown >= 6) break;
-                    if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
-                    // Skip the definition site itself
-                    if (r.line_num == sr.line and std.mem.eql(u8, r.path, sr.path)) continue;
-                    // Skip test/spec/fixture paths
-                    const is_test = std.mem.startsWith(u8, r.path, "tests/") or
-                        std.mem.startsWith(u8, r.path, "test/") or
-                        std.mem.indexOf(u8, r.path, "/test") != null or
-                        std.mem.indexOf(u8, r.path, "_test.") != null or
-                        std.mem.indexOf(u8, r.path, ".test.") != null or
-                        std.mem.indexOf(u8, r.path, "/__tests__/") != null or
-                        std.mem.indexOf(u8, r.path, "/spec/") != null or
-                        std.mem.indexOf(u8, r.path, "/fixtures/") != null;
-                    if (is_test) continue;
-                    if (r.scope_kind) |sk| {
-                        if (sk == .import or sk == .type_alias or sk == .constant) continue;
-                    }
-                    const dedup_key = std.fmt.allocPrint(A, "{s}:{d}", .{ r.path, r.line_num }) catch continue;
-                    if (seen_caller.contains(dedup_key)) continue;
-                    seen_caller.put(dedup_key, {}) catch {};
-                    if (!any_callers) {
-                        w.print("\n## Callers (top non-test, non-import usages of these symbols)\n", .{}) catch {};
-                        any_callers = true;
-                    }
-                    if (r.scope_name) |sn| {
-                        w.print("- {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
-                            r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
-                        }) catch {};
-                    } else {
-                        w.print("- {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-                    }
-                    shown_for_sym += 1;
-                    total_shown += 1;
-                }
-            }
-        }
-
-        // Callees section (graph-resolved): walk each ≤3 key symbol's call sites
-        // through the resolved call graph and surface where each callee is
-        // defined. This is the dependency side of the neighborhood — pairs with
-        // the Callers section above so the agent sees both who calls a symbol and
-        // what it calls, without a follow-up codedb_outline/read on the callees.
-        if (inline_bodies) {
-            var any_callees = false;
-            var done_sym = std.StringHashMap(void).init(A);
-            for (sym_refs.items) |sr| {
-                const sym_key = std.fmt.allocPrint(A, "{s}:{d}", .{ sr.path, sr.line }) catch continue;
-                if (done_sym.contains(sym_key)) continue;
-                done_sym.put(sym_key, {}) catch {};
-                const callees = explorer.resolveCallees(sr.path, sr.line, sr.line_end, A, 6) catch continue;
-                if (callees.len == 0) continue;
-                if (!any_callees) {
-                    w.print("\n## Calls (graph-resolved callees of these symbols)\n", .{}) catch {};
-                    any_callees = true;
-                }
-                w.print("- {s} ({s}) calls:\n", .{ sr.kw, sr.kind }) catch {};
-                for (callees) |c| {
-                    w.print("    \xe2\x86\x92 {s} ({s})  {s}:{d}\n", .{ c.name, @tagName(c.kind), c.path, c.line }) catch {};
-                }
-            }
-        }
-    }
-
-    if (top_n == 0) {
-        out.appendSlice(alloc, "\n(no content matches — try codedb_search or codedb_word for narrower queries)\n") catch {};
-        return;
-    }
-    w.print("\n## Most-relevant files\n", .{}) catch {};
-    for (ranked.items[0..top_n]) |f| {
-        w.print("- {s}  ({d} matches)\n", .{ f.path, f.hits }) catch {};
-    }
-    w.print("\n## Top sites (with ±2 lines of context)\n", .{}) catch {};
-    explorer.mu.lockShared();
-    defer explorer.mu.unlockShared();
-    for (ranked.items[0..top_n]) |f| {
-        // Fetch full file content once per file, then slice ±2 lines around
-        // each hit. Indexed cache hits common files in ~µs; arena owns the
-        // dupe so we don't leak.
-        const file_content: ?[]const u8 = blk: {
-            const got = explorer.getContent(f.path, A) catch break :blk null;
-            break :blk got;
-        };
-        for (f.top) |h| {
-            if (file_content) |content| {
-                // Find the start/end byte offsets of [line-2 .. line+2].
-                const want_start: u32 = if (h.line > 2) h.line - 2 else 1;
-                const want_end: u32 = h.line + 2;
-                var cur_line: u32 = 1;
-                var i: usize = 0;
-                var captured_start: ?usize = null;
-                var captured_end: ?usize = null;
-                if (cur_line == want_start) captured_start = 0;
-                while (i < content.len) : (i += 1) {
-                    if (content[i] == '\n') {
-                        cur_line += 1;
-                        if (cur_line == want_start and captured_start == null) {
-                            captured_start = i + 1;
-                        }
-                        if (cur_line > want_end) {
-                            captured_end = i;
-                            break;
-                        }
-                    }
-                }
-                if (captured_end == null) captured_end = content.len;
-                if (captured_start) |start_off| {
-                    const end_off = captured_end.?;
-                    const slice = content[start_off..end_off];
-                    // Cap per-snippet length to keep output bounded.
-                    const cap = @min(slice.len, 480);
-                    w.print("\n{s}:{d}\n```\n{s}\n```\n", .{ f.path, h.line, slice[0..cap] }) catch {};
-                    continue;
-                }
-            }
-            // Fallback: single-line hit when we couldn't expand.
-            w.print("{s}:{d}  {s}\n", .{ f.path, h.line, h.text }) catch {};
-        }
-    }
-}
-
-
 fn handleHot(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer) void {
     const limit: usize = if (getInt(args, "limit")) |n| @intCast(@min(@max(1, n), 1000)) else 10;
-    explorer.renderHot(store, alloc, out, limit) catch {
+    const hot = explorer.getHotFiles(store, alloc, limit) catch {
         out.appendSlice(alloc, "error: hot files failed") catch {};
+        return;
     };
+    defer {
+        for (hot) |path| alloc.free(path);
+        alloc.free(hot);
+    }
+
+    const w = cio.listWriter(out, alloc);
+    for (hot, 0..) |path, i| {
+        w.print("{d}. {s}\n", .{ i + 1, path }) catch {};
+    }
 }
 
 fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
@@ -2375,14 +2407,6 @@ fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
         appendBundleArgKeysDiagnostic(alloc, out, args);
         return;
     };
-
-    if (args.count() == 1 or
-        (args.get("direction") == null and args.get("transitive") == null and args.get("max_depth") == null))
-    {
-        handleDepsPathOnly(alloc, path, out, explorer);
-        return;
-    }
-
     const direction = getStr(args, "direction") orelse "imported_by";
     const transitive = getBool(args, "transitive");
     const max_depth: ?u32 = if (getInt(args, "max_depth")) |n| @intCast(@max(1, n)) else null;
@@ -2419,19 +2443,10 @@ fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
                 return;
             };
         } else {
-            const w = cio.listWriter(out, alloc);
-            w.print("{s} is imported by:\n", .{path}) catch {};
-            const rendered = explorer.renderImportedBy(path, alloc, out) catch {
+            results = explorer.getImportedBy(path, alloc) catch {
                 out.appendSlice(alloc, "error: deps failed") catch {};
                 return;
             };
-            if (rendered.count == 0) {
-                w.writeAll("  (none)\n") catch {};
-                if (!rendered.known) appendFuzzyPathSuggestions(alloc, out, explorer, path);
-            } else {
-                w.print("({d} files)\n", .{rendered.count}) catch {};
-            }
-            return;
         }
     }
     defer {
@@ -2470,21 +2485,6 @@ fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
     }
 }
 
-fn handleDepsPathOnly(alloc: std.mem.Allocator, path: []const u8, out: *std.ArrayList(u8), explorer: *Explorer) void {
-    const w = cio.listWriter(out, alloc);
-    w.print("{s} is imported by:\n", .{path}) catch {};
-    const rendered = explorer.renderImportedBy(path, alloc, out) catch {
-        out.appendSlice(alloc, "error: deps failed") catch {};
-        return;
-    };
-    if (rendered.count == 0) {
-        w.writeAll("  (none)\n") catch {};
-        if (!rendered.known) appendFuzzyPathSuggestions(alloc, out, explorer, path);
-    } else {
-        w.print("({d} files)\n", .{rendered.count}) catch {};
-    }
-}
-
 fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const path = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path' argument") catch {};
@@ -2499,49 +2499,6 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         out.appendSlice(alloc, "error: access to sensitive file blocked") catch {};
         return;
     }
-
-    // Line range params
-    const line_start_raw = getInt(args, "line_start");
-    const line_end_raw = getInt(args, "line_end");
-    const compact = getBool(args, "compact");
-    const has_range = line_start_raw != null or line_end_raw != null;
-
-    // Bug 6: validate line range explicitly. Pre-fix: invalid ranges silently
-    // returned an empty body (just the hash line) — agents read that as "file
-    // is empty in that range" instead of "you passed nonsense".
-    if (line_start_raw) |ls| {
-        if (ls < 1) {
-            out.appendSlice(alloc, "error: line_start must be >= 1") catch {};
-            return;
-        }
-    }
-    if (line_end_raw) |le| {
-        if (le < 1) {
-            out.appendSlice(alloc, "error: line_end must be >= 1") catch {};
-            return;
-        }
-    }
-    if (line_start_raw != null and line_end_raw != null) {
-        if (line_start_raw.? > line_end_raw.?) {
-            const w_err = cio.listWriter(out, alloc);
-            w_err.print("error: line_start ({d}) > line_end ({d})", .{ line_start_raw.?, line_end_raw.? }) catch {};
-            return;
-        }
-    }
-
-    const if_hash = getStr(args, "if_hash");
-    if (explorer.renderCachedRead(path, alloc, out, .{
-        .if_hash = if_hash,
-        .line_start = line_start_raw,
-        .line_end = line_end_raw,
-        .compact = compact,
-    }) catch {
-        out.appendSlice(alloc, "error: read failed") catch {};
-        return;
-    }) {
-        return;
-    }
-
     // Try indexed content first (faster, consistent with indexed view)
     const cached = explorer.getContent(path, alloc) catch {
         out.appendSlice(alloc, "error: read failed") catch {};
@@ -2578,10 +2535,40 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
     const hash = std.hash.Wyhash.hash(0, content);
     var hash_buf: [16]u8 = undefined;
     const hash_str = std.fmt.bufPrint(&hash_buf, "{x}", .{hash}) catch "";
+    const if_hash = getStr(args, "if_hash");
     if (if_hash) |prev| {
         if (std.mem.eql(u8, prev, hash_str)) {
             out.appendSlice(alloc, "unchanged:") catch {};
             out.appendSlice(alloc, hash_str) catch {};
+            return;
+        }
+    }
+
+    // Line range params
+    const line_start_raw = getInt(args, "line_start");
+    const line_end_raw = getInt(args, "line_end");
+    const compact = getBool(args, "compact");
+    const has_range = line_start_raw != null or line_end_raw != null;
+
+    // Bug 6: validate line range explicitly. Pre-fix: invalid ranges silently
+    // returned an empty body (just the hash line) — agents read that as "file
+    // is empty in that range" instead of "you passed nonsense".
+    if (line_start_raw) |ls| {
+        if (ls < 1) {
+            out.appendSlice(alloc, "error: line_start must be >= 1") catch {};
+            return;
+        }
+    }
+    if (line_end_raw) |le| {
+        if (le < 1) {
+            out.appendSlice(alloc, "error: line_end must be >= 1") catch {};
+            return;
+        }
+    }
+    if (line_start_raw != null and line_end_raw != null) {
+        if (line_start_raw.? > line_end_raw.?) {
+            const w_err = cio.listWriter(out, alloc);
+            w_err.print("error: line_start ({d}) > line_end ({d})", .{ line_start_raw.?, line_end_raw.? }) catch {};
             return;
         }
     }
@@ -2605,7 +2592,7 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
     }
 }
 
-fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer, agents: *AgentRegistry, cache: *ProjectCache, edit_agent_id: u64) void {
+fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer, agents: *AgentRegistry) void {
     const path = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path'") catch {};
         return;
@@ -2619,15 +2606,14 @@ fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         return;
     }
     const op_str = getStr(args, "op") orelse "replace";
-    const is_create = eql(op_str, "create");
     const op: @import("version.zig").Op = if (eql(op_str, "insert"))
         .insert
     else if (eql(op_str, "delete"))
         .delete
-    else if (eql(op_str, "replace") or eql(op_str, "str_replace") or is_create)
+    else if (eql(op_str, "replace"))
         .replace
     else {
-        out.appendSlice(alloc, "error: unknown op, must be 'create', 'replace', 'str_replace', 'insert', or 'delete'") catch {};
+        out.appendSlice(alloc, "error: unknown op, must be 'replace', 'insert', or 'delete'") catch {};
         return;
     };
 
@@ -2636,21 +2622,17 @@ fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
     const range_end = getInt(args, "range_end");
     const after = getInt(args, "after");
 
-    // Per-session advisory-lock owner. The server threads a distinct agent id
-    // per MCP connection (Session.edit_agent_id), so concurrent edits to the
-    // same file from separate connections are detected instead of all sharing
-    // the startup __filesystem__ agent (#528 audit). Defaults to 1 (the
-    // __filesystem__ agent) for the single-connection stdio path.
+    // Use agent 1 (the __filesystem__ agent registered at startup).
+    // TODO: agent_id is hardcoded to 1 — two MCP clients share the same agent_id and
+    // could both acquire locks on different files without conflict, but cannot detect
+    // concurrent edits to the same file from separate connections.
     var req = edit_mod.EditRequest{
         .path = path,
-        .agent_id = edit_agent_id,
+        .agent_id = 1,
         .op = op,
         .content = content,
-        .old_string = getStr(args, "old_string"),
-        .new_string = getStr(args, "new_string"),
         .if_hash = getStr(args, "if_hash"),
         .dry_run = getBool(args, "dry_run"),
-        .create = is_create,
     };
     if (range_start != null and range_end != null) {
         if (range_start.? <= 0 or range_end.? <= 0) {
@@ -2673,187 +2655,43 @@ fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         if (err == error.HashMismatch) {
             // Include the file's current hex hash so the agent can re-read with if_hash
             // to verify it has the latest content, then retry the edit.
-            const edit_dir = explorer.root_dir orelse std.Io.Dir.cwd();
-            if (edit_dir.readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024))) |bytes| {
+            if (std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024))) |bytes| {
                 defer alloc.free(bytes);
                 const w = cio.listWriter(out, alloc);
                 w.print(" (current hash: {x})", .{std.hash.Wyhash.hash(0, bytes)}) catch {};
             } else |_| {}
-        } else if (err == error.PatternNotFound) {
-            out.appendSlice(alloc, " (old_string not found \u{2014} re-read the file and copy the exact text, including whitespace and indentation)") catch {};
-        } else if (err == error.PatternNotUnique) {
-            // Tell the agent how many times old_string matched so it knows how much
-            // surrounding context to add to make the anchor unique.
-            const edit_dir = explorer.root_dir orelse std.Io.Dir.cwd();
-            if (edit_dir.readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024))) |bytes| {
-                defer alloc.free(bytes);
-                const old = getStr(args, "old_string") orelse "";
-                var count: usize = 0;
-                if (old.len > 0) {
-                    var i: usize = 0;
-                    while (std.mem.indexOfPos(u8, bytes, i, old)) |pos| {
-                        count += 1;
-                        i = pos + old.len;
-                    }
-                }
-                const w = cio.listWriter(out, alloc);
-                w.print(" (old_string matched {d} times \u{2014} add surrounding lines to make it unique)", .{count}) catch {};
-            } else |_| {}
-        } else if (err == error.FileExists) {
-            out.appendSlice(alloc, " (file already exists \u{2014} use op=str_replace or op=replace to edit it, not op=create)") catch {};
         }
         return;
     };
     defer if (result.preview) |p| alloc.free(p);
-    defer if (result.health) |h| alloc.free(h);
 
     const w = cio.listWriter(out, alloc);
     if (req.dry_run) {
         w.print("dry_run: would write size={d}, hash:{x}\n", .{ result.new_size, result.new_hash }) catch {};
         if (result.preview) |p| out.appendSlice(alloc, p) catch {};
-    } else if (!result.changed) {
-        w.print("edit unchanged: seq={d}, size={d}, hash:{x}", .{ result.seq, result.new_size, result.new_hash }) catch {};
     } else {
         w.print("edit applied: seq={d}, size={d}, hash:{x}", .{ result.seq, result.new_size, result.new_hash }) catch {};
-    }
-    // Advisory syntax-health warning (trial/graph-based-codedb): surface a
-    // mis-spliced multi-line edit so the agent can re-read and fix before
-    // declaring the task done, instead of shipping an unparseable file.
-    if (result.health) |h| out.appendSlice(alloc, h) catch {};
-
-    // External-linter (Tier-1): only when the user opted in. `enabled` is set
-    // once at startup and read-only after, so this guard adds nothing to the
-    // edit hot path when linters are off (the default) — no cache lock, no
-    // detect, no thread spawn. When on, the linter runs on a DETACHED thread
-    // after this response is built, so it never adds latency to the edit.
-    if (!req.dry_run and cache.linter.enabled) {
-        _ = cache.diag.appendIfFresh(alloc, out, path, result.new_hash);
-        const lang = explore_mod.detectLanguage(path);
-        if (cache.linter.shouldTry(lang) and cache.diag.tryBeginWork(path, result.new_hash)) {
-            spawnLintWorker(cache, path, result.new_hash, lang);
-        }
-    }
-}
-
-// ── External-linter worker (runs off the synchronous edit path) ───────────
-
-const LintJob = struct {
-    cache: *ProjectCache,
-    path: []u8, // owned (c_allocator); freed by run()
-    hash: u64,
-    language: explore_mod.Language,
-
-    fn run(job: *LintJob) void {
-        const ca = std.heap.c_allocator;
-        defer {
-            ca.free(job.path);
-            ca.destroy(job);
-        }
-        const summary = linter_mod.runCheck(ca, job.language, job.path) catch {
-            // Tool missing / crashed: disable this language for the session,
-            // then clear the in-flight mark. mark() MUST precede endWork() so
-            // the cache (and session) are still alive — endWork drops the
-            // inflight count the owner drains on before freeing them.
-            job.cache.linter.mark(job.language, .unavailable);
-            job.cache.diag.endWork(job.path);
-            return;
-        };
-        if (summary) |s| {
-            defer ca.free(s);
-            job.cache.diag.store(job.path, job.hash, s); // clears in-flight
-        } else {
-            job.cache.diag.endWork(job.path); // clean file: nothing to store
-        }
-    }
-};
-
-/// Spawn a detached linter worker for (path, hash). Caller has already reserved
-/// the slot via cache.diag.tryBeginWork(); on any failure here we must release
-/// it with endWork() so the in-flight count cannot leak.
-fn spawnLintWorker(cache: *ProjectCache, path: []const u8, hash: u64, language: explore_mod.Language) void {
-    const ca = std.heap.c_allocator;
-    const pdup = ca.dupe(u8, path) catch {
-        cache.diag.endWork(path);
-        return;
-    };
-    const job = ca.create(LintJob) catch {
-        ca.free(pdup);
-        cache.diag.endWork(path);
-        return;
-    };
-    job.* = .{ .cache = cache, .path = pdup, .hash = hash, .language = language };
-    const t = std.Thread.spawn(.{}, LintJob.run, .{job}) catch {
-        ca.free(pdup);
-        ca.destroy(job);
-        cache.diag.endWork(path);
-        return;
-    };
-    t.detach();
-}
-
-fn handleDiagnostics(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), cache: *ProjectCache) void {
-    const path = getStr(args, "path") orelse {
-        out.appendSlice(alloc, "error: missing 'path' argument") catch {};
-        return;
-    };
-    if (!isPathSafe(path)) {
-        out.appendSlice(alloc, "error: path traversal not allowed") catch {};
-        return;
-    }
-    if (!cache.diag.appendLatest(alloc, out, path)) {
-        out.appendSlice(alloc, "no diagnostics available yet for ") catch {};
-        out.appendSlice(alloc, path) catch {};
-        out.appendSlice(alloc, " (linters run shortly after an edit; retry, or they may be disabled — `codedb update` to enable)") catch {};
     }
 }
 
 fn handleChanges(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store) void {
     const since: u64 = if (getInt(args, "since")) |n| @intCast(@min(@max(0, n), std.math.maxInt(u64))) else 0;
-    store.mu.lock();
-    defer store.mu.unlock();
+    const changes = store.changesSinceDetailed(since, alloc) catch {
+        out.appendSlice(alloc, "error: changes query failed") catch {};
+        return;
+    };
+    defer alloc.free(changes);
 
-    var change_count: usize = store.files.count();
-    if (since != 0) {
-        change_count = 0;
-        var count_iter = store.files.iterator();
-        while (count_iter.next()) |entry| {
-            var found = false;
-            for (entry.value_ptr.versions.items) |v| {
-                if (v.seq > since) {
-                    found = true;
-                    break;
-                }
-            }
-            if (found) change_count += 1;
-        }
-    }
-
-    const seq = store.seq;
-    out.ensureUnusedCapacity(alloc, 64 + change_count * 64) catch {};
     const w = cio.listWriter(out, alloc);
-    w.print("seq: {d}, {d} files changed since {d}:\n", .{ seq, change_count, since }) catch {};
-    var iter = store.files.iterator();
-    while (iter.next()) |entry| {
-        var latest_seq: u64 = 0;
-        var latest_op: ?@import("version.zig").Op = null;
-        var latest_size: u64 = 0;
-        for (entry.value_ptr.versions.items) |v| {
-            if (v.seq > since and v.seq > latest_seq) {
-                latest_seq = v.seq;
-                latest_op = v.op;
-                latest_size = v.size;
-            }
-        }
-        if (latest_op) |op| {
-            w.print("  {s} (seq={d}, op={s}, size={d})\n", .{ entry.key_ptr.*, latest_seq, @tagName(op), latest_size }) catch {};
-        }
+    w.print("seq: {d}, {d} files changed since {d}:\n", .{ store.currentSeq(), changes.len, since }) catch {};
+    for (changes) |c| {
+        w.print("  {s} (seq={d}, op={s}, size={d})\n", .{ c.path, c.seq, @tagName(c.op), c.size }) catch {};
     }
 }
 
 fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer) void {
     store.mu.lock();
     const file_count = store.files.count();
-    const seq = store.seq;
     store.mu.unlock();
 
     const index_bytes = telemetry_mod.approxIndexSizeBytes(explorer);
@@ -2869,7 +2707,12 @@ fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *Store
     const trigram_files = explorer.trigram_index.fileCount();
     explorer.mu.unlockShared();
 
-    out.ensureUnusedCapacity(alloc, 256) catch {};
+    const ignore_patterns = explorer.getIgnorePatterns(alloc) catch &.{};
+    defer {
+        for (ignore_patterns) |pattern| alloc.free(pattern);
+        alloc.free(ignore_patterns);
+    }
+
     const w = cio.listWriter(out, alloc);
     w.print(
         \\codedb status:
@@ -2882,7 +2725,7 @@ fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *Store
         \\  scan: {s}
         \\
     , .{
-        seq,
+        store.currentSeq(),
         file_count,
         outline_count,
         content_count,
@@ -2891,6 +2734,23 @@ fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *Store
         index_bytes / 1024,
         getScanState().name(),
     }) catch {};
+
+    w.print("  ignore_patterns: {d}\n", .{ignore_patterns.len}) catch {};
+    for (ignore_patterns) |pattern| {
+        w.print("    {s}\n", .{pattern}) catch {};
+    }
+    explorer.mu.lockShared();
+    const cbi_hash = explorer.codedbignore_hash;
+    explorer.mu.unlockShared();
+    if (cbi_hash) |h| {
+        w.print("  codedbignore_hash: {d}\n", .{h}) catch {};
+    } else {
+        w.print("  codedbignore_hash: none\n", .{}) catch {};
+    }
+    w.print("  built_in_skip_dirs: {d}\n", .{watcher.skip_dirs.len}) catch {};
+    for (watcher.skip_dirs) |dir| {
+        w.print("    {s}\n", .{dir}) catch {};
+    }
 }
 
 fn handleSnapshot(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *Explorer, store: *Store, cache: *SnapshotCache) void {
@@ -2907,9 +2767,31 @@ fn handleSnapshot(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *
 
 /// When a bundled op produces a missing-arg error, append a `received keys`
 /// line listing the keys actually present in the op's args. Helps callers
+/// Strip ANSI escape sequences (\x1b[...m) from a string, returning a
+/// plain-text version. Used to clean MCP response blocks so AI agents
+/// don't see raw escape codes.
+fn stripAnsiCodes(alloc: std.mem.Allocator, input: []const u8) []const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    out.ensureTotalCapacity(alloc, input.len) catch return input;
+    var i: usize = 0;
+    while (i < input.len) {
+        if (input[i] == '\x1b' and i + 1 < input.len and input[i + 1] == '[') {
+            // Skip until we hit a letter (the terminator)
+            i += 2;
+            while (i < input.len and !std.ascii.isAlphabetic(input[i])) : (i += 1) {}
+            if (i < input.len) i += 1; // skip the terminator letter
+        } else {
+            out.append(alloc, input[i]) catch return input;
+            i += 1;
+        }
+    }
+    return out.toOwnedSlice(alloc) catch input;
+}
+
 /// tell whether codedb dropped a field or the client sent it under the
 /// wrong name. See issue #357.
-fn appendBundleArgKeysDiagnostic(
+pub fn appendBundleArgKeysDiagnostic(
     alloc: std.mem.Allocator,
     out: *std.ArrayList(u8),
     args: *const std.json.ObjectMap,
@@ -2923,20 +2805,21 @@ fn appendBundleArgKeysDiagnostic(
         out.appendSlice(alloc, entry.key_ptr.*) catch return;
     }
     out.appendSlice(alloc, "]") catch return;
-    // Issue #424/#512: if the args we saw contain only administrative keys
-    // or are empty entirely, there were no real tool fields at all. That's
-    // almost always a client wrapper bug.
+    // Issue #424: if the args we saw contain ONLY administrative keys
+    // (`tool`, `arguments`) — or are empty entirely — there were no real
+    // sub-op fields at all. That's almost always a client wrapper bug.
+    // Suggest the inline shape so the caller can route around it.
     var has_real_arg = false;
     var it2 = args.iterator();
     while (it2.next()) |entry| {
         const k = entry.key_ptr.*;
-        if (!std.mem.eql(u8, k, "tool") and !isDirectCallAdminKey(k)) {
+        if (!std.mem.eql(u8, k, "tool") and !std.mem.eql(u8, k, "arguments")) {
             has_real_arg = true;
             break;
         }
     }
     if (!has_real_arg) {
-        out.appendSlice(alloc, "\nhint: no tool args reached the handler — your client may be stripping fields. Direct tools/call expects {\"name\":\"...\",\"arguments\":{\"path\":\"...\"}}; bundled ops may use inline shape: {\"tool\":\"...\",\"path\":\"...\"}.") catch return;
+        out.appendSlice(alloc, "\nhint: no sub-op args reached the handler — your client may be stripping fields. Try inline shape: {\"tool\":\"...\",\"path\":\"...\"} (no `arguments` wrapper)") catch return;
     }
 }
 
@@ -2964,7 +2847,7 @@ fn appendFuzzyPathSuggestions(
 /// `received keys: [...]` diagnostic when a missing-arg error fired, and
 /// emit a `--- partial ---` tail naming the failing step. Prior-step output
 /// in `out` is preserved unchanged. See issue #356.
-fn finishQueryWithFailure(
+pub fn finishQueryWithFailure(
     alloc: std.mem.Allocator,
     out: *std.ArrayList(u8),
     step_i: usize,
@@ -2978,6 +2861,42 @@ fn finishQueryWithFailure(
     w.print("\n--- partial ---\nfailed_at: {d}\nreason: {s}\n", .{ step_i, reason }) catch {};
 }
 
+fn handleTypes(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+    const return_type = getStr(args, "return_type");
+    const param_type = getStr(args, "param_type");
+    if (return_type == null and param_type == null) {
+        out.appendSlice(alloc, "error: provide 'return_type' or 'param_type'") catch {};
+        return;
+    }
+    const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 1000))) else 50;
+    const w = cio.listWriter(out, alloc);
+    var shown: usize = 0;
+
+    if (return_type) |rt| {
+        const hits = explorer.type_index.findByReturnType(rt);
+        w.print("{d} symbols returning '{s}':\n", .{ hits.len, rt }) catch {};
+        for (hits) |hit| {
+            if (shown >= max_results) break;
+            w.print("  {s}:{d} {s}\n", .{ hit.path, hit.line_start, hit.symbol_name }) catch {};
+            shown += 1;
+        }
+    }
+
+    if (param_type) |pt| {
+        const hits = explorer.type_index.findByParamType(pt);
+        w.print("{d} symbols accepting '{s}':\n", .{ hits.len, pt }) catch {};
+        for (hits) |hit| {
+            if (shown >= max_results) break;
+            w.print("  {s}:{d} {s}\n", .{ hit.path, hit.line_start, hit.symbol_name }) catch {};
+            shown += 1;
+        }
+    }
+
+    if (shown == 0) {
+        w.print("no type hits found\n", .{}) catch {};
+    }
+}
+
 fn handleBundle(
     io: std.Io,
     alloc: std.mem.Allocator,
@@ -2988,7 +2907,6 @@ fn handleBundle(
     agents: *AgentRegistry,
     cache: *ProjectCache,
     deferred_scan: ?*DeferredScan,
-    edit_agent_id: u64,
 ) void {
     const ops_val = args.get("ops") orelse {
         out.appendSlice(alloc, "error: missing 'ops' argument") catch {};
@@ -3012,7 +2930,6 @@ fn handleBundle(
     }
 
     const w = cio.listWriter(out, alloc);
-    out.ensureUnusedCapacity(alloc, @min(@as(usize, 200 * 1024), 1024 + ops.len * 8192)) catch {};
     // Refresh activity accounting as we start the bundle. Long bundles can
     // include slow sub-ops, many ops, and remote fetches, so each completed
     // sub-op updates the same timestamp. See #278.
@@ -3098,15 +3015,8 @@ fn handleBundle(
 
         var sub_out: std.ArrayList(u8) = .empty;
         defer sub_out.deinit(alloc);
-        const sub_reserve: usize = switch (tool) {
-            .codedb_outline => 24 * 1024,
-            .codedb_search, .codedb_word, .codedb_callers => 4 * 1024,
-            .codedb_tree, .codedb_snapshot => 64 * 1024,
-            else => 1024,
-        };
-        sub_out.ensureTotalCapacity(alloc, sub_reserve) catch {};
 
-        dispatch(io, alloc, tool, sub_args, &sub_out, default_store, default_explorer, agents, cache, deferred_scan, edit_agent_id);
+        dispatch(io, alloc, tool, sub_args, &sub_out, default_store, default_explorer, agents, cache, deferred_scan);
 
         // Check size BEFORE appending to prevent blowout
         if (out.items.len + sub_out.items.len > 200 * 1024) {
@@ -3148,388 +3058,12 @@ fn handleBundle(
     }
 }
 
-fn isRemoteRepoChar(c: u8) bool {
-    return std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or c == '.';
-}
-
-fn isRemoteRepoPart(part: []const u8) bool {
-    if (part.len == 0) return false;
-    if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return false;
-    for (part) |c| {
-        if (!isRemoteRepoChar(c)) return false;
-    }
-    return true;
-}
-
-fn appendSlugChar(out: []u8, len: *usize, c: u8, last_dash: *bool) void {
-    const lower = std.ascii.toLower(c);
-    if ((lower >= 'a' and lower <= 'z') or (lower >= '0' and lower <= '9')) {
-        out[len.*] = lower;
-        len.* += 1;
-        last_dash.* = false;
-    } else if (!last_dash.* and len.* > 0) {
-        out[len.*] = '-';
-        len.* += 1;
-        last_dash.* = true;
-    }
-}
-
-fn ingestSlugForOwnerRepo(owner: []const u8, repo: []const u8, buf: []u8) ?[]const u8 {
-    if (!isRemoteRepoPart(owner) or !isRemoteRepoPart(repo)) return null;
-
-    var len: usize = 0;
-    var last_dash = false;
-    for (owner) |c| appendSlugChar(buf, &len, c, &last_dash);
-    appendSlugChar(buf, &len, '-', &last_dash);
-    for (repo) |c| appendSlugChar(buf, &len, c, &last_dash);
-    if (len > 0 and buf[len - 1] == '-') len -= 1;
-    if (len == 0) return null;
-    return buf[0..len];
-}
-
-fn wikiSlugForRepo(repo: []const u8, buf: []u8) ?[]const u8 {
-    if (repo.len == 0 or repo.len >= buf.len or repo[0] == '/') return null;
-    if (std.mem.indexOf(u8, repo, "..") != null or
-        std.mem.indexOf(u8, repo, "//") != null)
-    {
-        return null;
-    }
-
-    if (std.mem.indexOfScalar(u8, repo, '/')) |slash_pos| {
-        if (std.mem.indexOfScalarPos(u8, repo, slash_pos + 1, '/') != null) return null;
-        return ingestSlugForOwnerRepo(repo[0..slash_pos], repo[slash_pos + 1 ..], buf);
-    }
-
-    if (!isRemoteRepoPart(repo)) return null;
-    @memcpy(buf[0..repo.len], repo);
-    return buf[0..repo.len];
-}
-
-test "wikiSlugForRepo normalizes owner repo and raw slugs" {
-    var buf: [256]u8 = undefined;
-
-    try testing.expectEqualStrings("justrach-codedb", wikiSlugForRepo("justrach/codedb", buf[0..]).?);
-    try testing.expectEqualStrings("vercel-next-js", wikiSlugForRepo("vercel/next.js", buf[0..]).?);
-    try testing.expectEqualStrings("owner-repo-name", wikiSlugForRepo("OWNER/Repo.Name", buf[0..]).?);
-    try testing.expectEqualStrings("chromium", wikiSlugForRepo("chromium", buf[0..]).?);
-}
-
-test "remote repo validation rejects traversal and malformed paths" {
-    var buf: [256]u8 = undefined;
-
-    try testing.expect(wikiSlugForRepo("chromium", buf[0..]) != null);
-    try testing.expect(wikiSlugForRepo("../codedb", buf[0..]) == null);
-    try testing.expect(wikiSlugForRepo("justrach//codedb", buf[0..]) == null);
-    try testing.expect(wikiSlugForRepo("justrach/codedb/extra", buf[0..]) == null);
-}
-
-const RemoteParam = struct { name: []const u8, value: []const u8 };
-
-/// Run `curl -G` against URL with optional query params. Caller frees result.stdout/stderr.
-const RemoteResponse = struct {
-    captured: cio.CaptureResult,
-    /// HTTP status code (0 = curl failed before -w fired / sentinel not found).
-    status: u16,
-    /// Length of the response body within `captured.stdout`. The body is
-    /// `captured.stdout[0..body_len]`; the suffix is the curl status sentinel.
-    body_len: usize,
-};
-
-const STATUS_SENTINEL = "[CODEDB-STATUS]";
-
-/// Run `curl -G` against URL with optional query params. Captures HTTP status
-/// via `-w` and lets non-2xx responses through (no `-f`) so callers can format
-/// detailed errors. Caller frees response.captured.stdout/stderr.
-fn fetchRemote(
-    alloc: std.mem.Allocator,
-    url: []const u8,
-    params: []const RemoteParam,
-) !RemoteResponse {
-    var argv: std.ArrayList([]const u8) = .empty;
-    defer argv.deinit(alloc);
-
-    try argv.append(alloc, "curl");
-    try argv.append(alloc, "-s");
-    try argv.append(alloc, "--max-time");
-    try argv.append(alloc, "30");
-    try argv.append(alloc, "-w");
-    try argv.append(alloc, "\n" ++ STATUS_SENTINEL ++ "%{http_code}");
-
-    var pair_bufs: std.ArrayList([]u8) = .empty;
-    defer {
-        for (pair_bufs.items) |b| alloc.free(b);
-        pair_bufs.deinit(alloc);
-    }
-
-    if (params.len > 0) {
-        try argv.append(alloc, "-G");
-        try pair_bufs.ensureTotalCapacity(alloc, params.len);
-        for (params) |p| {
-            const buf = try std.fmt.allocPrint(alloc, "{s}={s}", .{ p.name, p.value });
-            try pair_bufs.append(alloc, buf);
-            try argv.append(alloc, "--data-urlencode");
-            try argv.append(alloc, buf);
-        }
-    }
-    try argv.append(alloc, url);
-
-    const captured = try cio.runCapture(.{ .allocator = alloc, .argv = argv.items });
-
-    var status: u16 = 0;
-    var body_len: usize = captured.stdout.len;
-    if (std.mem.lastIndexOf(u8, captured.stdout, STATUS_SENTINEL)) |sentinel_idx| {
-        const status_str = std.mem.trim(u8, captured.stdout[sentinel_idx + STATUS_SENTINEL.len ..], " \r\n\t");
-        status = std.fmt.parseInt(u16, status_str, 10) catch 0;
-        // Strip the trailing "\n[CODEDB-STATUS]NNN" from the body view.
-        var end = sentinel_idx;
-        while (end > 0 and captured.stdout[end - 1] == '\n') end -= 1;
-        body_len = end;
-    }
-
-    return .{ .captured = captured, .status = status, .body_len = body_len };
-}
-
-fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8)) void {
-    const repo = getStr(args, "repo") orelse {
-        out.appendSlice(alloc, "error: missing 'repo' (e.g. justrach/merjs)") catch {};
-        return;
-    };
-    const action = getStr(args, "action") orelse {
-        out.appendSlice(alloc, "error: missing 'action' (actions, tree, outline, search, read, symbol, policy, deps, score, cves, commits, branches, dep-history)") catch {};
-        return;
-    };
-
-    // api.wiki.codes is the remote backend. Keep backend=wiki as a tolerated
-    // compatibility arg, but never route elsewhere.
-    if (getStr(args, "backend")) |backend| {
-        if (!std.mem.eql(u8, backend, "wiki")) {
-            out.appendSlice(alloc, "error: invalid backend, only 'wiki' / api.wiki.codes is supported") catch {};
-            return;
-        }
-    }
-
-    const wiki_actions = [_][]const u8{
-        "tree",
-        "outline",
-        "search",
-        "read",
-        "symbol",
-        "policy",
-        "deps",
-        "score",
-        "cves",
-        "commits",
-        "branches",
-        "dep-history",
-        "actions",
-    };
-    var action_valid = false;
-    for (&wiki_actions) |va| {
-        if (std.mem.eql(u8, action, va)) {
-            action_valid = true;
-            break;
-        }
-    }
-    if (!action_valid) {
-        out.appendSlice(alloc, "error: action '") catch {};
-        out.appendSlice(alloc, action) catch {};
-        out.appendSlice(alloc, "' not supported by api.wiki.codes (supports: tree, outline, search, read, symbol, policy, deps, score, cves, commits, branches, dep-history, actions)") catch {};
-        return;
-    }
-
-    var wiki_slug_buf: [256]u8 = undefined;
-    const wiki_slug = wikiSlugForRepo(repo, wiki_slug_buf[0..]) orelse {
-        out.appendSlice(alloc, "error: invalid wiki repo, use owner/repo or raw wiki slug (e.g. vercel/next.js or chromium)") catch {};
-        return;
-    };
-
-    const query = getStr(args, "query");
-
-    // Require a non-empty 'query' for actions that consume it. Sending an
-    // empty value silently masked real user mistakes.
-    const needs_query = std.mem.eql(u8, action, "search") or
-        std.mem.eql(u8, action, "symbol") or
-        std.mem.eql(u8, action, "outline");
-    if (needs_query and (query == null or query.?.len == 0)) {
-        out.appendSlice(alloc, "error: action '") catch {};
-        out.appendSlice(alloc, action) catch {};
-        if (std.mem.eql(u8, action, "search")) {
-            out.appendSlice(alloc, "' requires a non-empty 'query' (the search text)") catch {};
-        } else if (std.mem.eql(u8, action, "symbol")) {
-            out.appendSlice(alloc, "' requires a non-empty 'query' (the identifier name to look up)") catch {};
-        } else {
-            out.appendSlice(alloc, "' requires a non-empty 'query' (the file path to outline)") catch {};
-        }
-        return;
-    }
-
-    // 'read' takes the file path via a dedicated `path` arg so the schema is
-    // explicit; outline keeps the legacy `query`-as-path overload.
-    const path_arg = getStr(args, "path");
-    if (std.mem.eql(u8, action, "read") and (path_arg == null or path_arg.?.len == 0)) {
-        out.appendSlice(alloc, "error: action 'read' requires a non-empty 'path' (the file path to fetch)") catch {};
-        return;
-    }
-
-    var scope_value: []const u8 = "runtime";
-    if (std.mem.eql(u8, action, "score") or std.mem.eql(u8, action, "cves")) {
-        scope_value = getStr(args, "scope") orelse query orelse "runtime";
-        if (!std.mem.eql(u8, scope_value, "runtime") and !std.mem.eql(u8, scope_value, "all")) {
-            out.appendSlice(alloc, "error: scope must be 'runtime' or 'all'") catch {};
-            return;
-        }
-    }
-
-    var url_buf: [512]u8 = undefined;
-    const url = std.fmt.bufPrint(&url_buf, "https://api.wiki.codes/api/{s}/{s}", .{ wiki_slug, action }) catch {
-        out.appendSlice(alloc, "error: URL too long") catch {};
-        return;
-    };
-
-    // Build the URL params list. Action-specific arg first, then optional
-    // pagination/filter params. Server is free to ignore unknown keys.
-    var int_bufs: [4][32]u8 = undefined;
-    var int_slot: usize = 0;
-    var params: std.ArrayList(RemoteParam) = .empty;
-    defer params.deinit(alloc);
-
-    if (std.mem.eql(u8, action, "search")) {
-        if (query) |q| params.append(alloc, .{ .name = "q", .value = q }) catch {};
-    } else if (std.mem.eql(u8, action, "symbol")) {
-        if (query) |q| params.append(alloc, .{ .name = "name", .value = q }) catch {};
-    } else if (std.mem.eql(u8, action, "outline")) {
-        if (query) |q| params.append(alloc, .{ .name = "path", .value = q }) catch {};
-    } else if (std.mem.eql(u8, action, "read")) {
-        if (path_arg) |p| params.append(alloc, .{ .name = "path", .value = p }) catch {};
-        if (getStr(args, "lines")) |l| {
-            if (l.len > 0) params.append(alloc, .{ .name = "lines", .value = l }) catch {};
-        }
-    } else if (std.mem.eql(u8, action, "score") or std.mem.eql(u8, action, "cves")) {
-        params.append(alloc, .{ .name = "scope", .value = scope_value }) catch {};
-    }
-
-    // Optional pagination/filter params. Forward them consistently for every
-    // action whose wiki endpoint can page or cap large arrays.
-    const takes_limit = std.mem.eql(u8, action, "search") or
-        std.mem.eql(u8, action, "tree") or
-        std.mem.eql(u8, action, "deps") or
-        std.mem.eql(u8, action, "commits") or
-        std.mem.eql(u8, action, "branches") or
-        std.mem.eql(u8, action, "dep-history");
-    const takes_offset = std.mem.eql(u8, action, "tree") or
-        std.mem.eql(u8, action, "deps") or
-        std.mem.eql(u8, action, "commits") or
-        std.mem.eql(u8, action, "branches") or
-        std.mem.eql(u8, action, "dep-history");
-
-    if (takes_limit) {
-        if (getInt(args, "limit")) |n| {
-            const s = std.fmt.bufPrint(int_bufs[int_slot][0..], "{d}", .{@max(0, n)}) catch "0";
-            params.append(alloc, .{ .name = "limit", .value = s }) catch {};
-            int_slot += 1;
-        }
-    }
-    if (takes_offset) {
-        if (getInt(args, "offset")) |n| {
-            const s = std.fmt.bufPrint(int_bufs[int_slot][0..], "{d}", .{@max(0, n)}) catch "0";
-            params.append(alloc, .{ .name = "offset", .value = s }) catch {};
-            int_slot += 1;
-        }
-    }
-
-    if (std.mem.eql(u8, action, "tree")) {
-        if (getStr(args, "prefix")) |v| {
-            if (v.len > 0) params.append(alloc, .{ .name = "prefix", .value = v }) catch {};
-        }
-        if (args.get("expand")) |expand_val| {
-            switch (expand_val) {
-                .bool => |expand| {
-                    if (expand) {
-                        params.append(alloc, .{ .name = "expand", .value = "true" }) catch {};
-                    } else {
-                        params.append(alloc, .{ .name = "summary", .value = "true" }) catch {};
-                    }
-                },
-                else => {},
-            }
-        }
-    } else if (std.mem.eql(u8, action, "commits") or std.mem.eql(u8, action, "dep-history")) {
-        if (getStr(args, "since")) |v| {
-            if (v.len > 0) params.append(alloc, .{ .name = "since", .value = v }) catch {};
-        }
-    }
-
-    const remote = fetchRemote(alloc, url, params.items) catch {
-        out.appendSlice(alloc, "error: failed to fetch from api.wiki.codes") catch {};
-        return;
-    };
-    defer alloc.free(remote.captured.stdout);
-    defer alloc.free(remote.captured.stderr);
-
-    const body = remote.captured.stdout[0..remote.body_len];
-
-    // 2xx = success, anything else gets a status-tagged error so callers can
-    // tell 404 (slug missing this artifact) from 5xx (real server bug).
-    if (remote.status >= 200 and remote.status < 300) {
-        out.appendSlice(alloc, body) catch {};
-        return;
-    }
-
-    out.appendSlice(alloc, "error: ") catch {};
-    out.appendSlice(alloc, "api.wiki.codes") catch {};
-    if (remote.status == 0) {
-        out.appendSlice(alloc, " transport error for ") catch {};
-    } else {
-        var status_buf: [8]u8 = undefined;
-        const s = std.fmt.bufPrint(&status_buf, "{d}", .{remote.status}) catch "0";
-        out.appendSlice(alloc, " HTTP ") catch {};
-        out.appendSlice(alloc, s) catch {};
-        out.appendSlice(alloc, " for ") catch {};
-    }
-    out.appendSlice(alloc, wiki_slug) catch {};
-    out.appendSlice(alloc, "/") catch {};
-    out.appendSlice(alloc, action) catch {};
-    if (body.len > 0) {
-        out.appendSlice(alloc, " — ") catch {};
-        out.appendSlice(alloc, body[0..@min(body.len, 200)]) catch {};
-    } else if (remote.captured.stderr.len > 0) {
-        out.appendSlice(alloc, " — ") catch {};
-        out.appendSlice(alloc, remote.captured.stderr[0..@min(remote.captured.stderr.len, 200)]) catch {};
-    }
-
-    // #508: actionable hint based on the HTTP status / Cloudflare body.
-    // Distinguishes "service down" (530 + Cloudflare 1033/1034) from
-    // "repo or path not indexed" (404) from "rate limited" (429) so
-    // agents and humans can decide whether to retry or take a different
-    // path (e.g. clone the repo locally) without parsing the raw error.
-    appendRemoteErrorHint(alloc, out, remote.status, body);
-}
-
-pub fn appendRemoteErrorHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), status: u16, body: []const u8) void {
-    const has_cf_origin_down =
-        std.mem.indexOf(u8, body, "error code: 1033") != null or
-        std.mem.indexOf(u8, body, "error code: 1034") != null or
-        std.mem.indexOf(u8, body, "Argo Tunnel error") != null;
-
-    const hint: ?[]const u8 = switch (status) {
-        530 => if (has_cf_origin_down)
-            "\n  hint: api.wiki.codes origin is unreachable (Cloudflare). The service is temporarily down — retry in a few minutes, or query the repo locally via `codedb_index` after cloning."
-        else
-            "\n  hint: upstream returned 530. Retry in a few minutes; if it persists, the repo may not be indexed.",
-        404 => "\n  hint: repo or path not indexed by api.wiki.codes. Verify the slug, or clone + `codedb_index` locally.",
-        429 => "\n  hint: rate limited by api.wiki.codes. Wait and retry, or batch fewer requests.",
-        500, 502, 503 => "\n  hint: upstream server error. Retry — if it persists, the service is having a bad time.",
-        504 => "\n  hint: upstream gateway timeout. Retry; the wiki may still be indexing this repo.",
-        else => null,
-    };
-    if (hint) |h| out.appendSlice(alloc, h) catch {};
-}
-
-// ── Local project tools ─────────────────────────────────────────────────────
+const remote = @import("mcp/remote.zig");
+const handleRemote = remote.handleRemote;
 
 fn handleProjects(io: std.Io, alloc: std.mem.Allocator, out: *std.ArrayList(u8)) void {
-    const home = cio.posixGetenv("HOME") orelse {
-        out.appendSlice(alloc, "error: cannot read HOME") catch {};
+    const home = cio.getHomeDir() orelse {
+        out.appendSlice(alloc, "error: cannot determine home directory (tried HOME, USERPROFILE)") catch {};
         return;
     };
 
@@ -3619,8 +3153,26 @@ fn handleIndex(
     };
     check_dir.close(io);
 
-    // Get the codedb binary path (argv[0] equivalent — use /proc/self or just "codedb")
-    // We spawn `codedb <path> snapshot` to create the snapshot
+    // Force refresh: delete existing snapshots before re-indexing
+    const force = getBool(args, "force");
+    if (force) {
+        // Delete in-repo snapshot
+        const in_repo_snap = std.fmt.allocPrint(alloc, "{s}/codedb.snapshot", .{abs_path}) catch null;
+        if (in_repo_snap) |snap| {
+            defer alloc.free(snap);
+            std.Io.Dir.cwd().deleteFile(io, snap) catch {};
+        }
+        // Delete central cache snapshot
+        if (cio.getHomeDir()) |home_dir| {
+            const hash = std.hash.Wyhash.hash(0, abs_path);
+            const cache_snap = std.fmt.allocPrint(alloc, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home_dir, hash }) catch null;
+            if (cache_snap) |cs| {
+                defer alloc.free(cs);
+                std.Io.Dir.cwd().deleteFile(io, cs) catch {};
+            }
+        }
+    }
+
     const exe_path = std.process.executablePathAlloc(io, alloc) catch {
         out.appendSlice(alloc, "error: cannot find codedb binary") catch {};
         return;
@@ -3662,6 +3214,7 @@ fn handleIndex(
         default_explorer.setRoot(io, abs_path);
         if (snapshot_mod.loadSnapshot(io, snapshot_path, default_explorer, default_store, alloc)) {
             loadProjectTrigramFromDiskIfPresent(io, default_explorer, abs_path, alloc);
+            default_explorer.rebuildTypeIndexes();
             if (default_explorer.outlines.count() > 1000) {
                 default_explorer.releaseContents();
                 default_explorer.releaseSecondaryIndexes();
@@ -3705,38 +3258,9 @@ fn handleIndex(
     }
 }
 
-// True when `q` is a single compound identifier — camelCase/PascalCase (an
-// interior uppercase alongside a lowercase) or snake_case (an underscore) — and
-// contains only identifier characters (no space, path separator, glob, dot, or
-// colon). These queries are almost always symbol names, not filenames, and are
-// exactly the ones that miss the exact-filename fast path and fall into the slow
-// fuzzy scan. ALL-CAPS (e.g. README) is excluded so filename-ish tokens stay on
-// the fuzzy path.
-pub fn looksLikeCompoundIdentifier(q: []const u8) bool {
-    if (q.len < 4) return false;
-    var inner_upper = false;
-    var has_lower = false;
-    var has_underscore = false;
-    for (q, 0..) |c, i| {
-        switch (c) {
-            'A'...'Z' => if (i > 0) {
-                inner_upper = true;
-            },
-            'a'...'z' => has_lower = true,
-            '_' => has_underscore = true,
-            '0'...'9' => {},
-            else => return false, // space, '/', '.', '*', '?', ':', etc.
-        }
-    }
-    return (inner_upper and has_lower) or has_underscore;
-}
-
 fn handleFind(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
-    // Telemetry showed 71% of codedb_find calls were failing with
-    // "missing 'query'" — agents were passing `name`/`path`/`pattern`/`q`
-    // instead, misled by the "FILE-NAME search" framing. Accept aliases.
-    const query = getStr(args, "query") orelse getStr(args, "name") orelse getStr(args, "path") orelse getStr(args, "pattern") orelse getStr(args, "q") orelse {
-        out.appendSlice(alloc, "error: missing 'query' (also accepted: 'name', 'path', 'pattern', 'q')") catch {};
+    const query = getStr(args, "query") orelse {
+        out.appendSlice(alloc, "error: missing 'query'") catch {};
         appendBundleArgKeysDiagnostic(alloc, out, args);
         return;
     };
@@ -3750,22 +3274,6 @@ fn handleFind(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         else => 10,
     } else 10;
 
-    if (std.mem.indexOfAny(u8, query, " */?") == null) {
-        out.ensureUnusedCapacity(alloc, 128) catch {};
-        const exact_count = explorer.renderExactFileFind(query, alloc, out, max_results) catch 0;
-        if (exact_count > 0) return;
-    }
-
-    // Symbol fast-path: a compound identifier (camelCase / snake_case) typed into
-    // find is almost always a symbol the caller wants the definition of, not a
-    // filename — such queries don't match filenames, so they'd otherwise pay the
-    // full fuzzy scan (the slow case). If the symbol index has it, return the def
-    // sites (O(1)) and skip the scan; a non-matching identifier falls through to
-    // the fuzzy file search below, so legitimate filename searches are unaffected.
-    if (looksLikeCompoundIdentifier(query)) {
-        out.ensureUnusedCapacity(alloc, 128) catch {};
-        if (explorer.renderSymbolDefsFast(query, alloc, out, max_results)) return;
-    }
     var matches = explorer.fuzzyFindFiles(query, alloc, max_results) catch {
         out.appendSlice(alloc, "error: search failed") catch {};
         return;
@@ -3846,12 +3354,19 @@ fn handleGlob(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
 
 fn handleLs(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const prefix = getStr(args, "path") orelse "";
+    const ranked = getBool(args, "ranked");
+    const no_descriptor = getBool(args, "no_descriptor");
 
-    const entries = explorer.lsDir(alloc, prefix) catch {
+    const entries = explorer.lsDir(alloc, prefix, ranked) catch {
         out.appendSlice(alloc, "error: ls failed") catch {};
         return;
     };
-    defer alloc.free(entries);
+    defer {
+        for (entries) |e| {
+            if (!e.is_dir and e.descriptor.len > 0) alloc.free(e.descriptor);
+        }
+        alloc.free(entries);
+    }
 
     if (entries.len == 0) {
         out.appendSlice(alloc, "no entries") catch {};
@@ -3861,1176 +3376,91 @@ fn handleLs(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std
     for (entries) |e| {
         if (e.is_dir) {
             out.appendSlice(alloc, e.name) catch {};
-            out.appendSlice(alloc, "/\n") catch {};
+            if (ranked) {
+                var buf: [64]u8 = undefined;
+                const meta = std.fmt.bufPrint(&buf, "/  (score {d})\n", .{e.hotspot_score}) catch "/\n";
+                out.appendSlice(alloc, meta) catch {};
+            } else {
+                out.appendSlice(alloc, "/\n") catch {};
+            }
         } else {
             out.appendSlice(alloc, e.name) catch {};
             var buf: [64]u8 = undefined;
-            const meta = std.fmt.bufPrint(&buf, "  ({s}, {d}L, {d} sym)\n", .{
+            const meta = if (ranked)
+                std.fmt.bufPrint(&buf, "  ({s}, {d}L, {d} sym, {d} deps, score {d}){s}", .{
+                    @tagName(e.language),
+                    e.line_count,
+                    e.sym_count,
+                    e.dependent_count,
+                    e.hotspot_score,
+                    if (e.is_stub) " [stub]" else "",
+                }) catch "\n"
+            else
+                std.fmt.bufPrint(&buf, "  ({s}, {d}L, {d} sym){s}", .{
                 @tagName(e.language),
                 e.line_count,
                 e.sym_count,
+                if (e.is_stub) " [stub]" else "",
             }) catch "\n";
             out.appendSlice(alloc, meta) catch {};
+            if (!no_descriptor and e.descriptor.len > 0) {
+                out.appendSlice(alloc, " — ") catch {};
+                out.appendSlice(alloc, e.descriptor) catch {};
+            }
+            out.appendSlice(alloc, "\n") catch {};
         }
     }
 }
 
-/// CLI⇄MCP parity bridge. Serves the read-only navigation tools that `runQuery`
-/// doesn't render natively — symbol / callers / deps / glob / ls / context and
-/// the fuzzy file-name `file` lookup — by building the MCP argument map and
-/// reusing the same handlers against the warm Explorer. Returns the exit code,
-/// or null if `cmd` isn't one we handle (caller falls through to its own usage
-/// error). The rendered data block is appended to `out`. `root` must be the
-/// resolved absolute project root (used to locate the on-disk word index for
-/// callers/context).
-pub fn runCliTool(
-    io: std.Io,
-    alloc: std.mem.Allocator,
-    explorer: *Explorer,
-    root: []const u8,
-    cmd: []const u8,
-    args: []const []const u8,
-    cmd_args_start: usize,
-    out: *std.ArrayList(u8),
-) ?u8 {
-    const pos: ?[]const u8 = if (args.len > cmd_args_start) args[cmd_args_start] else null;
-    const out_start = out.items.len;
+const query_mod = @import("mcp/query.zig");
+const handleQuery = query_mod.handleQuery;
+const applyComboBoosts = query_mod.applyComboBoosts;
 
-    var m: std.json.ObjectMap = .empty;
-    defer m.deinit(alloc);
+// ── Split-out helper modules (see src/mcp/) ──
+const wal = @import("mcp/wal.zig");
+const pathglob = @import("mcp/pathglob.zig");
+const jsonio = @import("mcp/jsonio.zig");
+const format = @import("mcp/format.zig");
 
-    if (std.mem.eql(u8, cmd, "symbol")) {
-        const name = pos orelse return cliUsage(alloc, out, "symbol <name> [--body]");
-        m.put(alloc, "name", .{ .string = name }) catch return 1;
-        for (args[cmd_args_start..]) |a| {
-            if (std.mem.eql(u8, a, "--body")) m.put(alloc, "body", .{ .bool = true }) catch {};
-        }
-        handleSymbol(alloc, &m, out, explorer);
-        return finishCli(out, out_start);
-    } else if (std.mem.eql(u8, cmd, "callers")) {
-        const name = pos orelse return cliUsage(alloc, out, "callers <name>");
-        m.put(alloc, "name", .{ .string = name }) catch return 1;
-        // handleCallers does a content search (searchContentWithScope), so it
-        // needs the trigram — load the MMAP'd trigram (cheap, reclaimable), NOT
-        // the heap word index. Keeps the footprint at the MCP level.
-        loadProjectTrigramFromDiskIfPresent(io, explorer, root, alloc);
-        handleCallers(alloc, &m, out, explorer);
-        return finishCli(out, out_start);
-    } else if (std.mem.eql(u8, cmd, "deps")) {
-        const da = parseDepsArgs(args, cmd_args_start) catch |e| return cliDepsUsage(alloc, out, e);
-        m.put(alloc, "path", .{ .string = da.path }) catch return 1;
-        if (da.depends_on) m.put(alloc, "direction", .{ .string = "depends_on" }) catch {};
-        if (da.transitive) m.put(alloc, "transitive", .{ .bool = true }) catch {};
-        if (da.max_depth) |md| m.put(alloc, "max_depth", .{ .integer = md }) catch {};
-        handleDeps(alloc, &m, out, explorer);
-        return finishCli(out, out_start);
-    } else if (std.mem.eql(u8, cmd, "glob")) {
-        const pattern = pos orelse return cliUsage(alloc, out, "glob <pattern>");
-        m.put(alloc, "pattern", .{ .string = pattern }) catch return 1;
-        handleGlob(alloc, &m, out, explorer);
-        return finishCli(out, out_start);
-    } else if (std.mem.eql(u8, cmd, "ls")) {
-        if (pos) |p| m.put(alloc, "path", .{ .string = p }) catch return 1;
-        handleLs(alloc, &m, out, explorer);
-        return finishCli(out, out_start);
-    } else if (std.mem.eql(u8, cmd, "file")) {
-        const query = pos orelse return cliUsage(alloc, out, "file <fuzzy-name>");
-        m.put(alloc, "query", .{ .string = query }) catch return 1;
-        handleFind(io, alloc, &m, out, explorer);
-        return finishCli(out, out_start);
-    } else if (std.mem.eql(u8, cmd, "context")) {
-        var task: std.ArrayList(u8) = .empty;
-        defer task.deinit(alloc);
-        var i = cmd_args_start;
-        while (i < args.len) : (i += 1) {
-            if (i > cmd_args_start) task.append(alloc, ' ') catch {};
-            task.appendSlice(alloc, args[i]) catch {};
-        }
-        if (task.items.len == 0) return cliUsage(alloc, out, "context <task...>");
-        m.put(alloc, "task", .{ .string = task.items }) catch return 1;
-        loadProjectWordIndexFromDiskIfPresent(io, explorer, root, alloc);
-        handleContext(io, alloc, &m, out, explorer, root);
-        return finishCli(out, out_start);
-    }
-    return null;
-}
+pub const setQueryLogPath = wal.setQueryLogPath;
+const escapeJsonStr = wal.escapeJsonStr;
+const appendToWal = wal.appendToWal;
+const logQuery = wal.logQuery;
+const logFileAccess = wal.logFileAccess;
+pub const globMatch = pathglob.globMatch;
+pub const isPathSafe = pathglob.isPathSafe;
+const writeResult = jsonio.writeResult;
+const writeError = jsonio.writeError;
+const writeEscaped = jsonio.writeEscaped;
+pub const appendId = jsonio.appendId;
+const MCP_RESET = format.MCP_RESET;
+const MCP_BOLD = format.MCP_BOLD;
+const MCP_DIM = format.MCP_DIM;
+const MCP_GREEN = format.MCP_GREEN;
+const MCP_RED = format.MCP_RED;
+const MCP_CYAN = format.MCP_CYAN;
+const MCP_YELLOW = format.MCP_YELLOW;
+const MCP_MAGENTA = format.MCP_MAGENTA;
+const MCP_BLUE = format.MCP_BLUE;
+const MCP_BRIGHT_GREEN = format.MCP_BRIGHT_GREEN;
+const MCP_CHECK = format.MCP_CHECK;
+const MCP_CROSS = format.MCP_CROSS;
+const MCP_DASH = format.MCP_DASH;
+const MCP_ARROW = format.MCP_ARROW;
+const MCP_DOT = format.MCP_DOT;
+const MCP_ZAP = format.MCP_ZAP;
+const mcpFormatDuration = format.mcpFormatDuration;
+const mcpToolIcon = format.mcpToolIcon;
+const mcpPathBasename = format.mcpPathBasename;
+const mcpPathParent = format.mcpPathParent;
+const mcpAppendPath = format.mcpAppendPath;
+pub const mcpGenerateSummary = format.mcpGenerateSummary;
+pub const mcpGenerateGuidance = format.mcpGenerateGuidance;
 
-fn cliUsage(alloc: std.mem.Allocator, out: *std.ArrayList(u8), usage: []const u8) u8 {
-    out.appendSlice(alloc, "usage: codedb [root] ") catch {};
-    out.appendSlice(alloc, usage) catch {};
-    out.appendSlice(alloc, "\n") catch {};
-    return 1;
-}
-
-/// Exit code for a bridged handler: 1 if it appended an `error:`-prefixed
-/// message (the same failure marker MCP uses to set `isError` — see the
-/// `startsWith(out.items, "error:")` checks elsewhere in this file), else 0.
-/// Fixes #528 item 6, where bridged handlers printed `error: …` to stdout but
-/// `runCliTool` always reported success, so scripts couldn't detect failures.
-/// Zero-result paths (e.g. find's "no matches") use non-`error:` wording and
-/// therefore keep exit 0.
-pub fn finishCli(out: *std.ArrayList(u8), start: usize) u8 {
-    return if (std.mem.startsWith(u8, out.items[start..], "error:")) 1 else 0;
-}
-/// Parsed `deps` invocation. `max_depth` stays null unless `--max-depth N` was
-/// given so the handler keeps its own default for transitive walks.
-pub const DepsArgs = struct {
-    path: []const u8,
-    depends_on: bool = false,
-    transitive: bool = false,
-    max_depth: ?i64 = null,
-};
-
-pub const DepsArgError = error{ MissingPath, UnknownFlag, MissingMaxDepth, BadMaxDepth, ExtraArg };
-
-/// Parse `deps` args. Flags (`--depends-on`, `--transitive`, `--max-depth N`)
-/// may appear before or after the path, in any order; the first non-flag token
-/// is the path (so `deps --depends-on src/main.zig` no longer misreads the flag
-/// as the path). Unknown flags are rejected instead of silently ignored, and
-/// `--max-depth` must be a positive integer instead of coercing junk to 1.
-/// See issue #528 (items 2, 11).
-pub fn parseDepsArgs(args: []const []const u8, start: usize) DepsArgError!DepsArgs {
-    var result: DepsArgs = .{ .path = "" };
-    var path: ?[]const u8 = null;
-    var i = start;
-    while (i < args.len) : (i += 1) {
-        const a = args[i];
-        if (std.mem.eql(u8, a, "--depends-on")) {
-            result.depends_on = true;
-        } else if (std.mem.eql(u8, a, "--transitive")) {
-            result.transitive = true;
-        } else if (std.mem.eql(u8, a, "--max-depth")) {
-            if (i + 1 >= args.len) return error.MissingMaxDepth;
-            i += 1;
-            const n = std.fmt.parseInt(i64, args[i], 10) catch return error.BadMaxDepth;
-            if (n < 1) return error.BadMaxDepth;
-            result.max_depth = n;
-        } else if (a.len > 1 and a[0] == '-' and a[1] == '-') {
-            return error.UnknownFlag;
-        } else if (path == null) {
-            path = a;
-        } else {
-            return error.ExtraArg;
-        }
-    }
-    result.path = path orelse return error.MissingPath;
-    return result;
-}
-
-fn cliDepsUsage(alloc: std.mem.Allocator, out: *std.ArrayList(u8), e: DepsArgError) u8 {
-    const msg = switch (e) {
-        error.MissingPath => "error: usage: codedb [root] deps <path> [--depends-on] [--transitive] [--max-depth N]",
-        error.UnknownFlag => "error: unknown flag for deps (valid: --depends-on, --transitive, --max-depth N)",
-        error.MissingMaxDepth, error.BadMaxDepth => "error: --max-depth requires a positive integer",
-        error.ExtraArg => "error: unexpected extra argument for deps",
-    };
-    out.appendSlice(alloc, msg) catch {};
-    out.appendSlice(alloc, "\n") catch {};
-    return 1;
-}
-
-const COMBO_WINDOW_MS: i64 = 5000; // 5 second window between query and file open
-const COMBO_BOOST_PER_HIT: f32 = 5.0; // score boost per historical open
-
-fn applyComboBoosts(io: std.Io, alloc: std.mem.Allocator, query: []const u8, matches: []explore_mod.Explorer.FuzzyMatch) void {
-    const wal_path = query_log_path orelse return;
-    const data = std.Io.Dir.cwd().readFileAlloc(io, wal_path, alloc, .limited(512 * 1024)) catch return;
-    defer alloc.free(data);
-
-    // Scan WAL for query→access pairs within COMBO_WINDOW_MS
-    var boosts = std.StringHashMap(f32).init(alloc);
-    defer boosts.deinit();
-
-    var last_query_ts: i64 = 0;
-    var last_query_match = false;
-
-    var lines = std.mem.splitScalar(u8, data, '\n');
-    while (lines.next()) |line| {
-        if (line.len < 10) continue;
-
-        if (std.mem.indexOf(u8, line, "\"ev\":\"query\"")) |_| {
-            // Check if this query matches the current one (case-insensitive substring)
-            var qbuf: [256]u8 = undefined;
-            if (extractJsonStrLocal(line, "query", &qbuf)) |logged_query| {
-                last_query_match = std.mem.indexOf(u8, logged_query, query) != null or
-                    std.mem.indexOf(u8, query, logged_query) != null;
-            } else {
-                last_query_match = false;
-            }
-            last_query_ts = extractJsonIntLocal(line, "ts") orelse 0;
-        } else if (std.mem.indexOf(u8, line, "\"ev\":\"access\"")) |_| {
-            if (!last_query_match) continue;
-            const access_ts = extractJsonIntLocal(line, "ts") orelse continue;
-            if (access_ts - last_query_ts > COMBO_WINDOW_MS) continue;
-
-            var pbuf: [256]u8 = undefined;
-            if (extractJsonStrLocal(line, "path", &pbuf)) |path| {
-                const gop = boosts.getOrPut(path) catch continue;
-                if (!gop.found_existing) gop.value_ptr.* = 0;
-                gop.value_ptr.* += COMBO_BOOST_PER_HIT;
-            }
-        }
-    }
-
-    if (boosts.count() == 0) return;
-
-    // Apply boosts to matching results
-    var boosted = false;
-    for (matches) |*m| {
-        if (boosts.get(m.path)) |boost| {
-            m.score += boost;
-            boosted = true;
-        }
-    }
-
-    // Re-sort if any scores changed
-    if (boosted) {
-        std.mem.sort(explore_mod.Explorer.FuzzyMatch, matches, {}, struct {
-            fn lt(_: void, a: explore_mod.Explorer.FuzzyMatch, b: explore_mod.Explorer.FuzzyMatch) bool {
-                return a.score > b.score;
-            }
-        }.lt);
-    }
-}
-
-fn extractJsonIntLocal(line: []const u8, key: []const u8) ?i64 {
-    var search_buf: [64]u8 = undefined;
-    const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":", .{key}) catch return null;
-    const pos = std.mem.indexOf(u8, line, needle) orelse return null;
-    const start = pos + needle.len;
-    var end = start;
-    while (end < line.len and (line[end] >= '0' and line[end] <= '9')) : (end += 1) {}
-    if (end == start) return null;
-    return std.fmt.parseInt(i64, line[start..end], 10) catch null;
-}
-
-fn extractJsonStrLocal(line: []const u8, key: []const u8, out: *[256]u8) ?[]const u8 {
-    var search_buf: [64]u8 = undefined;
-    const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":\"", .{key}) catch return null;
-    const pos = std.mem.indexOf(u8, line, needle) orelse return null;
-    const start = pos + needle.len;
-    const end = std.mem.indexOfScalarPos(u8, line, start, '"') orelse return null;
-    const len = @min(end - start, out.len);
-    @memcpy(out[0..len], line[start..][0..len]);
-    return out[0..len];
-}
-
-fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, store: *Store) void {
-    _ = store;
-    const pipeline_val = args.get("pipeline") orelse {
-        out.appendSlice(alloc, "error: missing 'pipeline' array") catch {};
-        appendBundleArgKeysDiagnostic(alloc, out, args);
-        return;
-    };
-    const pipeline = switch (pipeline_val) {
-        .array => |a| a.items,
-        else => {
-            out.appendSlice(alloc, "error: 'pipeline' must be an array") catch {};
-            return;
-        },
-    };
-    if (pipeline.len == 0 or pipeline.len > 10) {
-        out.appendSlice(alloc, "error: pipeline must have 1-10 steps") catch {};
-        return;
-    }
-
-    var file_set: std.ArrayList([]const u8) = .empty;
-    defer file_set.deinit(alloc);
-    var have_set = false;
-    const w = cio.listWriter(out, alloc);
-
-    // Issue #356-p3: per-stage summary so long pipelines are debuggable
-    // without re-parsing the unstructured per-step output above the tail.
-    const StageInfo = struct { op: []const u8, files_out: usize };
-    var stages: std.ArrayList(StageInfo) = .empty;
-    defer stages.deinit(alloc);
-
-    for (pipeline, 0..) |step_val, step_i| {
-        if (step_val != .object) {
-            w.print("error: step {d} must be object\n", .{step_i}) catch {};
-            return;
-        }
-        const step = &step_val.object;
-        const op = getStr(step, "op") orelse blk: {
-            // Auto-detect op when 'op' key is missing.
-            // query → search, word → word, name → symbol
-            if (getStr(step, "query") != null) break :blk "search";
-            if (getStr(step, "word") != null)   break :blk "word";
-            if (getStr(step, "name") != null)   break :blk "symbol";
-            w.print("error: step {d} missing 'op'\n", .{step_i}) catch {};
-            finishQueryWithFailure(alloc, out, step_i, "missing 'op'", step);
-            return;
-        };
-
-        if (std.mem.eql(u8, op, "find")) {
-            const query = getStr(step, "query") orelse {
-                w.print("error: find needs 'query'\n", .{}) catch {};
-                finishQueryWithFailure(alloc, out, step_i, "find needs 'query'", step);
-                return;
-            };
-            const max: usize = if (getInt(step, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
-            const matches = explorer.fuzzyFindFiles(query, alloc, max) catch {
-                w.print("error: find failed\n", .{}) catch {};
-                return;
-            };
-            defer alloc.free(matches);
-            if (have_set) {
-                // Intersect: keep only files from current set that also appear in find results
-                var match_set = std.StringHashMap(void).init(alloc);
-                defer match_set.deinit();
-                for (matches) |m| match_set.put(m.path, {}) catch {};
-                var wr: usize = 0;
-                for (file_set.items) |p| {
-                    if (match_set.contains(p)) {
-                        file_set.items[wr] = p;
-                        wr += 1;
-                    }
-                }
-                file_set.items.len = wr;
-                w.print("{d} files after find intersect\n", .{file_set.items.len}) catch {};
-            } else {
-                file_set.clearRetainingCapacity();
-                w.print("{d} files matched:\n", .{matches.len}) catch {};
-                for (matches) |m| {
-                    w.print("  {s}\n", .{m.path}) catch {};
-                    file_set.append(alloc, m.path) catch {};
-                }
-                have_set = true;
-            }
-        } else if (std.mem.eql(u8, op, "search")) {
-            const query = getStr(step, "query") orelse {
-                w.print("error: search needs 'query'\n", .{}) catch {};
-                finishQueryWithFailure(alloc, out, step_i, "search needs 'query'", step);
-                return;
-            };
-            const max: usize = if (getInt(step, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
-            const results = explorer.searchContent(query, alloc, max) catch {
-                w.print("error: search failed\n", .{}) catch {};
-                return;
-            };
-            defer {
-                for (results) |r| {
-                    alloc.free(r.line_text);
-                    alloc.free(r.path);
-                }
-                alloc.free(results);
-            }
-            if (have_set) {
-                // Intersect: only keep files from current set that have search hits
-                var hit_set = std.StringHashMap(void).init(alloc);
-                defer hit_set.deinit();
-                var path_set = std.StringHashMap(void).init(alloc);
-                defer path_set.deinit();
-                for (file_set.items) |p| path_set.put(p, {}) catch {};
-                for (results) |r| {
-                    if (path_set.contains(r.path)) {
-                        w.print("{s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-                        hit_set.put(r.path, {}) catch {};
-                    }
-                }
-                // Narrow file_set to only files that had hits
-                var wr: usize = 0;
-                for (file_set.items) |p| {
-                    if (hit_set.contains(p)) {
-                        file_set.items[wr] = p;
-                        wr += 1;
-                    }
-                }
-                file_set.items.len = wr;
-            } else {
-                var seen = std.StringHashMap(void).init(alloc);
-                defer seen.deinit();
-                file_set.clearRetainingCapacity();
-                for (results) |r| {
-                    w.print("{s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-                    if (!seen.contains(r.path)) {
-                        // Dupe path — search results are freed by the defer above,
-                        // but file_set must outlive this step for downstream ops
-                        const duped = alloc.dupe(u8, r.path) catch continue;
-                        seen.put(duped, {}) catch {
-                            alloc.free(duped);
-                            continue;
-                        };
-                        file_set.append(alloc, duped) catch {
-                            alloc.free(duped);
-                            continue;
-                        };
-                    }
-                }
-                have_set = true;
-            }
-        } else if (std.mem.eql(u8, op, "deps")) {
-            // Expand file set by adding dependents/dependencies of current files.
-            // Accepts optional 'path' for standalone use without a prior seeding step.
-            if (!have_set) {
-                if (getStr(step, "path")) |p| {
-                    const duped = alloc.dupe(u8, p) catch {
-                        w.print("error: out of memory\n", .{}) catch {};
-                        return;
-                    };
-                    file_set.append(alloc, duped) catch {
-                        alloc.free(duped);
-                        w.print("error: out of memory\n", .{}) catch {};
-                        return;
-                    };
-                    have_set = true;
-                } else {
-                    w.print("error: deps needs prior step or 'path' param\n", .{}) catch {};
-                    return;
-                }
-            }
-            const direction = getStr(step, "direction") orelse "imported_by";
-            const transitive = getBool(step, "transitive");
-            const max_depth_val: ?u32 = if (getInt(step, "max_depth")) |n| @intCast(@max(1, n)) else null;
-            const is_forward = std.mem.eql(u8, direction, "depends_on");
-
-            var expanded = std.StringHashMap(void).init(alloc);
-            defer expanded.deinit();
-            for (file_set.items) |path| expanded.put(path, {}) catch {};
-
-            // Snapshot current file set since we'll append to it
-            const current_len = file_set.items.len;
-            for (file_set.items[0..current_len]) |path| {
-                var deps_result: []const []const u8 = &.{};
-                var needs_free = false;
-
-                if (is_forward) {
-                    if (transitive) {
-                        deps_result = explorer.getTransitiveDependencies(path, alloc, max_depth_val) catch continue;
-                        needs_free = true;
-                    } else {
-                        explorer.mu.lockShared();
-                        const fwd = explorer.dep_graph.getForwardDeps(path);
-                        explorer.mu.unlockShared();
-                        if (fwd) |deps| {
-                            var res: std.ArrayList([]const u8) = .empty;
-                            for (deps) |dep| {
-                                const d = alloc.dupe(u8, dep) catch continue;
-                                res.append(alloc, d) catch {
-                                    alloc.free(d);
-                                    continue;
-                                };
-                            }
-                            deps_result = res.toOwnedSlice(alloc) catch &.{};
-                            needs_free = true;
-                        }
-                    }
-                } else {
-                    if (transitive) {
-                        deps_result = explorer.getTransitiveDependents(path, alloc, max_depth_val) catch continue;
-                    } else {
-                        deps_result = explorer.getImportedBy(path, alloc) catch continue;
-                    }
-                    needs_free = true;
-                }
-
-                defer if (needs_free) {
-                    for (deps_result) |dep| alloc.free(dep);
-                    alloc.free(deps_result);
-                };
-
-                for (deps_result) |dep| {
-                    if (!expanded.contains(dep)) {
-                        expanded.put(dep, {}) catch {};
-                        file_set.append(alloc, dep) catch {};
-                    }
-                }
-            }
-        } else if (std.mem.eql(u8, op, "filter")) {
-            if (!have_set) {
-                explorer.mu.lockShared();
-                var iter = explorer.outlines.keyIterator();
-                while (iter.next()) |k| file_set.append(alloc, k.*) catch {};
-                explorer.mu.unlockShared();
-                have_set = true;
-            }
-            const ext = getStr(step, "ext");
-            const glob_pat = getStr(step, "glob");
-            var wr: usize = 0;
-            for (file_set.items) |path| {
-                var keep = true;
-                if (ext) |e| {
-                    if (!std.mem.endsWith(u8, path, e)) keep = false;
-                }
-                if (keep) if (glob_pat) |g| {
-                    if (!globMatch(g, path)) keep = false;
-                };
-                if (keep) {
-                    file_set.items[wr] = path;
-                    wr += 1;
-                }
-            }
-            file_set.items.len = wr;
-        } else if (std.mem.eql(u8, op, "outline")) {
-            // Accepts optional 'path' for standalone single-file outline.
-            if (!have_set) {
-                if (getStr(step, "path")) |p| {
-                    const duped = alloc.dupe(u8, p) catch {
-                        w.print("error: out of memory\n", .{}) catch {};
-                        return;
-                    };
-                    file_set.append(alloc, duped) catch {
-                        alloc.free(duped);
-                        w.print("error: out of memory\n", .{}) catch {};
-                        return;
-                    };
-                    have_set = true;
-                } else {
-                    w.print("error: outline needs prior step or 'path' param\n", .{}) catch {};
-                    return;
-                }
-            }
-            for (file_set.items) |path| {
-                var outline = explorer.getOutline(path, alloc) catch continue;
-                if (outline) |*o| {
-                    defer o.deinit();
-                    w.print("--- {s} ({s}, {d} sym) ---\n", .{ path, @tagName(o.language), o.symbols.items.len }) catch {};
-                    for (o.symbols.items) |sym| w.print("  L{d} {s} {s}\n", .{ sym.line_start, @tagName(sym.kind), sym.name }) catch {};
-                }
-                if (out.items.len > 100 * 1024) {
-                    w.print("... truncated\n", .{}) catch {};
-                    break;
-                }
-            }
-        } else if (std.mem.eql(u8, op, "read")) {
-            // Accepts optional 'path' for standalone single-file read.
-            if (!have_set) {
-                if (getStr(step, "path")) |p| {
-                    const duped = alloc.dupe(u8, p) catch {
-                        w.print("error: out of memory\n", .{}) catch {};
-                        return;
-                    };
-                    file_set.append(alloc, duped) catch {
-                        alloc.free(duped);
-                        w.print("error: out of memory\n", .{}) catch {};
-                        return;
-                    };
-                    have_set = true;
-                } else {
-                    w.print("error: read needs prior step or 'path' param\n", .{}) catch {};
-                    return;
-                }
-            }
-            const max_lines: usize = if (getInt(step, "lines")) |n| @intCast(@max(1, @min(n, 200))) else 50;
-            for (file_set.items) |path| {
-                const content = explorer.getContent(path, alloc) catch continue;
-                if (content) |data| {
-                    defer alloc.free(data);
-                    w.print("--- {s} ---\n", .{path}) catch {};
-                    var ln: usize = 1;
-                    var it = std.mem.splitScalar(u8, data, '\n');
-                    while (it.next()) |line| {
-                        if (ln > max_lines) {
-                            w.print("  ... (truncated)\n", .{}) catch {};
-                            break;
-                        }
-                        w.print("{d:>4}| {s}\n", .{ ln, line }) catch {};
-                        ln += 1;
-                    }
-                }
-                if (out.items.len > 100 * 1024) {
-                    w.print("... truncated\n", .{}) catch {};
-                    break;
-                }
-            }
-        } else if (std.mem.eql(u8, op, "sort")) {
-            if (!have_set) {
-                w.print("error: sort needs prior step\n", .{}) catch {};
-                return;
-            }
-            const by = getStr(step, "by") orelse "path";
-            if (std.mem.eql(u8, by, "path")) {
-                std.mem.sort([]const u8, file_set.items, {}, struct {
-                    fn lt(_: void, a: []const u8, b: []const u8) bool {
-                        return std.mem.order(u8, a, b) == .lt;
-                    }
-                }.lt);
-            }
-            // "score" sorting is implicit from find — no re-sort needed
-        } else if (std.mem.eql(u8, op, "word")) {
-            const word = getStr(step, "word") orelse {
-                w.print("error: word needs 'word'\n", .{}) catch {};
-                finishQueryWithFailure(alloc, out, step_i, "word needs 'word'", step);
-                return;
-            };
-            const hits = explorer.searchWord(word, alloc) catch {
-                w.print("error: word search failed\n", .{}) catch {};
-                return;
-            };
-            defer alloc.free(hits);
-            if (have_set) {
-                // Intersect: only show hits from files in current set
-                var path_set = std.StringHashMap(void).init(alloc);
-                defer path_set.deinit();
-                var hit_set = std.StringHashMap(void).init(alloc);
-                defer hit_set.deinit();
-                for (file_set.items) |p| path_set.put(p, {}) catch {};
-                explorer.mu.lockShared();
-                defer explorer.mu.unlockShared();
-                for (hits) |h| {
-                    const hp = explorer.word_index.hitPath(h);
-                    if (path_set.contains(hp)) {
-                        w.print("  {s}:{d}\n", .{ hp, h.line_num }) catch {};
-                        hit_set.put(hp, {}) catch {};
-                    }
-                }
-                var wr: usize = 0;
-                for (file_set.items) |p| {
-                    if (hit_set.contains(p)) {
-                        file_set.items[wr] = p;
-                        wr += 1;
-                    }
-                }
-                file_set.items.len = wr;
-            } else {
-                explorer.mu.lockShared();
-                defer explorer.mu.unlockShared();
-                var seen = std.StringHashMap(void).init(alloc);
-                defer seen.deinit();
-                w.print("{d} word hits for '{s}':\n", .{ hits.len, word }) catch {};
-                file_set.clearRetainingCapacity();
-                for (hits) |h| {
-                    const hp = explorer.word_index.hitPath(h);
-                    w.print("  {s}:{d}\n", .{ hp, h.line_num }) catch {};
-                    if (!seen.contains(hp)) {
-                        const duped = alloc.dupe(u8, hp) catch continue;
-                        seen.put(duped, {}) catch { alloc.free(duped); continue; };
-                        file_set.append(alloc, duped) catch { alloc.free(duped); continue; };
-                    }
-                }
-                have_set = true;
-            }
-        } else if (std.mem.eql(u8, op, "symbol")) {
-            const name = getStr(step, "name") orelse {
-                w.print("error: symbol needs 'name'\n", .{}) catch {};
-                finishQueryWithFailure(alloc, out, step_i, "symbol needs 'name'", step);
-                return;
-            };
-            const results = explorer.findAllSymbols(name, alloc) catch {
-                w.print("error: symbol search failed\n", .{}) catch {};
-                return;
-            };
-            defer {
-                for (results) |r| {
-                    alloc.free(r.path);
-                    alloc.free(r.symbol.name);
-                    if (r.symbol.detail) |d| alloc.free(d);
-                }
-                alloc.free(results);
-            }
-            var seen = std.StringHashMap(void).init(alloc);
-            defer seen.deinit();
-            w.print("{d} symbols '{s}':\n", .{ results.len, name }) catch {};
-            for (results) |r| {
-                w.print("  {s}:{d} ({s})\n", .{ r.path, r.symbol.line_start, @tagName(r.symbol.kind) }) catch {};
-            }
-            if (!have_set) {
-                file_set.clearRetainingCapacity();
-                for (results) |r| {
-                    if (!seen.contains(r.path)) {
-                        const duped = alloc.dupe(u8, r.path) catch continue;
-                        seen.put(duped, {}) catch { alloc.free(duped); continue; };
-                        file_set.append(alloc, duped) catch { alloc.free(duped); continue; };
-                    }
-                }
-                have_set = true;
-            }
-        } else if (std.mem.eql(u8, op, "limit")) {
-            if (!have_set) {
-                w.print("error: limit needs prior step\n", .{}) catch {};
-                return;
-            }
-            const n: usize = if (getInt(step, "n")) |i| @intCast(@max(1, @min(i, 100))) else 10;
-            if (file_set.items.len > n) file_set.items.len = n;
-        } else {
-            w.print("error: unknown op '{s}'\n", .{op}) catch {};
-            return;
-        }
-        // Issue #356-p3: track each successfully-completed step.
-        stages.append(alloc, .{ .op = op, .files_out = file_set.items.len }) catch {};
-    }
-
-    if (out.items.len == 0 and have_set) {
-        w.print("{d} files:\n", .{file_set.items.len}) catch {};
-        for (file_set.items) |path| w.print("  {s}\n", .{path}) catch {};
-    }
-
-    // Issue #356-p3: per-stage summary tail. Lists each completed step's op
-    // and outgoing file count so callers can audit a multi-step pipeline at
-    // a glance without re-parsing the unstructured output above.
-    if (stages.items.len > 0) {
-        w.print("\n--- stages ---\n", .{}) catch {};
-        for (stages.items, 0..) |s, i| {
-            w.print("{d}: {s} ({d} files)\n", .{ i, s.op, s.files_out }) catch {};
-        }
-    }
-}
-
-// Query tracking — append-only WAL in ~/.codedb/projects/<hash>/queries.log
-var query_log_path: ?[]const u8 = null;
-
-pub fn setQueryLogPath(path: []const u8) void {
-    query_log_path = path;
-}
-
-fn escapeJsonStr(input: []const u8, out: *[256]u8) usize {
-    var elen: usize = 0;
-    for (input) |c| {
-        if (elen >= out.len - 1) break;
-        if (c == '"') {
-            out[elen] = '\'';
-            elen += 1;
-        } else if (c == '\\') {
-            if (elen + 1 < out.len) {
-                out[elen] = '\\';
-                out[elen + 1] = '\\';
-                elen += 2;
-            }
-        } else if (c == '\n' or c == '\r' or c == '\t') {
-            out[elen] = ' ';
-            elen += 1;
-        } else {
-            out[elen] = c;
-            elen += 1;
-        }
-    }
-    return elen;
-}
-
-fn appendToWal(io: std.Io, line: []const u8) void {
-    const path = query_log_path orelse return;
-    const file = std.Io.Dir.cwd().openFile(io, path, .{ .mode = .write_only }) catch blk: {
-        break :blk std.Io.Dir.cwd().createFile(io, path, .{}) catch return;
-    };
-    defer file.close(io);
-    const end_offset = file.length(io) catch return;
-    file.writePositionalAll(io, line, end_offset) catch {};
-}
-
-fn logQuery(io: std.Io, tool: []const u8, query: []const u8, result_bytes: usize, latency_ns: i128) void {
-    var escaped: [256]u8 = undefined;
-    const elen = escapeJsonStr(query, &escaped);
-    const latency_us: i64 = @intCast(@divTrunc(latency_ns, 1000));
-    var buf: [512]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "{{\"ts\":{d},\"ev\":\"query\",\"tool\":\"{s}\",\"query\":\"{s}\",\"result_bytes\":{d},\"latency_us\":{d}}}\n", .{
-        cio.milliTimestamp(), tool, escaped[0..elen], result_bytes, latency_us,
-    }) catch return;
-    appendToWal(io, line);
-}
-
-fn logFileAccess(io: std.Io, tool: []const u8, file_path: []const u8, latency_ns: i128) void {
-    var escaped: [256]u8 = undefined;
-    const elen = escapeJsonStr(file_path, &escaped);
-    const latency_us: i64 = @intCast(@divTrunc(latency_ns, 1000));
-    var buf: [512]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "{{\"ts\":{d},\"ev\":\"access\",\"tool\":\"{s}\",\"path\":\"{s}\",\"latency_us\":{d}}}\n", .{
-        cio.milliTimestamp(), tool, escaped[0..elen], latency_us,
-    }) catch return;
-    appendToWal(io, line);
-}
-pub fn globMatch(pattern: []const u8, path: []const u8) bool {
-    return explore_mod.matchGlob(pattern, path);
-}
-
-pub fn isPathSafe(path: []const u8) bool {
-    if (path.len == 0) return false;
-    if (path[0] == '/') return false;
-    // Block null bytes (path truncation attack)
-    if (std.mem.indexOfScalar(u8, path, 0) != null) return false;
-    // Block backslash separators
-    if (std.mem.indexOfScalar(u8, path, '\\') != null) return false;
-    var it = std.mem.splitScalar(u8, path, '/');
-    while (it.next()) |component| {
-        if (std.mem.eql(u8, component, "..")) return false;
-    }
-    return true;
-}
-
-fn writeResult(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, result: []const u8) void {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
-    buf.ensureTotalCapacity(alloc, result.len + 64) catch {};
-    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
-    appendId(alloc, &buf, id);
-    buf.appendSlice(alloc, ",\"result\":") catch return;
-    // Batch-copy non-newline runs instead of per-byte append.
-    var i: usize = 0;
-    while (i < result.len) {
-        const start = i;
-        while (i < result.len and result[i] != '\n' and result[i] != '\r') : (i += 1) {}
-        if (i > start) buf.appendSlice(alloc, result[start..i]) catch return;
-        if (i < result.len) i += 1;
-    }
-    buf.appendSlice(alloc, "}\n") catch return;
-    stdout.writeAll(buf.items) catch {
-        stdout_broken.store(true, .release);
-        return;
-    };
-}
-
-fn writeError(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, code: i32, msg: []const u8) void {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
-    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
-    appendId(alloc, &buf, id);
-    buf.appendSlice(alloc, ",\"error\":{\"code\":") catch return;
-    var tmp: [12]u8 = undefined;
-    const cs = std.fmt.bufPrint(&tmp, "{d}", .{code}) catch return;
-    buf.appendSlice(alloc, cs) catch return;
-    buf.appendSlice(alloc, ",\"message\":\"") catch return;
-    mcpj.writeEscaped(alloc, &buf, msg);
-    buf.appendSlice(alloc, "\"}}") catch return;
-    stdout.writeAll(buf.items) catch {
-        stdout_broken.store(true, .release);
-        return;
-    };
-    stdout.writeAll("\n") catch {
-        stdout_broken.store(true, .release);
-        return;
-    };
-}
-/// Fast JSON string escaper: batch-copies runs of safe characters via
-/// appendSlice instead of the per-byte append in mcpj.writeEscaped.
-fn writeEscaped(alloc: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) void {
-    var i: usize = 0;
-    while (i < s.len) {
-        const start = i;
-        while (i < s.len) : (i += 1) {
-            const c = s[i];
-            if (c < 0x20 or c == '"' or c == '\\') break;
-        }
-        if (i > start) out.appendSlice(alloc, s[start..i]) catch return;
-        if (i >= s.len) break;
-        const c = s[i];
-        switch (c) {
-            '"' => out.appendSlice(alloc, "\\\"") catch return,
-            '\\' => out.appendSlice(alloc, "\\\\") catch return,
-            '\n' => out.appendSlice(alloc, "\\n") catch return,
-            '\r' => out.appendSlice(alloc, "\\r") catch return,
-            '\t' => out.appendSlice(alloc, "\\t") catch return,
-            else => {
-                const hex = "0123456789abcdef";
-                const esc = [6]u8{ '\\', 'u', '0', '0', hex[c >> 4], hex[c & 0x0f] };
-                out.appendSlice(alloc, &esc) catch return;
-            },
-        }
-        i += 1;
-    }
-}
 const getStr = mcpj.getStr;
 const getInt = mcpj.getInt;
 pub const getBool = mcpj.getBool;
 const eql = mcpj.eql;
-
-pub fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json.Value) void {
-    if (id) |v| switch (v) {
-        .integer => |n| {
-            var tmp: [20]u8 = undefined;
-            const s = std.fmt.bufPrint(&tmp, "{d}", .{n}) catch return;
-            buf.appendSlice(alloc, s) catch return;
-        },
-        .string => |s| {
-            buf.append(alloc, '"') catch return;
-            mcpj.writeEscaped(alloc, buf, s);
-            buf.append(alloc, '"') catch return;
-        },
-        .float => |f| {
-            var tmp: [32]u8 = undefined;
-            const s = std.fmt.bufPrint(&tmp, "{d}", .{f}) catch return;
-            buf.appendSlice(alloc, s) catch return;
-        },
-        .number_string => |s| {
-            buf.appendSlice(alloc, s) catch return;
-        },
-        else => buf.appendSlice(alloc, "null") catch return,
-    } else {
-        buf.appendSlice(alloc, "null") catch return;
-    }
-}
-
-// ── MCP UX: 3-block response helpers ────────────────────────────────────────
-// Colors are always on — MCP preview pane always renders ANSI. No TTY check.
-
-var mcp_lean_mode_cached: ?bool = null;
-
-/// True when CODEDB_MCP_LEAN is set (any non-empty value). Cached on first
-/// read. When true, MCP responses omit Block 1 (colored summary header) and
-/// Block 3 (guidance hints) — emitting only Block 2 (raw data). Saves
-/// tokens for agent consumers that can't render ANSI and don't need the
-/// hints.
-fn mcpLeanMode() bool {
-    if (mcp_lean_mode_cached) |v| return v;
-    const v = cio.posixGetenv("CODEDB_MCP_LEAN") orelse {
-        mcp_lean_mode_cached = false;
-        return false;
-    };
-    const enabled = v.len > 0 and !std.mem.eql(u8, v, "0") and !std.mem.eql(u8, v, "false");
-    mcp_lean_mode_cached = enabled;
-    return enabled;
-}
-
-const MCP_RESET = "\x1b[0m";
-const MCP_BOLD = "\x1b[1m";
-const MCP_DIM = "\x1b[2m";
-const MCP_GREEN = "\x1b[32m";
-const MCP_RED = "\x1b[31m";
-const MCP_CYAN = "\x1b[36m";
-const MCP_YELLOW = "\x1b[33m";
-const MCP_MAGENTA = "\x1b[35m";
-const MCP_BLUE = "\x1b[34m";
-const MCP_BRIGHT_GREEN = "\x1b[92m";
-
-const MCP_CHECK = "\xe2\x9c\x93"; // ✓
-const MCP_CROSS = "\xe2\x9c\x97"; // ✗
-const MCP_DASH = " \xe2\x80\x94 "; //  —
-const MCP_ARROW = "\xe2\x86\x92 "; // →
-const MCP_DOT = "\xe2\x80\xa2 "; // •
-const MCP_ZAP = "\xe2\x9a\xa1"; // ⚡
-
-fn mcpFormatDuration(buf: []u8, ns: i128) []const u8 {
-    if (ns <= 0) return "";
-    const uns: u64 = @intCast(@min(ns, std.math.maxInt(u64)));
-    if (uns < 1_000) {
-        return std.fmt.bufPrint(buf, "  " ++ MCP_CYAN ++ MCP_ZAP ++ " {d}ns" ++ MCP_RESET, .{uns}) catch "";
-    } else if (uns < 1_000_000) {
-        const us = uns / 1_000;
-        const frac = (uns % 1_000) / 100;
-        return std.fmt.bufPrint(buf, "  " ++ MCP_CYAN ++ MCP_ZAP ++ " {d}.{d}\xc2\xb5s" ++ MCP_RESET, .{ us, frac }) catch "";
-    } else if (uns < 1_000_000_000) {
-        const ms = uns / 1_000_000;
-        const frac = (uns % 1_000_000) / 100_000;
-        if (ms < 10) {
-            return std.fmt.bufPrint(buf, "  " ++ MCP_BRIGHT_GREEN ++ MCP_ZAP ++ " {d}.{d}ms" ++ MCP_RESET, .{ ms, frac }) catch "";
-        } else if (ms < 100) {
-            return std.fmt.bufPrint(buf, "  " ++ MCP_GREEN ++ "{d}.{d}ms" ++ MCP_RESET, .{ ms, frac }) catch "";
-        } else {
-            return std.fmt.bufPrint(buf, "  " ++ MCP_BLUE ++ "{d}.{d}ms" ++ MCP_RESET, .{ ms, frac }) catch "";
-        }
-    } else {
-        const s = uns / 1_000_000_000;
-        const frac = (uns % 1_000_000_000) / 100_000_000;
-        return std.fmt.bufPrint(buf, "  " ++ MCP_YELLOW ++ "{d}.{d}s" ++ MCP_RESET, .{ s, frac }) catch "";
-    }
-}
-
-fn mcpToolIcon(tool_name: []const u8) []const u8 {
-    if (eql(tool_name, "codedb_outline")) return MCP_BLUE ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_symbol")) return MCP_BLUE ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_read")) return MCP_BLUE ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_search")) return MCP_MAGENTA ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_word")) return MCP_CYAN ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_edit")) return MCP_YELLOW ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_tree")) return MCP_GREEN ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_hot")) return MCP_YELLOW ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_deps")) return MCP_CYAN ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_changes")) return MCP_YELLOW ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_bundle")) return MCP_MAGENTA ++ MCP_DOT ++ MCP_RESET;
-    return MCP_DIM ++ MCP_DOT ++ MCP_RESET;
-}
-
-fn mcpPathBasename(path: []const u8) []const u8 {
-    if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| return path[pos + 1 ..];
-    return path;
-}
-
-fn mcpPathParent(path: []const u8) []const u8 {
-    if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| return path[0..pos];
-    return "";
-}
-
-fn mcpAppendPath(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), path: []const u8) void {
-    const name = mcpPathBasename(path);
-    const parent = mcpPathParent(path);
-    if (parent.len > 0) {
-        buf.appendSlice(alloc, MCP_DIM) catch {};
-        buf.appendSlice(alloc, parent) catch {};
-        buf.appendSlice(alloc, "/" ++ MCP_RESET) catch {};
-    }
-    buf.appendSlice(alloc, MCP_BOLD) catch {};
-    buf.appendSlice(alloc, name) catch {};
-    buf.appendSlice(alloc, MCP_RESET) catch {};
-}
-
-pub fn mcpGenerateSummary(
-    alloc: std.mem.Allocator,
-    tool_name: []const u8,
-    args: *const std.json.ObjectMap,
-    output: []const u8,
-    is_error: bool,
-    buf: *std.ArrayList(u8),
-) void {
-    // Readable label: strip "codedb_" prefix
-    const label = if (std.mem.indexOf(u8, tool_name, "_")) |i| tool_name[i + 1 ..] else tool_name;
-    buf.appendSlice(alloc, MCP_BOLD) catch {};
-    buf.appendSlice(alloc, label) catch {};
-    buf.appendSlice(alloc, MCP_RESET) catch {};
-
-    if (is_error) {
-        const msg = if (std.mem.startsWith(u8, output, "error: ")) output[7..] else output;
-        const end = std.mem.indexOfScalar(u8, msg, '\n') orelse msg.len;
-        buf.appendSlice(alloc, MCP_DASH ++ MCP_RED) catch {};
-        buf.appendSlice(alloc, msg[0..end]) catch {};
-        buf.appendSlice(alloc, MCP_RESET) catch {};
-        // Issue #367-dx: surface the received-keys diagnostic inline so clients
-        // that only render content[0] (the TTY summary block) still see it.
-        if (std.mem.indexOf(u8, output, "received keys: [")) |s| {
-            const kstart = s + "received keys: [".len;
-            if (std.mem.indexOfScalarPos(u8, output, kstart, ']')) |kend| {
-                buf.appendSlice(alloc, "  " ++ MCP_DIM ++ "(received: [") catch {};
-                buf.appendSlice(alloc, output[kstart..kend]) catch {};
-                buf.appendSlice(alloc, "])" ++ MCP_RESET) catch {};
-            }
-        }
-        return;
-    }
-
-    if (eql(tool_name, "codedb_search") or eql(tool_name, "codedb_word")) {
-        const q = getStr(args, "query") orelse getStr(args, "word") orelse "";
-        // First line: "N results for 'q':\n" or "N hits for 'w':\n"
-        const nl = std.mem.indexOfScalar(u8, output, '\n') orelse output.len;
-        const sp = std.mem.indexOfScalar(u8, output[0..nl], ' ') orelse nl;
-        buf.appendSlice(alloc, "  " ++ MCP_BOLD ++ "'") catch {};
-        buf.appendSlice(alloc, q) catch {};
-        buf.appendSlice(alloc, "'" ++ MCP_RESET ++ MCP_DASH ++ MCP_CYAN ++ MCP_BOLD) catch {};
-        buf.appendSlice(alloc, output[0..sp]) catch {};
-        buf.appendSlice(alloc, MCP_RESET) catch {};
-        buf.appendSlice(alloc, if (eql(tool_name, "codedb_search")) " results" else " hits") catch {};
-        if (getBool(args, "scope")) {
-            buf.appendSlice(alloc, MCP_DIM ++ "  (scoped)" ++ MCP_RESET) catch {};
-        }
-    } else if (eql(tool_name, "codedb_outline")) {
-        const path = getStr(args, "path") orelse "";
-        buf.appendSlice(alloc, "  ") catch {};
-        mcpAppendPath(alloc, buf, path);
-        // Parse meta from first line: "path (lang, N lines, N bytes)"
-        if (std.mem.indexOfScalar(u8, output, '(')) |lp| {
-            if (std.mem.indexOfScalarPos(u8, output, lp, ')')) |rp| {
-                buf.appendSlice(alloc, MCP_DASH ++ MCP_DIM) catch {};
-                buf.appendSlice(alloc, output[lp + 1 .. rp]) catch {};
-                buf.appendSlice(alloc, MCP_RESET) catch {};
-            }
-        }
-    } else if (eql(tool_name, "codedb_symbol")) {
-        const sym_name = getStr(args, "name") orelse "";
-        buf.appendSlice(alloc, MCP_DASH ++ MCP_MAGENTA ++ "fn " ++ MCP_RESET ++ MCP_BOLD) catch {};
-        buf.appendSlice(alloc, sym_name) catch {};
-        buf.appendSlice(alloc, MCP_RESET) catch {};
-    } else if (eql(tool_name, "codedb_tree")) {
-        var file_count: usize = 0;
-        var it = std.mem.splitScalar(u8, output, '\n');
-        while (it.next()) |line| {
-            const t = std.mem.trim(u8, line, " ");
-            if (t.len > 0 and !std.mem.endsWith(u8, t, "/")) file_count += 1;
-        }
-        var tmp: [32]u8 = undefined;
-        buf.appendSlice(alloc, "  " ++ MCP_CYAN ++ MCP_BOLD) catch {};
-        buf.appendSlice(alloc, std.fmt.bufPrint(&tmp, "{d}", .{file_count}) catch "?") catch {};
-        buf.appendSlice(alloc, MCP_RESET ++ " files") catch {};
-    } else if (eql(tool_name, "codedb_read") or eql(tool_name, "codedb_deps")) {
-        const path = getStr(args, "path") orelse "";
-        buf.appendSlice(alloc, "  ") catch {};
-        mcpAppendPath(alloc, buf, path);
-    } else if (eql(tool_name, "codedb_edit")) {
-        const path = getStr(args, "path") orelse "";
-        buf.appendSlice(alloc, "  ") catch {};
-        mcpAppendPath(alloc, buf, path);
-    } else if (eql(tool_name, "codedb_hot")) {
-        var count: usize = 0;
-        var it = std.mem.splitScalar(u8, output, '\n');
-        while (it.next()) |line| {
-            if (std.mem.trim(u8, line, " ").len > 0) count += 1;
-        }
-        var tmp: [32]u8 = undefined;
-        buf.appendSlice(alloc, "  " ++ MCP_CYAN ++ MCP_BOLD) catch {};
-        buf.appendSlice(alloc, std.fmt.bufPrint(&tmp, "{d}", .{count}) catch "?") catch {};
-        buf.appendSlice(alloc, MCP_RESET ++ " files") catch {};
-    } else if (eql(tool_name, "codedb_status")) {
-        var files_str: []const u8 = "?";
-        var seq_str: []const u8 = "?";
-        if (std.mem.indexOf(u8, output, "files: ")) |i| {
-            const after = output[i + 7 ..];
-            files_str = after[0 .. std.mem.indexOfScalar(u8, after, '\n') orelse after.len];
-        }
-        if (std.mem.indexOf(u8, output, "seq: ")) |i| {
-            const after = output[i + 5 ..];
-            seq_str = after[0 .. std.mem.indexOfScalar(u8, after, '\n') orelse after.len];
-        }
-        buf.appendSlice(alloc, "  " ++ MCP_CYAN ++ MCP_BOLD) catch {};
-        buf.appendSlice(alloc, files_str) catch {};
-        buf.appendSlice(alloc, MCP_RESET ++ " files" ++ MCP_DASH ++ MCP_DIM ++ "seq ") catch {};
-        buf.appendSlice(alloc, seq_str) catch {};
-        buf.appendSlice(alloc, MCP_RESET) catch {};
-    } else if (eql(tool_name, "codedb_changes")) {
-        if (getInt(args, "since")) |since| {
-            var tmp: [32]u8 = undefined;
-            buf.appendSlice(alloc, "  " ++ MCP_DIM ++ "since seq ") catch {};
-            buf.appendSlice(alloc, std.fmt.bufPrint(&tmp, "{d}", .{since}) catch "0") catch {};
-            buf.appendSlice(alloc, MCP_RESET) catch {};
-        }
-    } else if (eql(tool_name, "codedb_bundle")) {
-        const path = getStr(args, "path") orelse "";
-        if (path.len > 0) {
-            buf.appendSlice(alloc, "  ") catch {};
-            mcpAppendPath(alloc, buf, path);
-        }
-    }
-    // codedb_snapshot, codedb_status: label + timer is enough
-}
-
-pub fn mcpGenerateGuidance(
-    alloc: std.mem.Allocator,
-    tool_name: []const u8,
-    args: *const std.json.ObjectMap,
-    output: []const u8,
-    is_error: bool,
-    buf: *std.ArrayList(u8),
-) void {
-    if (is_error) {
-        if (eql(tool_name, "codedb_outline") or eql(tool_name, "codedb_read") or eql(tool_name, "codedb_deps")) {
-            buf.appendSlice(alloc, MCP_DIM ++ "hint: use codedb_tree to verify file paths" ++ MCP_RESET) catch {};
-        } else if (eql(tool_name, "codedb_edit")) {
-            buf.appendSlice(alloc, MCP_DIM ++ "hint: use codedb_outline to verify structure before editing" ++ MCP_RESET) catch {};
-        }
-        return;
-    }
-    if (eql(tool_name, "codedb_tree")) {
-        buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "next: codedb_outline path=<file> to inspect symbols" ++ MCP_RESET) catch {};
-    } else if (eql(tool_name, "codedb_outline")) {
-        buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "next: codedb_symbol name=<fn> body=true for a symbol's full source in one call" ++ MCP_RESET) catch {};
-    } else if (eql(tool_name, "codedb_symbol")) {
-        // Bug 8: don't tell the agent to "edit this symbol" when the lookup
-        // returned 0 results — there's nothing to edit. Hint at codedb_search
-        // instead so they can broaden the lookup.
-        if (std.mem.startsWith(u8, output, "no results for:")) {
-            buf.appendSlice(alloc, MCP_DIM ++ "hint: try codedb_search query=<name> to find references — symbol not defined" ++ MCP_RESET) catch {};
-        } else if (getBool(args, "body")) {
-            buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "next: codedb_callers name=<fn> for call sites, then edit with your native tool" ++ MCP_RESET) catch {};
-        } else {
-            buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "next: codedb_symbol name=<fn> body=true to see the source" ++ MCP_RESET) catch {};
-        }
-    } else if (eql(tool_name, "codedb_search")) {
-        const has_regex_meta = blk: {
-            if (getBool(args, "regex")) break :blk false;
-            const q = getStr(args, "query") orelse break :blk false;
-            for (q) |c| switch (c) {
-                '|', '(', ')', '[', ']', '?', '+', '*', '^', '$' => break :blk true,
-                else => {},
-            };
-            break :blk false;
-        };
-        if (has_regex_meta) {
-            buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "hint: query has regex metachars but regex=false; matched as literal — pass regex=true for OR/grouping" ++ MCP_RESET) catch {};
-        } else if (!getBool(args, "scope")) {
-            buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "next: add scope=true to see enclosing functions" ++ MCP_RESET) catch {};
-        }
-    } else if (eql(tool_name, "codedb_word")) {
-        buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "next: codedb_outline on a result file for full context" ++ MCP_RESET) catch {};
-    } else if (eql(tool_name, "codedb_edit")) {
-        buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "next: codedb_changes to verify edits" ++ MCP_RESET) catch {};
-    } else if (eql(tool_name, "codedb_hot")) {
-        buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "next: codedb_outline on a hot file to see recent changes" ++ MCP_RESET) catch {};
-    }
-}
 
 test "issue-258: cached project reads use the project root after contents are released" {
     const io = testing.io;
@@ -5047,7 +3477,7 @@ test "issue-258: cached project reads use the project root after contents are re
     const project_path_len = try tmp.dir.realPathFile(io, ".", &project_path_buf);
     const project_path = project_path_buf[0..project_path_len];
 
-    var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var snapshot_src = Explorer.init(testing.allocator);
     defer snapshot_src.deinit();
     snapshot_src.setRoot(io, project_path);
     try snapshot_src.indexFile("src/main.zig", "const project = \"secondary\";\n");
@@ -5060,12 +3490,12 @@ test "issue-258: cached project reads use the project root after contents are re
     const default_path_len = try std.Io.Dir.cwd().realPathFile(io, ".", &default_path_buf);
     const default_path = default_path_buf[0..default_path_len];
 
-    var default_explorer = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var default_explorer = Explorer.init(testing.allocator);
     defer default_explorer.deinit();
     var default_store = Store.init(testing.allocator);
     defer default_store.deinit();
 
-    var cache = ProjectCache.init(testing.allocator, default_path, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var cache = ProjectCache.init(testing.allocator, default_path);
     defer cache.deinit();
 
     const ctx = try cache.get(io, project_path, &default_explorer, &default_store);
@@ -5108,7 +3538,7 @@ test "ProjectCache loads project from central snapshot cache" {
         std.Io.Dir.cwd().deleteDir(io, data_dir) catch {};
     }
 
-    var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var snapshot_src = Explorer.init(testing.allocator);
     defer snapshot_src.deinit();
     snapshot_src.setRoot(io, project_path);
     try snapshot_src.indexFile("src/main.zig", "pub fn cachedProject() void {}\n");
@@ -5124,12 +3554,12 @@ test "ProjectCache loads project from central snapshot cache" {
     const default_path_len = try std.Io.Dir.cwd().realPathFile(io, ".", &default_path_buf);
     const default_path = default_path_buf[0..default_path_len];
 
-    var default_explorer = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var default_explorer = Explorer.init(testing.allocator);
     defer default_explorer.deinit();
     var default_store = Store.init(testing.allocator);
     defer default_store.deinit();
 
-    var cache = ProjectCache.init(testing.allocator, default_path, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var cache = ProjectCache.init(testing.allocator, default_path);
     defer cache.deinit();
 
     const ctx = try cache.get(io, project_path, &default_explorer, &default_store);
@@ -5163,19 +3593,19 @@ test "issue-353: explicit default project loads snapshot when default explorer i
         std.Io.Dir.cwd().deleteDir(io, data_dir) catch {};
     }
 
-    var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var snapshot_src = Explorer.init(testing.allocator);
     defer snapshot_src.deinit();
     snapshot_src.setRoot(io, project_path);
     try snapshot_src.indexFile("src/main.zig", "pub fn issue353() void {}\n");
     try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_src, project_path, testing.allocator);
 
-    var default_explorer = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var default_explorer = Explorer.init(testing.allocator);
     defer default_explorer.deinit();
     default_explorer.setRoot(io, project_path);
     var default_store = Store.init(testing.allocator);
     defer default_store.deinit();
 
-    var cache = ProjectCache.init(testing.allocator, project_path, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var cache = ProjectCache.init(testing.allocator, project_path);
     defer cache.deinit();
 
     const ctx = try cache.get(io, project_path, &default_explorer, &default_store);
@@ -5207,24 +3637,24 @@ test "issue-353: project cache invalidation reloads newly written snapshots" {
         std.Io.Dir.cwd().deleteDir(io, data_dir) catch {};
     }
 
-    var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var snapshot_src = Explorer.init(testing.allocator);
     defer snapshot_src.deinit();
     snapshot_src.setRoot(io, project_path);
     try snapshot_src.indexFile("src/old.zig", "pub fn oldSymbol() void {}\n");
     try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_src, project_path, testing.allocator);
 
-    var default_explorer = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var default_explorer = Explorer.init(testing.allocator);
     defer default_explorer.deinit();
     var default_store = Store.init(testing.allocator);
     defer default_store.deinit();
 
-    var cache = ProjectCache.init(testing.allocator, "/Users/example/default", explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var cache = ProjectCache.init(testing.allocator, "/Users/example/default");
     defer cache.deinit();
 
     const old_ctx = try cache.get(io, project_path, &default_explorer, &default_store);
     try testing.expect(old_ctx.explorer.outlines.contains("src/old.zig"));
 
-    var snapshot_next = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var snapshot_next = Explorer.init(testing.allocator);
     defer snapshot_next.deinit();
     snapshot_next.setRoot(io, project_path);
     try snapshot_next.indexFile("src/new.zig", "pub fn newSymbol() void {}\n");
@@ -5241,7 +3671,7 @@ test "codedb_snapshot cache reuses output until store seq changes" {
     const io = testing.io;
     const alloc = testing.allocator;
 
-    var explorer = Explorer.init(alloc, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var explorer = Explorer.init(alloc);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
@@ -5253,7 +3683,7 @@ test "codedb_snapshot cache reuses output until store seq changes" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = BenchContext.init(alloc, ".", explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var bench_ctx = BenchContext.init(alloc, ".");
     defer bench_ctx.deinit();
 
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, "{}", .{});

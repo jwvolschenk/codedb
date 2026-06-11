@@ -1,9 +1,0 @@
-{
-  "entry_file": "src/regex/string.rs",
-  "entry_function": "Regex::new",
-  "trace": "Regex::new delegates to RegexBuilder::new(re).build() in src/builders.rs, which calls build_one_string to construct a regex_automata::meta::Regex. Inside regex-automata/src/meta/regex.rs::Regex::new, the pattern is parsed to AST then lowered to HIR via regex-syntax. The HIR is handed to regex-automata/src/meta/strategy.rs::new, which picks a matching engine (prefilter, lazy/dense DFA, or PikeVM/backtracker) after building a Thompson NFA as the common substrate.",
-  "tool_calls": 9,
-  "wall_seconds": 49,
-  "tokens": 24156,
-  "notes": "stayed within soft budget"
-}

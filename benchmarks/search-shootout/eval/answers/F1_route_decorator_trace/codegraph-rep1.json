@@ -1,8 +1,0 @@
-{
-  "entry_file": "src/flask/sansio/scaffold.py",
-  "entry_function": "route",
-  "trace": "The `@app.route('/foo')` decorator calls `Scaffold.route()` (src/flask/sansio/scaffold.py:336), which returns a `decorator` closure that immediately invokes `self.add_url_rule(rule, endpoint, f, **options)` when applied to the view function. `App.add_url_rule()` (src/flask/sansio/app.py:605) normalizes the HTTP methods set, resolves the endpoint name via `_endpoint_from_view_func` (defaulting to the function's `__name__`), stores the view function in `self.view_functions[endpoint]`, then constructs a `werkzeug.routing.Rule` object and calls `self.url_map.add(rule_obj)` to insert the URL pattern into Werkzeug's routing map.",
-  "tool_calls": 5,
-  "wall_seconds": 12,
-  "tokens": 4200
-}

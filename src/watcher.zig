@@ -1,10 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ContentCache = @import("hot_cache.zig").ContentCache;
 const cio = @import("cio.zig");
 const Store = @import("store.zig").Store;
 const Explorer = @import("explore.zig").Explorer;
 const TrigramIndex = @import("index.zig").TrigramIndex;
-const WordIndex = @import("index.zig").WordIndex;
 const explore_mod = @import("explore.zig");
 const git_mod = @import("git.zig");
 pub const EventKind = enum(u8) {
@@ -107,7 +107,7 @@ const WorkerParsedResults = struct {
     }
 };
 
-const skip_dirs = [_][]const u8{
+pub const skip_dirs = [_][]const u8{
     ".git",
     ".claude",
     ".codedb",
@@ -159,6 +159,52 @@ const skip_dirs = [_][]const u8{
     "bower_components",
 };
 
+fn eqlAsciiIgnoreCase(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| {
+        if (std.ascii.toLower(x) != std.ascii.toLower(y)) return false;
+    }
+    return true;
+}
+
+fn endsWithIgnoreCase(haystack: []const u8, suffix: []const u8) bool {
+    if (haystack.len < suffix.len) return false;
+    return eqlAsciiIgnoreCase(haystack[haystack.len - suffix.len ..], suffix);
+}
+
+/// Simple glob match where * matches any sequence of characters.
+/// Case-insensitive (ASCII). Does not treat / specially (matches name fragments only).
+/// Handles: "*.ext", "name.*", "pre*post", "*mid*", etc.
+fn matchSimpleGlob(name: []const u8, pattern: []const u8) bool {
+    // Two-pointer with backtracking on *
+    var ni: usize = 0;
+    var pi: usize = 0;
+    var star_ni: usize = 0;
+    var star_pi: usize = std.math.maxInt(usize);
+
+    while (ni < name.len) {
+        if (pi < pattern.len and pattern[pi] == '*') {
+            // Star: record position, try matching zero chars first
+            star_pi = pi;
+            star_ni = ni;
+            pi += 1;
+        } else if (pi < pattern.len and std.ascii.toLower(pattern[pi]) == std.ascii.toLower(name[ni])) {
+            ni += 1;
+            pi += 1;
+        } else if (star_pi != std.math.maxInt(usize)) {
+            // Backtrack: let star consume one more char
+            pi = star_pi + 1;
+            star_ni += 1;
+            ni = star_ni;
+        } else {
+            return false;
+        }
+    }
+    // Consume trailing *s in pattern
+    while (pi < pattern.len and pattern[pi] == '*') pi += 1;
+    return pi == pattern.len;
+}
+
 fn shouldSkip(path: []const u8) bool {
     // Check each path component against skip list
     var rest = path;
@@ -199,6 +245,7 @@ const FilteredWalker = struct {
     io: std.Io,
     dir_prefix_len: usize = 0,
     ignore_patterns: std.ArrayList([]const u8) = .empty,
+    codedbignore_hash: ?u64 = null,
     real_root: []const u8 = &.{},
     visited_real_paths: std.StringHashMapUnmanaged(void) = .empty,
 
@@ -228,6 +275,7 @@ const FilteredWalker = struct {
 
         // Load .codedbignore if it exists
         if (root.readFileAlloc(io, ".codedbignore", allocator, .limited(64 * 1024))) |content| {
+            self.codedbignore_hash = std.hash.Wyhash.hash(0, content);
             defer allocator.free(content);
             var lines = std.mem.splitScalar(u8, content, '\n');
             while (lines.next()) |line| {
@@ -271,29 +319,34 @@ const FilteredWalker = struct {
 
     fn isIgnored(self: *FilteredWalker, name: []const u8, full_path: []const u8) bool {
         for (self.ignore_patterns.items) |pattern| {
+            // Strip leading **/ — means "match at any depth" which is our default
+            // behavior since the walker already recurses into subdirectories.
+            const pat = if (std.mem.startsWith(u8, pattern, "**/")) pattern[3..] else pattern;
+            if (pat.len == 0) continue;
+
             // Root-anchored pattern (starts with /) — only match at project root
-            if (pattern.len > 1 and pattern[0] == '/') {
-                const anchored = pattern[1..];
+            if (pat.len > 1 and pat[0] == '/') {
+                const anchored = pat[1..];
                 const clean = if (std.mem.endsWith(u8, anchored, "/")) anchored[0 .. anchored.len - 1] else anchored;
-                if (std.mem.eql(u8, full_path, clean) or std.mem.startsWith(u8, full_path, anchored)) return true;
+                if (eqlAsciiIgnoreCase(full_path, clean) or std.mem.startsWith(u8, full_path, anchored)) return true;
                 continue;
             }
             // Directory pattern (ends with /) — match directory names at any depth
-            if (std.mem.endsWith(u8, pattern, "/")) {
-                const dir_name = pattern[0 .. pattern.len - 1];
-                if (std.mem.eql(u8, name, dir_name)) return true;
+            if (std.mem.endsWith(u8, pat, "/")) {
+                const dir_name = pat[0 .. pat.len - 1];
+                if (eqlAsciiIgnoreCase(name, dir_name)) return true;
                 continue;
             }
-            // Glob suffix match (e.g. *.log)
-            if (pattern.len > 1 and pattern[0] == '*') {
-                if (std.mem.endsWith(u8, name, pattern[1..])) return true;
+            // Glob pattern containing * — case-insensitive simple glob
+            if (std.mem.indexOfScalar(u8, pat, '*')) |_| {
+                if (matchSimpleGlob(name, pat)) return true;
                 continue;
             }
-            // Exact name match (matches at any depth)
-            if (std.mem.eql(u8, name, pattern)) return true;
+            // Exact name match (matches at any depth) — case-insensitive
+            if (eqlAsciiIgnoreCase(name, pat)) return true;
             // Path prefix match (must match at / boundary)
-            if (std.mem.startsWith(u8, full_path, pattern) and
-                full_path.len > pattern.len and full_path[pattern.len] == '/') return true;
+            if (std.mem.startsWith(u8, full_path, pat) and
+                full_path.len > pat.len and full_path[pat.len] == '/') return true;
         }
         return false;
     }
@@ -410,9 +463,11 @@ const FilteredWalker = struct {
     }
 };
 
-fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocator: std.mem.Allocator, skip_trigram: bool) !std.ArrayList(InitialScanEntry) {
+fn collectInitialScanEntries(io: std.Io, store: *Store, explorer: *Explorer, dir: std.Io.Dir, allocator: std.mem.Allocator, skip_trigram: bool) !std.ArrayList(InitialScanEntry) {
     var walker = try FilteredWalker.init(io, dir, allocator);
     defer walker.deinit();
+    try explorer.setIgnorePatterns(walker.ignore_patterns.items);
+    explorer.codedbignore_hash = walker.codedbignore_hash;
 
     var entries: std.ArrayList(InitialScanEntry) = .empty;
     errdefer {
@@ -439,18 +494,13 @@ fn parseInitialScanEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, 
     const dir = try std.Io.Dir.cwd().openDir(io, root, .{});
     defer dir.close(io);
     const stat = try dir.statFile(io, entry.path, .{});
-    if (stat.size > 512 * 1024) return null;
-    const content = try dir.readFileAlloc(io, entry.path, arena_alloc, .limited(512 * 1024));
+    if (stat.size > 2 * 1024 * 1024) return null;
+    const content = try dir.readFileAlloc(io, entry.path, arena_alloc, .limited(2 * 1024 * 1024));
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {
         if (c == 0) return null;
     }
-    // Threshold for including a file in the trigram index. Bumped from 64KB to
-    // 1MB after the search-shootout bench (issue: large code files like
-    // ReactFiberCompleteWork.js at 77KB were invisible to substring search,
-    // causing agents to miss call sites in them). 1MB covers all reasonable
-    // code files; minified/generated bundles past 1MB are correctly skipped.
-    const effective_skip_trigram = entry.skip_trigram or (content.len > 1024 * 1024);
+    const effective_skip_trigram = entry.skip_trigram or (content.len > 64 * 1024);
     const parsed = try explore_mod.Explorer.parseContentForIndexing(arena_alloc, entry.path, content);
     return .{
         .path = entry.path,
@@ -460,37 +510,12 @@ fn parseInitialScanEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, 
     };
 }
 
-fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8, entries: []const InitialScanEntry, word_shard: ?*WordIndex) void {
-    const persist = results.arena.allocator();
-    // Parse each file in a per-file scratch arena that is reset between files,
-    // then copy only the keep-data (content + outline) into the persistent
-    // results arena. parseContentForIndexing allocates large transient parse
-    // state (AST/token buffers) that is not part of the returned content/outline;
-    // without resetting per file, a worker's arena retains every file's
-    // transients chunk-wide (high-water-mark, never reclaimed), which dominated
-    // initial-scan RSS on large repos (~4.3GB -> contents+outline only).
-    // The results arena (and thus the clone) is touched by this worker only, so
-    // the copy is race-free; commit on the main thread re-dups both anyway.
-    //
-    // When word_shard is set, also build the WordIndex for this chunk in parallel
-    // here (lock-free, content is hot) instead of on the serial commit thread.
-    // Files are indexed in chunk order, matching the order commit/mergeShard will
-    // assign global doc_ids, so the merged index is identical to the serial path.
-    var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer scratch.deinit();
+fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8, entries: []const InitialScanEntry) void {
+    const arena_alloc = results.arena.allocator();
     for (entries) |entry| {
-        _ = scratch.reset(.retain_capacity);
-        const parsed = parseInitialScanEntry(io, root, entry, scratch.allocator()) catch null;
+        const parsed = parseInitialScanEntry(io, root, entry, arena_alloc) catch null;
         if (parsed) |file| {
-            const content_copy = persist.dupe(u8, file.content) catch continue;
-            const outline_copy = explore_mod.Explorer.cloneOutline(&file.outline, persist) catch continue;
-            results.items.append(persist, .{
-                .path = file.path,
-                .content = content_copy,
-                .outline = outline_copy,
-                .skip_trigram = file.skip_trigram,
-            }) catch continue;
-            if (word_shard) |ws| ws.indexFile(file.path, content_copy) catch {};
+            results.items.append(arena_alloc, file) catch return;
         }
     }
 }
@@ -499,7 +524,7 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
     const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
     defer dir.close(io);
 
-    var entries = try collectInitialScanEntries(io, store, dir, allocator, skip_trigram);
+    var entries = try collectInitialScanEntries(io, store, explorer, dir, allocator, skip_trigram);
     defer {
         for (entries.items) |entry| allocator.free(entry.path);
         entries.deinit(allocator);
@@ -531,18 +556,6 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
     const threads = try allocator.alloc(std.Thread, n_workers);
     defer allocator.free(threads);
 
-    // When the word index is enabled (cold `index`/`mcp` path), build it in
-    // parallel per-worker shards backed by each worker's arena, then merge the
-    // shards on the main thread after commit. This moves the word-index build —
-    // the dominant cost of the otherwise-serial commit loop — into the parallel
-    // region. Gated on skip_file_words because shards intentionally omit the
-    // per-file word set (file_words), so they only fit the bulk cold-index build
-    // (which never needs incremental removeFile); main.zig always sets it. Other
-    // paths keep the old serial behavior with zero overhead.
-    const use_shards = explorer.word_index.enabled and explorer.word_index.skip_file_words;
-    const shards: ?[]WordIndex = if (use_shards) try allocator.alloc(WordIndex, n_workers) else null;
-    defer if (shards) |sh| allocator.free(sh);
-
     const chunk_size = entries.items.len / n_workers;
     const remainder = entries.items.len % n_workers;
     var offset: usize = 0;
@@ -552,29 +565,16 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
         const count = chunk_size + extra;
         const chunk = entries.items[offset .. offset + count];
         offset += count;
-        var shard_ptr: ?*WordIndex = null;
-        if (shards) |sh| {
-            sh[i] = WordIndex.init(worker.arena.allocator());
-            sh[i].skip_file_words = true;
-            shard_ptr = &sh[i];
-        }
-        threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk, shard_ptr });
+        threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk });
     }
     for (threads) |thread| thread.join();
 
-    // Commit outlines/contents/deps/symbol serially (those mutate shared maps);
-    // word indexing is deferred and folded in per worker via mergeShard, so the
-    // global doc_ids land in chunk order — identical to the single-worker path.
-    if (use_shards) explorer.defer_word_index = true;
-    defer explorer.defer_word_index = false;
-    for (workers, 0..) |*worker, wi| {
+    for (workers) |*worker| {
         for (worker.items.items) |file| {
             try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
         }
-        if (shards) |sh| try explorer.word_index.mergeShard(&sh[wi]);
         // Free this worker's arena immediately — releases pages to OS,
-        // prevents holding all workers' content simultaneously. (This also
-        // frees the worker's word shard, which mergeShard has copied out.)
+        // prevents holding all workers' content simultaneously.
         worker.deinit(allocator);
         workers_committed += 1;
     }
@@ -646,7 +646,7 @@ fn cachedTrigramExtractWorker(results: *TriExtractResults, entries: []const Cach
     defer local.deinit();
     local.ensureTotalCapacity(4096) catch {};
     for (entries) |entry| {
-        if (entry.content.len > 1024 * 1024) continue;
+        if (entry.content.len > 64 * 1024) continue;
         local.clearRetainingCapacity();
         if (entry.content.len >= 3) {
             for (0..entry.content.len - 2) |i| {
@@ -697,7 +697,7 @@ pub fn buildTrigramsFromCache(
     try entries.ensureTotalCapacity(allocator, contents.count());
     var iter = contents.iterator();
     while (iter.next()) |e| {
-        if (e.value_ptr.*.len > 1024 * 1024) continue;
+        if (e.value_ptr.*.len > 64 * 1024) continue;
         entries.appendAssumeCapacity(.{ .path = e.key_ptr.*, .content = e.value_ptr.* });
     }
     if (entries.items.len == 0) return tmp_tri;
@@ -749,7 +749,7 @@ fn trigramExtractWorker(io: std.Io, results: *TriExtractResults, root: []const u
     local.ensureTotalCapacity(4096) catch {};
     for (entries) |entry| {
         const r = readFileEntry(io, root, entry, alloc) orelse continue;
-        if (r.content.len > 1024 * 1024) continue;
+        if (r.content.len > 64 * 1024) continue;
         local.clearRetainingCapacity();
         if (r.content.len >= 3) {
             for (0..r.content.len - 2) |i| {
@@ -790,7 +790,7 @@ pub fn initialScanWithTrigrams(
     const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
     defer dir.close(io);
 
-    var entries = try collectInitialScanEntries(io, store, dir, allocator, true);
+    var entries = try collectInitialScanEntries(io, store, explorer, dir, allocator, true);
     defer {
         for (entries.items) |entry| allocator.free(entry.path);
         entries.deinit(allocator);
@@ -818,7 +818,7 @@ pub fn initialScanWithTrigrams(
                     explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, true) catch continue;
                 }
                 // Build trigrams from same content — no re-read needed
-                if (file.content.len <= 1024 * 1024) {
+                if (file.content.len <= 64 * 1024) {
                     tmp_tri.indexFile(file.path, file.content) catch {};
                 }
             }
@@ -877,14 +877,14 @@ pub fn initialScanWithTrigrams(
             const count = chunk_size + extra;
             const chunk = entries.items[offset .. offset + count];
             offset += count;
-            threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk, null });
+            threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk });
         }
         for (threads) |thread| thread.join();
 
         for (workers) |*worker| {
             for (worker.items.items) |file| {
                 explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, true) catch continue;
-                if (file.content.len <= 1024 * 1024) {
+                if (file.content.len <= 64 * 1024) {
                     tmp_tri.indexFile(file.path, file.content) catch {};
                 }
             }
@@ -1024,6 +1024,7 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
             defer dir.close(io);
             var walker = FilteredWalker.init(io, dir, tmp) catch continue;
             defer walker.deinit();
+            explorer.setIgnorePatterns(walker.ignore_patterns.items) catch {};
             const max_trigram_files: usize = 15_000;
             var file_count: usize = 0;
             while (walker.next() catch null) |entry| {
@@ -1161,9 +1162,29 @@ const skip_extensions = [_][]const u8{
     ".sqlite3", ".lock", ".sum",
 };
 
+/// Lockfile basenames — these are generated, binary-like, and pollute the word index.
+const skip_lockfile_names = [_][]const u8{
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "bun.lockb",
+    "Cargo.lock",
+    "composer.lock",
+    "Gemfile.lock",
+    "poetry.lock",
+    "mix.lock",
+    "pubspec.lock",
+    "Package.resolved",
+};
+
 fn shouldSkipFile(path: []const u8) bool {
     for (skip_extensions) |ext| {
         if (std.mem.endsWith(u8, path, ext)) return true;
+    }
+    // Skip lockfiles by basename — these are generated and pollute search indexes
+    const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| path[sep + 1 ..] else path;
+    for (skip_lockfile_names) |lock_name| {
+        if (eqlAsciiIgnoreCase(basename, lock_name)) return true;
     }
     // Skip dotfiles like .DS_Store, .gitignore etc at any depth
     if (std.mem.endsWith(u8, path, ".DS_Store")) return true;
@@ -1196,7 +1217,7 @@ pub fn isSensitivePath(path: []const u8) bool {
     }
     // .env, .env.<token>; do NOT match .envoy, .envrc, .environment, etc.
     if (basename.len >= 4 and std.mem.eql(u8, basename[0..4], ".env") and
-        (basename.len == 4 or basename[4] == '.' or basename[4] == '-' or basename[4] == '_')) return true;
+        (basename.len == 4 or basename[4] == '.')) return true;
     // Exact matches
     const sensitive_names = [_][]const u8{
         ".dev.vars",        ".npmrc",               ".pypirc",      ".netrc",
@@ -1234,7 +1255,7 @@ fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []co
         if (c == 0) return;
     }
     // Skip trigram indexing for files > 64KB to prevent OOM on large repos
-    const effective_skip_trigram = skip_trigram or (content.len > 1024 * 1024);
+    const effective_skip_trigram = skip_trigram or (content.len > 64 * 1024);
     if (effective_skip_trigram) {
         try explorer.indexFileSkipTrigram(path, content);
     } else {
@@ -1249,10 +1270,18 @@ fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []co
 // immediately, eliminating the 2s polling delay for muonry-sourced edits.
 
 fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, alloc: std.mem.Allocator) void {
-    // Atomically read + truncate
     const notify_path = "/tmp/codedb-notify";
     const file = std.Io.Dir.cwd().openFile(io, notify_path, .{ .mode = .read_write }) catch return;
     defer file.close(io);
+
+    // The notify file is shared by every codedb watcher on this machine. Take
+    // a cross-process advisory lock so two watchers can't race the
+    // read → truncate → write-back sequence below and clobber each other.
+    // Windows: file handles are HANDLE (*anyopaque), not c_int fds; skip flock.
+    if (comptime builtin.os.tag != .windows) {
+        cio.flockFd(file.handle, cio.LOCK_EX);
+        defer cio.flockFd(file.handle, cio.LOCK_UN);
+    }
 
     const file_len = file.length(io) catch return;
     if (file_len == 0) return;
@@ -1264,10 +1293,28 @@ fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
     if (n == 0) return;
     const data_slice = data[0..n];
 
-    // Truncate after reading
+    // Notifications for *other* projects belong to a different watcher and must
+    // survive this drain. Collect them first (cheap, in-memory), then truncate
+    // and write them back immediately to keep the truncate window minimal.
+    var keep: std.ArrayList(u8) = .empty;
+    defer keep.deinit(alloc);
+    {
+        var scan = std.mem.splitScalar(u8, data_slice, '\n');
+        while (scan.next()) |line| {
+            const path = std.mem.trim(u8, line, " \t\r");
+            if (path.len == 0) continue;
+            if (notifyLineBelongsToOtherRoot(path, root)) {
+                keep.appendSlice(alloc, path) catch {};
+                keep.append(alloc, '\n') catch {};
+            }
+        }
+    }
     file.setLength(io, 0) catch return;
+    if (keep.items.len > 0) {
+        file.writePositionalAll(io, keep.items, 0) catch {};
+    }
 
-    // Re-index each notified path
+    // Re-index each notified path that belongs to this project.
     const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch return;
     defer dir.close(io);
 
@@ -1275,6 +1322,7 @@ fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
     while (lines.next()) |line| {
         const path = std.mem.trim(u8, line, " \t\r");
         if (path.len == 0) continue;
+        if (notifyLineBelongsToOtherRoot(path, root)) continue;
 
         // Make path relative to root if it's absolute
         const rel = if (std.mem.startsWith(u8, path, root))
@@ -1304,4 +1352,19 @@ fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
             _ = queue.push(ev);
         }
     }
+}
+
+/// True when `line` is an absolute path outside `root` — i.e. it belongs to a
+/// different project's watcher and must not be consumed here. Relative lines
+/// are ambiguous (no project to attribute them to) and fall through to the
+/// existing per-root handling, preserving prior behavior.
+pub fn notifyLineBelongsToOtherRoot(line: []const u8, root: []const u8) bool {
+    if (line.len == 0 or line[0] != '/') return false;
+    return !pathUnderRoot(line, root);
+}
+
+fn pathUnderRoot(path: []const u8, root: []const u8) bool {
+    if (!std.mem.startsWith(u8, path, root)) return false;
+    if (path.len == root.len) return true;
+    return path[root.len] == '/';
 }

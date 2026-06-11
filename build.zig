@@ -7,8 +7,8 @@ pub fn build(b: *std.Build) void {
     const codesign_identity = b.option(
         []const u8,
         "codesign-identity",
-        "macOS codesign identity. Disabled by default and skipped for x86_64-macos.",
-    );
+        "macOS codesign identity. Defaults to ad-hoc signing ('-').",
+    ) orelse "-";
 
     // ── Exposed module: importable as @import("codedb") ──
     const codedb_mod = b.addModule("codedb", .{
@@ -18,10 +18,6 @@ pub fn build(b: *std.Build) void {
     });
 
     // ── CLI executable ──
-    // In ReleaseFast/Small, strip debug info to shrink the binary (~10%)
-    // and the RSS at runtime (smaller __TEXT footprint = fewer pages
-    // resident under load). Debug/ReleaseSafe keep symbols for stack traces.
-    const strip_debug = optimize == .ReleaseFast or optimize == .ReleaseSmall;
     const exe = b.addExecutable(.{
         .name = "codedb",
         .root_module = b.createModule(.{
@@ -29,7 +25,6 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
-            .strip = strip_debug,
         }),
     });
 
@@ -41,28 +36,14 @@ pub fn build(b: *std.Build) void {
     const nanoregex_dep = b.dependency("nanoregex", .{});
     exe.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
 
-    const install_exe = b.addInstallArtifact(exe, .{});
-    b.getInstallStep().dependOn(&install_exe.step);
+    b.installArtifact(exe);
 
-    // Zig 0.16 x86_64-macos binaries can segfault on macOS 26 after codesign
-    // (issue #504), including under Rosetta. Keep that release slice unsigned.
-    if (codesign_identity) |identity| {
-        const target_os = target.query.os_tag orelse target.result.os.tag;
-        const target_arch = target.query.cpu_arch orelse target.result.cpu.arch;
-        if (target_os == .macos and target_arch != .x86_64 and builtin.os.tag == .macos) {
-            const codesign = b.addSystemCommand(&.{
-                "codesign",
-                "-f",
-                "--options",
-                "runtime",
-                "--timestamp",
-                "-s",
-                identity,
-                b.getInstallPath(.bin, "codedb"),
-            });
-            codesign.step.dependOn(&install_exe.step);
-            b.getInstallStep().dependOn(&codesign.step);
-        }
+
+    // ── macOS codesign (ad-hoc by default; configurable for release builds) ──
+    if (target.result.os.tag == .macos and builtin.os.tag == .macos) {
+        const codesign = b.addSystemCommand(&.{ "codesign", "-f", "-s", codesign_identity });
+        codesign.addArtifactArg(exe);
+        b.getInstallStep().dependOn(&codesign.step);
     }
 
     const run_cmd = b.addRunArtifact(exe);
@@ -72,44 +53,27 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run codedb daemon");
     run_step.dependOn(&run_cmd.step);
 
-    // ── Tests (split into independent binaries for faster compilation) ──
+    // ── Tests ──
     const test_filter = b.option([]const u8, "test-filter", "Only run tests whose name contains this substring");
-    const test_step = b.step("test", "Run all tests");
-
-    const test_files = [_]struct { name: []const u8, path: []const u8, needs_mcp: bool, needs_nanoregex: bool }{
-        .{ .name = "test-core",     .path = "src/test_core.zig",     .needs_mcp = false, .needs_nanoregex = false },
-        .{ .name = "test-explore",  .path = "src/test_explore.zig",  .needs_mcp = false, .needs_nanoregex = true },
-        .{ .name = "test-index",    .path = "src/test_index.zig",    .needs_mcp = true,  .needs_nanoregex = true },
-        .{ .name = "test-parser",   .path = "src/test_parser.zig",   .needs_mcp = false, .needs_nanoregex = true },
-        .{ .name = "test-search",   .path = "src/test_search.zig",   .needs_mcp = true,  .needs_nanoregex = true },
-        .{ .name = "test-snapshot", .path = "src/test_snapshot.zig", .needs_mcp = false, .needs_nanoregex = true },
-        .{ .name = "test-mcp",      .path = "src/test_mcp.zig",      .needs_mcp = true,  .needs_nanoregex = true },
-        .{ .name = "test-query",    .path = "src/test_query.zig",    .needs_mcp = true,  .needs_nanoregex = true },
-        .{ .name = "test-bench",    .path = "src/test_bench.zig",    .needs_mcp = false, .needs_nanoregex = true },
-    };
-
-    for (test_files) |tf| {
-        const t = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path(tf.path),
-                .target = target,
-                .optimize = optimize,
-                .link_libc = true,
-            }),
-        });
-        if (tf.needs_mcp) t.root_module.addImport("mcp", mcp_dep.module("mcp"));
-        if (tf.needs_nanoregex) t.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
-        if (test_filter) |f| {
-            const filters = b.allocator.alloc([]const u8, 1) catch @panic("oom");
-            filters[0] = f;
-            t.filters = filters;
-        }
-        const run = b.addRunArtifact(t);
-        test_step.dependOn(&run.step);
-
-        const individual_step = b.step(tf.name, b.fmt("Run {s}", .{tf.name}));
-        individual_step.dependOn(&run.step);
+    const tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    tests.root_module.addImport("mcp", mcp_dep.module("mcp"));
+    tests.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+    if (test_filter) |f| {
+        const filters = b.allocator.alloc([]const u8, 1) catch @panic("oom");
+        filters[0] = f;
+        tests.filters = filters;
     }
+
+    const test_step = b.step("test", "Run tests");
+    const tests_run = b.addRunArtifact(tests);
+    test_step.dependOn(&tests_run.step);
 
 
     // ── Library tests (verify the module root compiles) ──

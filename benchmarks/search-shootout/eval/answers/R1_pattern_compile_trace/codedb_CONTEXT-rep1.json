@@ -1,8 +1,0 @@
-{
-  "entry_file": "src/regex/string.rs",
-  "entry_function": "new",
-  "trace": "`Regex::new` (src/regex/string.rs:180) immediately delegates: `RegexBuilder::new(re).build()` \u2192 `Builder::build_one_string()` (src/builders.rs:70), which configures a `meta::Builder` and calls `meta::Builder::build(&pattern)` (regex-automata/src/meta/regex.rs:3416) \u2192 `build_many`; inside `build_many` (regex-automata/src/meta/regex.rs:3455\u20133498) the pattern string is first parsed to an AST via `self.ast.build().parse(p.as_ref())`, then translated to a High-level Intermediate Representation (HIR) via `self.hir.build().translate(p.as_ref(), ast)`, yielding a `Vec<Hir>` that is passed to `build_many_from_hir`; `build_many_from_hir` (regex-automata/src/meta/regex.rs:3600\u20133616) builds a `RegexInfo` from the HIRs, hands them to `strategy::new(&info, &hirs)` which selects and compiles the appropriate engine (PikeVM/NFA, one-pass DFA, lazy hybrid DFA, or full DFA according to the pattern's properties), and finally wraps the compiled strategy in `Regex { imp: Arc::new(RegexI { strat, info }), pool }`.",
-  "tool_calls": 13,
-  "wall_seconds": 180,
-  "tokens": 36000
-}

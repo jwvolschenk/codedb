@@ -17,22 +17,31 @@ pub fn buildSnapshot(explorer: *Explorer, store: *Store, alloc: std.mem.Allocato
 
         try buf.ensureTotalCapacity(alloc, roughSnapshotCapacity(explorer.outlines.count()));
 
+        var paths: std.ArrayList([]const u8) = .empty;
+        defer paths.deinit(alloc);
+        try paths.ensureTotalCapacity(alloc, explorer.outlines.count());
+        var iter = explorer.outlines.iterator();
+        while (iter.next()) |entry| {
+            try paths.append(alloc, entry.key_ptr.*);
+        }
+        std.mem.sort([]const u8, paths.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
+
         try w.writeAll("\"tree\":\"");
-        try writeTreeJsonEscaped(alloc, &buf, explorer);
+        try writeTreeJsonEscaped(alloc, &buf, explorer, paths.items);
         try w.writeAll("\",");
 
         try w.writeAll("\"outlines\":{");
-        var outline_iter = explorer.outlines.iterator();
-        var first_outline = true;
-        while (outline_iter.next()) |entry| {
-            if (!first_outline) try w.writeAll(",");
-            first_outline = false;
-            const path = entry.key_ptr.*;
-            const outline = entry.value_ptr;
+        for (paths.items, 0..) |path, pi| {
+            if (pi > 0) try w.writeAll(",");
             try w.writeAll("\"");
             try writeJsonEscaped(alloc, &buf, path);
             try w.writeAll("\":{");
 
+            const outline = explorer.outlines.get(path) orelse continue;
             try w.print("\"language\":\"{s}\",\"lines\":{d},\"bytes\":{d},\"symbols\":[", .{
                 @tagName(outline.language), outline.line_count, outline.byte_size,
             });
@@ -48,6 +57,16 @@ pub fn buildSnapshot(explorer: *Explorer, store: *Store, alloc: std.mem.Allocato
                     try writeJsonEscaped(alloc, &buf, d);
                     try w.writeAll("\"");
                 }
+                if (sym.decorators.len > 0) {
+                    try w.writeAll(",\"decorators\":[");
+                    for (sym.decorators, 0..) |decorator, di| {
+                        if (di > 0) try w.writeAll(",");
+                        try w.writeAll("\"");
+                        try writeJsonEscaped(alloc, &buf, decorator);
+                        try w.writeAll("\"");
+                    }
+                    try w.writeAll("]");
+                }
                 try w.writeAll("}");
             }
             try w.writeAll("],\"imports\":[");
@@ -62,16 +81,23 @@ pub fn buildSnapshot(explorer: *Explorer, store: *Store, alloc: std.mem.Allocato
         try w.writeAll("},");
 
         try w.writeAll("\"symbol_index\":{");
+        var sym_keys: std.ArrayList([]const u8) = .empty;
+        defer sym_keys.deinit(alloc);
+        try sym_keys.ensureTotalCapacity(alloc, explorer.symbol_index.count());
         var ski = explorer.symbol_index.iterator();
-        var first_symbol = true;
-        while (ski.next()) |entry| {
-            if (!first_symbol) try w.writeAll(",");
-            first_symbol = false;
-            const name = entry.key_ptr.*;
+        while (ski.next()) |e| try sym_keys.append(alloc, e.key_ptr.*);
+        std.mem.sort([]const u8, sym_keys.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
+
+        for (sym_keys.items, 0..) |name, ni| {
+            if (ni > 0) try w.writeAll(",");
             try w.writeAll("\"");
             try writeJsonEscaped(alloc, &buf, name);
             try w.writeAll("\":[");
-            const locs = entry.value_ptr;
+            const locs = explorer.symbol_index.get(name) orelse continue;
             for (locs.items, 0..) |loc, li| {
                 if (li > 0) try w.writeAll(",");
                 try w.writeAll("{\"path\":\"");
@@ -85,16 +111,23 @@ pub fn buildSnapshot(explorer: *Explorer, store: *Store, alloc: std.mem.Allocato
         try w.writeAll("},");
 
         try w.writeAll("\"dep_graph\":{");
+        var dep_keys: std.ArrayList([]const u8) = .empty;
+        defer dep_keys.deinit(alloc);
+        try dep_keys.ensureTotalCapacity(alloc, explorer.dep_graph.count());
         var diter = explorer.dep_graph.iterator();
-        var first_dep = true;
-        while (diter.next()) |entry| {
-            if (!first_dep) try w.writeAll(",");
-            first_dep = false;
-            const path = entry.key_ptr.*;
+        while (diter.next()) |e| try dep_keys.append(alloc, e.key_ptr.*);
+        std.mem.sort([]const u8, dep_keys.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
+
+        for (dep_keys.items, 0..) |path, di| {
+            if (di > 0) try w.writeAll(",");
             try w.writeAll("\"");
             try writeJsonEscaped(alloc, &buf, path);
             try w.writeAll("\":[");
-            const deps = entry.value_ptr;
+            const deps = explorer.dep_graph.get(path) orelse continue;
             for (deps.items, 0..) |dep, dj| {
                 if (dj > 0) try w.writeAll(",");
                 try w.writeAll("\"");
@@ -119,44 +152,19 @@ fn roughSnapshotCapacity(file_count: usize) usize {
     return @max(min_capacity, file_count * per_file);
 }
 
-fn writeTreeJsonEscaped(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *Explorer) !void {
+fn writeTreeJsonEscaped(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *Explorer, paths: []const []const u8) !void {
     const w = cio.listWriter(out, alloc);
-    var seen_dirs_buf: [256][]const u8 = undefined;
-    var seen_dirs_len: usize = 0;
-    var overflow_seen_dirs: ?std.StringHashMap(void) = null;
-    defer if (overflow_seen_dirs) |*m| m.deinit();
+    var seen_dirs = std.StringHashMap(void).init(alloc);
+    defer seen_dirs.deinit();
 
-    var iter = explorer.outlines.iterator();
-    while (iter.next()) |entry| {
-        const path = entry.key_ptr.*;
-        const outline = entry.value_ptr;
+    for (paths) |path| {
+        const outline = explorer.outlines.get(path) orelse continue;
 
         var prefix_end: usize = 0;
         while (std.mem.indexOfScalarPos(u8, path, prefix_end, '/')) |sep| {
             const dir = path[0 .. sep + 1];
-            var seen = false;
-            if (overflow_seen_dirs) |*m| {
-                seen = m.contains(dir);
-            } else {
-                for (seen_dirs_buf[0..seen_dirs_len]) |seen_dir| {
-                    if (std.mem.eql(u8, seen_dir, dir)) {
-                        seen = true;
-                        break;
-                    }
-                }
-            }
-            if (!seen) {
-                if (overflow_seen_dirs) |*m| {
-                    try m.put(dir, {});
-                } else if (seen_dirs_len < seen_dirs_buf.len) {
-                    seen_dirs_buf[seen_dirs_len] = dir;
-                    seen_dirs_len += 1;
-                } else {
-                    var m = std.StringHashMap(void).init(alloc);
-                    for (seen_dirs_buf[0..seen_dirs_len]) |seen_dir| try m.put(seen_dir, {});
-                    try m.put(dir, {});
-                    overflow_seen_dirs = m;
-                }
+            if (!seen_dirs.contains(dir)) {
+                try seen_dirs.put(dir, {});
                 const depth = std.mem.count(u8, dir[0..sep], "/");
                 for (0..depth) |_| try w.writeAll("  ");
                 const dir_name = path[if (depth > 0) std.mem.lastIndexOfScalar(u8, dir[0..sep], '/').? + 1 else 0..sep];
@@ -179,10 +187,6 @@ fn writeTreeJsonEscaped(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explo
 }
 
 fn writeJsonEscaped(alloc: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) !void {
-    if (std.mem.indexOfAny(u8, s, "\"\\\n\r\t") == null) {
-        try out.appendSlice(alloc, s);
-        return;
-    }
     var start: usize = 0;
     for (s, 0..) |c, i| {
         switch (c) {

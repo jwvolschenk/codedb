@@ -9,8 +9,6 @@ Scenarios covered:
      and tools return data without needing a roots handshake.
   3. No-roots client: spawn from cwd=/, client declares no roots capability, MCP
      stays alive and tools respond gracefully (0 files, no crash).
-  4. issue-512 regression: direct tools/call accepts inline params when
-     arguments is empty, matching codedb_bundle's compatibility fallback.
 
 Usage:
   python3 scripts/e2e_mcp_test.py [--binary /path/to/codedb] [--project /path/to/project]
@@ -131,16 +129,12 @@ class MCPProcess:
 
     def call_tool(self, name: str, args: dict[str, Any], timeout: float = 30.0) -> dict[str, Any] | None:
         """Send a tools/call request and return the response."""
-        return self.call_tool_params({"name": name, "arguments": args}, timeout=timeout)
-
-    def call_tool_params(self, params: dict[str, Any], timeout: float = 30.0) -> dict[str, Any] | None:
-        """Send a tools/call request with raw params and return the response."""
         req_id = self.next_id()
         self.send({
             "jsonrpc": "2.0",
             "id": req_id,
             "method": "tools/call",
-            "params": params,
+            "params": {"name": name, "arguments": args},
         })
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -445,57 +439,6 @@ def run_scenario_3_no_roots_client(binary: str) -> list[TestResult]:
     return results
 
 
-def run_scenario_4_issue512_direct_inline_args(binary: str, project: str) -> list[TestResult]:
-    """
-    issue-512: direct tools/call must recover when a client sends arguments: {}
-    but places real tool fields inline in params.
-    """
-    results: list[TestResult] = []
-
-    def t(name: str) -> TestResult:
-        r = TestResult(f"[S4] {name}")
-        results.append(r)
-        return r
-
-    p = MCPProcess(binary, [], cwd="/", command=[binary, project, "mcp"])
-
-    try:
-        r = t("initialize succeeds")
-        ok = do_initialize(p, with_roots=False)
-        if not ok:
-            r.fail("no initialize response")
-            return results
-        r.ok()
-
-        r = t("scan completes before inline-arg backtest")
-        scan_ok = wait_for_scan(p, timeout=90.0)
-        if not scan_ok:
-            r.fail("timed out waiting for scan")
-            return results
-        r.ok()
-
-        r = t("direct tools/call accepts inline path with empty arguments")
-        resp = p.call_tool_params({
-            "name": "codedb_outline",
-            "arguments": {},
-            "path": "src/mcp.zig",
-        })
-        text = tool_text(resp)
-        if resp is None:
-            r.fail("no response to inline-arg tools/call")
-        elif "missing 'path'" in text or "received keys: []" in text:
-            r.fail(f"inline path was dropped: {text[:220]!r}")
-        elif "src/mcp.zig" not in text and "handleCall" not in text:
-            r.fail(f"outline response missing expected file/symbol: {text[:220]!r}")
-        else:
-            r.ok()
-
-    finally:
-        p.close()
-
-    return results
-
-
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -528,9 +471,6 @@ def main() -> int:
 
     print(f"\n{CYAN}── Scenario 3: no-roots client (spawn from /, no scan) ──{RESET}")
     all_results += run_scenario_3_no_roots_client(binary)
-
-    print(f"\n{CYAN}── Scenario 4: issue-512 direct inline args ──{RESET}")
-    all_results += run_scenario_4_issue512_direct_inline_args(binary, project)
 
     print()
     passed = 0

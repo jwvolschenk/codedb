@@ -151,7 +151,7 @@ Line-range editing engine. Supports `replace` and `delete` operations on line ra
 
 Builds a full JSON snapshot on demand containing tree, all outlines, symbol index, and dependency graph.
 
-- `buildSnapshot()` — streams JSON from Explorer state; object key order is not part of the snapshot contract
+- `buildSnapshot()` — builds deterministic JSON (sorted keys) from Explorer state
 
 ### `agent.zig` — Agent Registry
 

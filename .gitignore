@@ -1,28 +1,26 @@
-# Zig build artifacts
-.zig-cache/
-zig-out/
+# codedb repo — gitignore
 
-# Local/dev files
+# Build artifacts
+.build/
+.release/
+zig-out/
+.zig-cache/
+zig-cache/
+
+# codedb runtime (local per-machine snapshots)
 .codedb/
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
 
-# Editor files
+# Editors
+.vscode/
 *.swp
 *.swo
 *~
-.vscode/
-.idea/
-*.code-workspace
-install/.wrangler/
 
-# Generated snapshot (machine-specific)
-codedb.snapshot
-release/
-release/
-socials/
-
-# Benchmark / dev output dirs
-logs/
+# Python
+__pycache__/
+*.pyc
+.venv/

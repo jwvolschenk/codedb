@@ -1,9 +1,0 @@
-{
-  "file": "packages/react-reconciler/src/ReactFiberWorkLoop.js",
-  "function": "scheduleUpdateOnFiber",
-  "snippet": "export function scheduleUpdateOnFiber(root, fiber, lane) \u2014 called from dispatchSetStateInternal (ReactFiberHooks.js:3692) after enqueueConcurrentHookUpdate; internally calls ensureRootIsScheduled (ReactFiberRootScheduler.js:116)",
-  "trace": "setX(v) \u2192 dispatchSetState (ReactFiberHooks.js:3598) \u2192 dispatchSetStateInternal (3628) \u2192 enqueueConcurrentHookUpdate \u2192 scheduleUpdateOnFiber (ReactFiberWorkLoop.js:973) \u2192 ensureRootIsScheduled (ReactFiberRootScheduler.js:116) \u2192 scheduleCallback (ReactFiberRootScheduler.js:626)",
-  "tool_calls": 14,
-  "wall_seconds": 108,
-  "tokens": 21010
-}

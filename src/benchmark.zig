@@ -292,7 +292,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // Index
     var store = Store.init(alloc);
     defer store.deinit();
-    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var explorer = Explorer.init(alloc);
     defer explorer.deinit();
 
     var t0 = try cio.Timer.start();

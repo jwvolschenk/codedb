@@ -1,489 +1,597 @@
-<p align="center">
-  <img src="assets/codedb.png" alt="codedb" width="200" />
-</p>
+# codedb
 
-<p align="center">
-  <a href="https://github.com/justrach/codedb/releases/latest"><img src="https://img.shields.io/github/v/release/justrach/codedb?style=flat-square&label=version" alt="Release" /></a>
-  <a href="https://github.com/justrach/codedb/blob/main/LICENSE"><img src="https://img.shields.io/github/license/justrach/codedb?style=flat-square" alt="License" /></a>
-  <img src="https://img.shields.io/badge/zig-0.16-f7a41d?style=flat-square" alt="Zig 0.16" />
-  <img src="https://img.shields.io/badge/status-alpha-orange?style=flat-square" alt="Alpha" />
-  <a href="https://deepwiki.com/justrach/codedb"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" /></a>
-  <br />
-  <a href="https://trendshift.io/repositories/26207" target="_blank"><img src="https://trendshift.io/api/badge/repositories/26207" alt="justrach%2Fcodedb | Trendshift" width="250" height="55" /></a>
-</p>
+Code intelligence MCP server for AI agents. Indexes a codebase once, serves
+symbol lookups, search, and dependency queries in under 1ms.
 
-<h1 align="center">codedb</h1>
+## Origin
 
-<h3 align="center">Code intelligence server for AI agents. Zig core. MCP native. Zero dependencies.</h3>
+This is a fork of [justrach/codedb](https://github.com/justrach/codedb) by
+**Rach Pradhan** ([@justrach](https://github.com/justrach)), licensed under
+the [BSD 3-Clause License](LICENSE).
 
-<p align="center">
-  Structural indexing · Trigram search · Word index · Dependency graph · File watching · MCP + HTTP
-</p>
+All original work and copyright belong to the upstream author. This fork is
+maintained independently and is not affiliated with or endorsed by the
+original project.
 
-<p align="center">
-  <em><strong>A context engine, not an editor.</strong> codedb helps agents <strong>find and understand</strong> code — search, symbols, callers, dependencies, outlines — and hands editing back to your native tools. <code>codedb_edit</code> is only a fallback.</em>
-</p>
+## License
 
-<p align="center">
-  <a href="#-status">Status</a> ·
-  <a href="#-install">Install</a> ·
-  <a href="#-quick-start">Quick Start</a> ·
-  <a href="#-mcp-tools">MCP Tools</a> ·
-  <a href="#-benchmarks">Benchmarks</a> ·
-  <a href="#️-architecture">Architecture</a> ·
-  <a href="#-data--privacy">Data & Privacy</a> ·
-  <a href="#-building-from-source">Building</a>
-</p>
+BSD 3-Clause License. See [LICENSE](LICENSE) for the full text.
+
+Copyright (c) 2024-2026, Rach Pradhan (justrach).
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the conditions in the LICENSE file
+are met.
+
+## Contributing
+
+This is a private fork. Contributions are not accepted from external
+contributors. See [CONTRIBUTING.md](CONTRIBUTING.md) for the upstream
+project's contribution guidelines if you are working with the original
+[justrach/codedb](https://github.com/justrach/codedb) repository.
+
+## How It Works
+
+```mermaid
+flowchart LR
+    subgraph "Developer Host"
+        A["Your Code"] -->|"codedb index"| B["codedb binary"]
+        B -->|"MCP (stdio)"| C["AI Agent"]
+        C -->|"reads/writes"| A
+    end
+
+    subgraph "Agent Options"
+        C --> D["Hermes"]
+        C --> E["Copilot"]
+        C --> F["Claude"]
+        C --> G["Codex"]
+        C --> H["Gemini"]
+        C --> I["Cursor"]
+    end
+
+    style B fill:#2d333b,stroke:#58a6ff,color:#e6edf3
+    style A fill:#1a1e24,stroke:#8b949e,color:#e6edf3
+    style C fill:#1a1e24,stroke:#8b949e,color:#e6edf3
+```
 
 ---
 
-## Status
+## Prerequisites
 
-> **Alpha software — API is stabilizing but may change**
->
-> codedb works and is used daily in production AI workflows, but:
-> - **Parser support** — Zig, C/C++, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, Dart/Flutter
-> - **Lightweight outline support** — Java, Kotlin, Svelte, Vue, Astro, shell, CSS/SCSS, SQL, protobuf, Fortran, LLVM IR, MLIR, and TableGen
-> - **No auth** — HTTP server binds to localhost only
-> - **Snapshot format** may change between versions
-> - **MCP protocol** is JSON-RPC 2.0 over stdio (stable)
+| Dependency | Why | Install |
+|-----------|-----|---------|
+| **gh** (GitHub CLI) | Downloads from private repos | [cli.github.com](https://cli.github.com/) |
+| **git** | Version detection | Usually pre-installed |
 
-| What works today                                       | What's in progress                       |
-|--------------------------------------------------------|------------------------------------------|
-| 21 MCP tools for full codebase intelligence            | Deeper parser coverage and edge-case handling |
-| Trigram v2: integer doc IDs, batch-accumulate, merge intersect | Incremental segment-based indexing |
-| 538x faster than ripgrep on pre-indexed queries        | WASM target for Cloudflare Workers       |
-| O(1) inverted word index for identifier lookup         | Multi-project support                    |
-| Structural outlines (functions, structs, imports)      | mmap-backed trigram index                |
-| Reverse dependency graph                               |                                          |
-| Fallback editor: atomic line-range edits + version tracking          |                                          |
-| Auto-registration in Claude, Codex, Gemini, Cursor, Windsurf, Devin |                                |
-| Polling file watcher with filtered directory walker    |                                          |
-| Portable snapshot for instant MCP startup              |                                          |
-| Singleton MCP with PID lock + 1h idle timeout          |                                          |
-| Sensitive file blocking (.env, credentials, keys)      |                                          |
-| Codesigned macOS ARM64 binary; Intel slice temporarily unsigned |                                          |
-| SHA256 checksum verification in installer              |                                          |
-| Cross-platform: macOS (ARM/x86), Linux (ARM/x86)      |                                          |
+### Verify and authenticate gh
+
+```bash
+gh --version        # should print gh 2.x
+gh auth status      # should show logged in
+gh auth login       # if not authenticated
+```
 
 ---
 
-## ⚡ Install
+## Install
+
+### Linux / macOS
 
 ```bash
-curl -fsSL https://codedb.codegraff.com/install.sh | bash
+git clone git@github.com:jwvolschenk_crdc/codedb_custom.git
+cd codedb_custom
+bash scripts/setup-codedb.sh
 ```
 
-Downloads the binary for your platform and auto-registers codedb as an MCP server in **Claude Code**, **Codex**, **Gemini CLI**, **Cursor**, **Windsurf**, and **Devin** — each written directly and additively into that tool's config (only when the tool is present). The installer prints the exact `codedb mcp` command it registered plus hook setup pointers for Codex and Claude Code.
+This will:
+1. Download the latest binary from [Releases](https://github.com/jwvolschenk_crdc/codedb_custom/releases)
+2. Install to `~/.local/bin/codedb`
+3. Register with all detected AI agents
 
-### Or via npm/npx (zero-install for MCP clients)
+### Windows (WSL2)
+
+```powershell
+git clone git@github.com:jwvolschenk_crdc/codedb_custom.git
+cd codedb_custom
+.\scripts\setup-codedb.ps1
+```
+
+### Update
 
 ```bash
-npx -y codedeebee mcp
+bash scripts/setup-codedb.sh
 ```
 
-Or install globally:
+### Uninstall
 
 ```bash
-npm install -g codedeebee
-codedb mcp
+bash scripts/uninstall-codedb.sh
 ```
 
-The npm package is named [`codedeebee`](https://www.npmjs.com/package/codedeebee) (the bare `codedb` name is restricted on npm); it ships a thin launcher that downloads the matching native binary from GitHub Releases on `postinstall` and verifies the SHA256 checksum. The installed CLI is still called `codedb`.
+---
 
-Useful for MCP clients (Claude Code, Cursor, opencode, Claude Desktop) that already use `npx`:
+## Verify
+
+After install, restart your agent session. Then ask: *"What files are in
+this project?"* — the agent should call `codedb_tree` to answer.
+
+```bash
+# Manual check
+codedb --version
+codedb tree
+```
+
+---
+
+## .codedbignore
+
+Exclude vendor code, build artifacts, and non-source files from indexing.
+Create `.codedbignore` in your project root (next to `.gitignore`).
+
+**Start from your `.gitignore`** — anything that's not source code
+(vendor dirs, build output, IDE caches, compiled binaries) is a good
+candidate. The goal is to index only files an AI agent needs to
+*understand and modify your codebase*.
+
+<details>
+<summary><strong>Example: .NET / C# projects</strong></summary>
+
+```
+# ── Vendor / package directories ──────────────────────────
+# (directory pattern: matches at any depth)
+Lib/
+packages/
+vendor/
+node_modules/
+bower_components/
+
+# ── Build output (future-proof even if not present yet) ───
+bin/
+obj/
+Debug/
+Release/
+artifacts/
+publish/
+
+# ── Binary / compiled files ───────────────────────────────
+# (glob pattern: matches by extension)
+*.nupkg
+*.dll
+*.exe
+*.pdb
+*.bundle.js
+*.map
+
+# ── Auto-generated code ───────────────────────────────────
+# (path prefix: matches from project root)
+src/Connected Services
+
+# ── Static assets not useful for code intelligence ────────
+src/wwwroot/lib
+src/wwwroot/fonts
+src/wwwroot/themes
+src/wwwroot/css
+
+# ── IDE / tool configs ────────────────────────────────────
+# (exact name: matches at any depth)
+.vs/
+.idea/
+.vscode/
+.mcp.json
+
+# ── CI / deployment infra ─────────────────────────────────
+Dockerfile
+Jenkinsfile
+.dockerignore
+
+# ── Runtime / package manager configs ─────────────────────
+appsettings.json
+appsettings.Development.json
+NuGet.Config
+package-lock.json
+
+# ── Data / metadata files ─────────────────────────────────
+Models.xml
+*.min.js
+```
+
+</details>
+
+<details>
+<summary><strong>Example: Node.js / TypeScript projects</strong></summary>
+
+```
+# Vendor
+node_modules/
+bower_components/
+.pnp/
+
+# Build output
+dist/
+build/
+out/
+.next/
+.nuxt/
+
+# Compiled / generated
+*.js.map
+*.d.ts
+*.min.js
+*.bundle.js
+
+# IDE / tool
+.vs/
+.idea/
+.vscode/
+
+# Lock files / configs
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+.env
+.env.*
+
+# Test coverage / caches
+coverage/
+.nyc_output/
+.cache/
+```
+
+</details>
+
+### Pattern syntax
+
+| Pattern | What it matches | Example |
+|---------|----------------|---------|
+| `dirname/` | Directory name at any depth (case-insensitive) | `node_modules/` matches `src/node_modules` |
+| `*.ext` | File extension (case-insensitive) | `*.dll` matches `Foo.DLL` |
+| `/path` | Root-anchored path only | `/src/generated` matches `src/generated` but not `lib/src/generated` |
+| `name` | Exact name at any depth, OR path prefix (matches at `/` boundary) | `Dockerfile` matches anywhere; `src/vendor` matches `src/vendor/foo` |
+
+All matching is **case-insensitive**.
+
+**Tips:**
+- Use `*.ext` for file types, not full paths
+- Use directory names without trailing path for broad matching (`vendor/` not `src/vendor/`)
+- Use path prefixes for project-specific directories (`src/Connected Services`)
+- Patterns from `.gitignore` that use `[Cc]ase` ranges won't work — use exact names instead
+- Without `.codedbignore`, a typical .NET project indexes thousands of vendor files. With it, only the actual source.
+
+---
+
+## .codedbrc
+
+Per-project or global configuration. Place `.codedbrc` in your project root
+(next to `.codedbignore`) or in the codedb binary directory for global defaults.
+
+Resolution order (first match wins):
+1. `--config-file=<path>` (explicit)
+2. `$CWD/.codedbrc` (project-level)
+3. `<binary_dir>/.codedbrc` (global fallback)
+
+One `key = value` per line. Blank lines and `#`-prefixed lines are ignored.
+Unknown keys are silently ignored so upgrades don't break older configs.
+
+<details>
+<summary><strong>Example .codedbrc</strong></summary>
+
+```
+# ── Version history ───────────────────────────────────────
+# Cap per-file version history in the Store. Default: 100.
+max_versions = 100
+
+# ── Content cache ─────────────────────────────────────────
+# Max files kept in the Explorer's in-memory cache. Default: 1000.
+max_cached = 1000
+
+# ── Rerank tracing ────────────────────────────────────────
+# Append one JSON line per search invocation to
+# <data_dir>/rerank-traces.jsonl for offline tuning experiments.
+# Default: false
+rerank_trace = false
+```
+
+</details>
+
+### Settings reference
+
+| Setting | Default | Increase when | Decrease when |
+|---------|---------|---------------|---------------|
+| `max_versions` | 100 | You edit files frequently and need deep history | Disk space is tight |
+| `max_cached` | 1000 | You work on very large monorepos (1000+ files) | Memory is constrained |
+| `rerank_trace` | false | Tuning search relevance offline | Not actively experimenting |
+
+---
+
+## Agent Configuration
+
+The setup script auto-detects and registers with installed agents.
+Manual configuration below if needed.
+
+<details>
+<summary><strong>Hermes</strong> — <code>~/.hermes/config.yaml</code></summary>
+
+```yaml
+mcp_servers:
+  codedb:
+    command: ~/.local/bin/codedb
+    args:
+      - mcp
+    enabled: true
+```
+
+</details>
+
+<details>
+<summary><strong>GitHub Copilot</strong> — <code>~/.copilot/mcp-config.json</code></summary>
 
 ```json
 {
-  "codedb": {
-    "type": "local",
-    "command": ["npx", "-y", "codedeebee"],
-    "args": ["mcp"],
-    "enabled": true
+  "mcpServers": {
+    "codedb": {
+      "command": "~/.local/bin/codedb",
+      "args": ["mcp"]
+    }
   }
 }
 ```
 
-### Updating or repairing an older install
+</details>
 
-If `codedb update` fails on an older release, rerun the installer:
+<details>
+<summary><strong>Claude Code</strong> — <code>~/.claude.json</code></summary>
 
-```bash
-curl -fsSL https://codedb.codegraff.com/install.sh | bash
+```json
+{
+  "mcpServers": {
+    "codedb": {
+      "command": "~/.local/bin/codedb",
+      "args": ["mcp"]
+    }
+  }
+}
 ```
 
-This replaces the `codedb` binary with the latest GitHub Release and keeps your existing MCP registrations, config, caches, and snapshots. Use this path for any release whose built-in updater cannot fetch release checksums.
+</details>
 
-## Documentation
+<details>
+<summary><strong>OpenAI Codex</strong> — <code>~/.codex/config.toml</code></summary>
 
-- **[MCP setup](docs/mcp.md)** — per-client configurations (Claude Desktop, Cursor, VS Code, Claude Code, Codex CLI, Gemini CLI), root resolution, troubleshooting
-- **[Skill base & context files](docs/skills.md)** — `agents.md` / `CLAUDE.md` / `GEMINI.md`, `.codedbrc`, per-developer memory
-- **[CLI reference](docs/cli.md)** — every command, every flag
-- **[Architecture](docs/architecture.md)** — engine internals, index layout
-- **[Benchmarks](docs/benchmarks.md)** — micro-benchmarks + agentic-eval results vs codegraph, FTS5, lean-ctx
+```toml
+[mcp_servers.codedb]
+command = "~/.local/bin/codedb"
+args = ["mcp"]
+startup_timeout_sec = 30
+```
 
-| Platform | Binary | Signed |
-|----------|--------|--------|
-| macOS ARM64 (Apple Silicon) | `codedb-darwin-arm64` | ✅ codesigned + notarized |
-| macOS x86_64 (Intel) | `codedb-darwin-x86_64` | temporarily unsigned |
-| Linux ARM64 | `codedb-linux-arm64` | — |
-| Linux x86_64 | `codedb-linux-x86_64` | — |
+</details>
 
-Or install manually from [GitHub Releases](https://github.com/justrach/codedb/releases/latest).
+<details>
+<summary><strong>Gemini CLI</strong> — <code>~/.gemini/settings.json</code></summary>
+
+```json
+{
+  "mcpServers": {
+    "codedb": {
+      "command": "~/.local/bin/codedb",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>Cursor</strong> — <code>~/.cursor/mcp.json</code></summary>
+
+```json
+{
+  "mcpServers": {
+    "codedb": {
+      "command": "~/.local/bin/codedb",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>Windows (WSL2 bridge)</strong></summary>
+
+```json
+{
+  "servers": {
+    "codedb": {
+      "command": "wsl",
+      "args": ["~/.local/bin/codedb", "${workspaceFolder}", "mcp"]
+    }
+  }
+}
+```
+
+</details>
 
 ---
 
-## ⚡ Quick Start
+## Agent Skills: codedb Instructions
 
-### As an MCP server (recommended)
+Install the codedb usage guide so your AI agent knows how to use codedb effectively. The guide covers indexing, search, symbols, dependencies, batching patterns, and mono-repo workflows.
 
-After installing, codedb is automatically registered. Just open a project and the 21 MCP tools are available to your AI agent.
+Skills are available in `skills/` with platform-specific formats. Copy the appropriate file to your agent's skill location.
 
-```bash
-# Manual MCP start (auto-configured by install script)
-codedb mcp /path/to/your/project
-```
+<details>
+<summary><strong>Hermes</strong> — <code>~/.hermes/skills/codedb-instructions/SKILL.md</code></summary>
 
-### As an HTTP server
+Uses the Agent Skills standard. Copy the skill directory:
 
 ```bash
-codedb serve /path/to/your/project
-# listening on localhost:7719
+mkdir -p ~/.hermes/skills/codedb-instructions
+cp skills/hermes/codedb-instructions/SKILL.md ~/.hermes/skills/codedb-instructions/SKILL.md
 ```
 
-### CLI
+Hermes auto-discovers skills in `~/.hermes/skills/`. Restart your session to load.
+
+</details>
+
+<details>
+<summary><strong>Claude Code</strong> — <code>~/.claude/skills/codedb-instructions/SKILL.md</code></summary>
+
+Uses the Agent Skills standard. Copy the skill directory:
 
 ```bash
-codedb tree /path/to/project          # file tree with symbol counts
-codedb outline src/main.zig           # symbols in a file
-codedb find AgentRegistry             # find symbol definitions
-codedb search "handleAuth"            # full-text search (trigram-accelerated)
-codedb word Store                     # exact word lookup (inverted index, O(1))
-codedb hot                            # recently modified files
+mkdir -p ~/.claude/skills/codedb-instructions
+cp skills/claude/codedb-instructions/SKILL.md ~/.claude/skills/codedb-instructions/SKILL.md
 ```
+
+Invoke with `/codedb-instructions` slash command in Claude Code.
+
+</details>
+
+<details>
+<summary><strong>OpenAI Codex</strong> — <code>~/.codex/skills/codedb-instructions/SKILL.md</code></summary>
+
+Uses the Agent Skills standard. Copy the skill directory:
+
+```bash
+mkdir -p ~/.codex/skills/codedb-instructions
+cp skills/codex/codedb-instructions/SKILL.md ~/.codex/skills/codedb-instructions/SKILL.md
+```
+
+Codex auto-discovers skills in `~/.codex/skills/`.
+
+</details>
+
+<details>
+<summary><strong>GitHub Copilot</strong> — <code>.github/instructions/codedb.instructions.md</code></summary>
+
+Project-level instructions for VS Code / Copilot in IDE. Copy to your repo's `.github/instructions/` directory:
+
+```bash
+cp skills/copilot/codedb.instructions.md /path/to/your/repo/.github/instructions/codedb.instructions.md
+```
+
+The `.instructions.md` suffix is required for project-level rules. Copilot auto-loads files in `.github/instructions/`.
+
+</details>
+
+<details>
+<summary><strong>Gemini CLI</strong> — <code>~/.gemini/commands/codedb-instructions.toml</code></summary>
+
+Gemini uses TOML command files, not markdown SKILL.md:
+
+```bash
+mkdir -p ~/.gemini/commands
+cp skills/gemini/codedb-instructions.toml ~/.gemini/commands/codedb-instructions.toml
+```
+
+Invoke with `/codedb-instructions` slash command in Gemini CLI.
+
+</details>
+
+<details>
+<summary><strong>Antigravity</strong> — <code>~/.agy/skills/codedb-instructions/SKILL.md</code></summary>
+
+Uses the Agent Skills standard. Copy the skill directory:
+
+```bash
+mkdir -p ~/.agy/skills/codedb-instructions
+cp skills/antigravity/codedb-instructions/SKILL.md ~/.agy/skills/codedb-instructions/SKILL.md
+```
+
+Antigravity auto-discovers skills in `~/.agy/skills/`.
+
+</details>
+
+<details>
+<summary><strong>OpenCode / Crush</strong> — <code>~/.config/opencode/skills/codedb-instructions/SKILL.md</code></summary>
+
+Uses the Agent Skills standard. Copy the skill directory:
+
+```bash
+mkdir -p ~/.config/opencode/skills/codedb-instructions
+cp skills/opencode/codedb-instructions/SKILL.md ~/.config/opencode/skills/codedb-instructions/SKILL.md
+```
+
+Load on-demand via the skill tool in OpenCode.
+
+</details>
+
+<details>
+<summary><strong>Standalone (any platform)</strong> — <code>skills/codedb-instructions.md</code></summary>
+
+For any platform that reads plain markdown instructions, use the standalone file at `skills/codedb-instructions.md`. Copy it to your agent's instruction or rules directory.
+
+```bash
+cp skills/codedb-instructions.md /path/to/your/agent/rules/
+```
+
+</details>
 
 ---
 
-## 🔧 MCP Tools
-
-21 tools over the Model Context Protocol (JSON-RPC 2.0 over stdio). codedb's job is to **give agents context** — fast structural search, symbols, callers, dependencies, and outlines — **not** to be your editor. Editing is intentionally a fallback (`codedb_edit`); prefer your client's native edit tools.
-
-| Tool | Description |
-|------|-------------|
-| `codedb_tree` | Full file tree with language, line counts, symbol counts |
-| `codedb_outline` | Symbols in a file: functions, structs, imports, with line numbers |
-| `codedb_symbol` | Find where a symbol is defined across the codebase |
-| `codedb_search` | Trigram-accelerated full-text search (supports regex, scoped results) |
-| `codedb_word` | O(1) inverted index word lookup |
-| `codedb_callers` | Every call site of a symbol — word index ∩ outline scope, in one round-trip |
-| `codedb_context` | Task-shaped composer — pass a NL task, get keywords + symbol defs + ranked files + top snippets in one block (replaces 3–5 sequential calls) |
-| `codedb_hot` | Most recently modified files |
-| `codedb_deps` | Dependency graph: `imported_by` (default) or `depends_on`; `transitive=true` for full BFS |
-| `codedb_read` | Read file content (line ranges, `if_hash` skip-unchanged, `compact` mode) |
-| `codedb_edit` | **Fallback editor** — `str_replace`/`replace`/`insert`/`delete`/`create` (atomic writes, optional `if_hash` guard). Prefer your client's native edit tool; codedb is for context, not editing |
-| `codedb_changes` | Changed files since a sequence number |
-| `codedb_status` | Index status (file count, current sequence, scan phase) |
-| `codedb_snapshot` | Full pre-rendered JSON snapshot of the codebase |
-| `codedb_remote` | Query indexed public repos via api.wiki.codes — no local clone needed |
-| `codedb_projects` | List all locally indexed projects on this machine |
-| `codedb_index` | Index a local folder and write `codedb.snapshot` |
-| `codedb_find` | Fuzzy **file-name** search (typo-tolerant subsequence match against indexed paths — not a content/symbol search) |
-| `codedb_glob` | Match indexed paths against a glob pattern (`src/**/*.zig`, `*.md`, …) |
-| `codedb_ls` | List immediate children of a directory — dirs first, then files with language + counts |
-| `codedb_query` | Composable pipeline — chain `find`, `search`, `filter`, `deps`, `outline`, `read`, `sort`, `limit` in one request |
-
-### `codedb_remote` — Cloud Intelligence
-
-Query any indexed public GitHub repo without cloning it. `codedb_remote` always uses `api.wiki.codes`; the old `codegraff` backend name is no longer a supported route. Omit `backend`, or keep `backend="wiki"` only for older prompts.
-
-```
-# Check what the remote slug supports
-codedb_remote repo="vercel/next.js" action="actions"
-
-# Get a compact directory summary instead of dumping a huge file list
-codedb_remote repo="vercel/next.js" action="tree" expand=false
-
-# Page a file tree by prefix and limit
-codedb_remote repo="vercel/next.js" action="tree" prefix="packages/" limit=100
-
-# Search for code in a dependency
-codedb_remote repo="justrach/merjs" action="search" query="handleRequest"
-
-# Read a small file slice
-codedb_remote repo="openai/codex" action="read" path="codex-rs/core/src/codex.rs" lines="1-80"
-
-# Exact symbol lookup
-codedb_remote repo="justrach/codedb" action="symbol" query="buildSnapshot"
-
-# Check dependency CVE evidence; scope can be runtime or all
-codedb_remote repo="axios/axios" action="cves" scope="runtime"
-
-# Raw wiki slugs are accepted for repos that are indexed that way
-codedb_remote repo="chromium" action="policy"
-```
-
-**Remote actions:** `actions`, `tree`, `outline`, `search`, `read`, `symbol`, `policy`, `deps`, `score`, `cves`, `commits`, `branches`, `dep-history`
-
-For Codex and Claude Code hook examples around `codedb_remote`, see [`docs/hooks-labs.md`](docs/hooks-labs.md).
-
-**Note:** This tool calls `https://api.wiki.codes`. No API key required. The repo must already be indexed by the public service.
-
-### CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `codedb tree` | Show file tree with language and symbol counts |
-| `codedb outline <path>` | List all symbols in a file |
-| `codedb find <name>` | Find where a symbol is defined |
-| `codedb search <query>` | Full-text search (trigram, case-insensitive) |
-| `codedb search --regex <pattern>` | Regex search |
-| `codedb word <identifier>` | Exact word lookup via inverted index |
-| `codedb read <path>` | Read file contents (supports `-L FROM-TO`, `--compact`) |
-| `codedb hot` | Recently modified files |
-| `codedb snapshot` | Write codedb.snapshot to project root |
-| `codedb serve` | HTTP daemon on :7719 |
-| `codedb mcp [path]` | JSON-RPC/MCP server over stdio |
-| `codedb update` | Self-update to the latest release; if it fails on an older build, rerun the curl installer above |
-| `codedb nuke` | Uninstall codedb, remove caches/snapshots, and deregister MCP integrations |
-| `codedb --version` | Print version |
-
-**Options:** `--no-telemetry` (or set `CODEDB_NO_TELEMETRY` env var)
-
-### Example: agent explores a codebase
+## Build from Source
 
 ```bash
-# 1. Get the file tree
-curl localhost:7719/tree
-# → src/main.zig      (zig, 55L, 4 symbols)
-#   src/store.zig     (zig, 156L, 12 symbols)
-#   src/agent.zig     (zig, 135L, 8 symbols)
-
-# 2. Drill into a file
-curl "localhost:7719/outline?path=src/store.zig"
-# → L20: struct_def Store
-#   L30: function init
-#   L55: function recordSnapshot
-
-# 3. Find a symbol across the codebase
-curl "localhost:7719/symbol?name=AgentRegistry"
-# → {"path":"src/agent.zig","line":30,"kind":"struct_def"}
-
-# 4. Full-text search
-curl "localhost:7719/search?q=handleAuth&max=10"
-
-# 5. Check what changed
-curl "localhost:7719/changes?since=42"
+git clone git@github.com:jwvolschenk_crdc/codedb_custom.git
+cd codedb_custom
+bash scripts/build-codedb.sh
 ```
+
+Requires **Zig 0.16.0** (auto-installed by the build script if missing).
 
 ---
 
-## 📊 Benchmarks
+## Maintainers: Publish a Release
 
-Measured on Apple M4 Pro, 48GB RAM. MCP = pre-indexed warm queries (20 iterations avg). CLI/external tools include process startup (3 iterations avg). Ground truth verified against Python reference implementation.
+```bash
+bash scripts/publish-codedb.sh
+```
 
-### Latency — codedb MCP vs codedb CLI vs ast-grep vs ripgrep vs grep
-
-**codedb repo** (20 files, 12.6k lines):
-
-| Query | codedb MCP | codedb CLI | ast-grep | ripgrep | grep | MCP speedup |
-|-------|-----------|-----------|----------|---------|------|-------------|
-| File tree | **0.04 ms** | 52.9 ms | — | — | — | **1,253x** vs CLI |
-| Symbol search (`init`) | **0.10 ms** | 54.1 ms | 3.2 ms | 6.3 ms | 6.5 ms | **549x** vs CLI |
-| Full-text search (`allocator`) | **0.05 ms** | 60.7 ms | 3.2 ms | 5.3 ms | 6.6 ms | **1,340x** vs CLI |
-| Word index (`self`) | **0.04 ms** | 59.7 ms | n/a | 7.2 ms | 6.5 ms | **1,404x** vs CLI |
-| Structural outline | **0.05 ms** | 53.5 ms | 3.1 ms | — | 2.4 ms | **1,143x** vs CLI |
-| Dependency graph | **0.05 ms** | 2.2 ms | n/a | n/a | n/a | **45x** vs CLI |
-
-**merjs repo** (100 files, 17.3k lines):
-
-| Query | codedb MCP | codedb CLI | ast-grep | ripgrep | grep | MCP speedup |
-|-------|-----------|-----------|----------|---------|------|-------------|
-| File tree | **0.05 ms** | 54.0 ms | — | — | — | **1,173x** vs CLI |
-| Symbol search (`init`) | **0.07 ms** | 54.4 ms | 3.4 ms | 6.3 ms | 3.6 ms | **758x** vs CLI |
-| Full-text search (`allocator`) | **0.03 ms** | 54.1 ms | 2.9 ms | 5.1 ms | 3.7 ms | **1,554x** vs CLI |
-| Word index (`self`) | **0.04 ms** | 54.7 ms | n/a | 6.3 ms | 4.2 ms | **1,518x** vs CLI |
-| Structural outline | **0.04 ms** | 54.9 ms | 3.4 ms | — | 2.5 ms | **1,243x** vs CLI |
-
-**rtk-ai/rtk repo** (329 files) — codedb vs rtk vs ripgrep vs grep:
-
-| Tool | Search "agent" | Speedup |
-|------|---------------|---------|
-| codedb (pre-indexed) | **0.065 ms** | baseline |
-| rtk | 37 ms | 569x slower |
-| ripgrep | 45 ms | 692x slower |
-| grep | 80 ms | 1,231x slower |
-
-### Token Efficiency
-
-codedb returns structured, relevant results — not raw line dumps. For AI agents, this means dramatically fewer tokens per query:
-
-| Repo | codedb MCP | ripgrep / grep | Reduction |
-|------|-----------|---------------|-----------|
-| codedb (search `allocator`) | ~20 tokens | ~32,564 tokens | **1,628x fewer** |
-| merjs (search `allocator`) | ~20 tokens | ~4,007 tokens | **200x fewer** |
-
-### Indexing Speed
-
-codedb v0.2.57 uses worker-local parallel scan with deterministic merge — each worker builds its own partial index, then results are merged on the main thread:
-
-| Repo | Files | Cold start | Per file | vs v0.2.56 |
-|------|-------|-----------|----------|-----------|
-| codedb | 20 | **17 ms** | 0.85 ms | — |
-| merjs | 100 | **16 ms** | 0.16 ms | — |
-| 5,200 mixed files | 5,200 | **310 ms** | 0.06 ms | — |
-| [openclaw/openclaw](https://github.com/openclaw/openclaw) | 6,315 | **346 ms** | 0.05 ms | **10× faster** |
-
-Indexes are built once on startup. After that, the file watcher keeps them updated incrementally (single-file re-index: **<2ms**). Queries never re-scan the filesystem. For repos >1000 files, file contents are released after indexing to save ~300-500MB.
-
-### Background Resource Usage (`openclaw`, 6,315 files, Apple M4 Pro)
-
-| Metric | v0.2.56 | v0.2.57 | Delta |
-|--------|---------|---------|-------|
-| Steady-state RSS | 1,867 MB | 1,706 MB | −161 MB |
-| `git` subprocesses / min (idle) | ~30 | ~0 | **mtime-gated** |
-
-The watcher now stats `.git/HEAD` mtime before forking `git rev-parse HEAD`. On an idle repo the subprocess never fires.
-### Why codedb is fast
-
-- **MCP server** indexes once on startup → all queries hit in-memory data structures (O(1) hash lookups)
-- **CLI** pays ~55ms process startup + full filesystem scan on every invocation
-- **ast-grep** re-parses all files through tree-sitter on every call (~3ms)
-- **ripgrep/grep** brute-force scan every file on every call (~5-7ms)
-- The MCP advantage: **index once, query thousands of times at sub-millisecond latency**
-
-### Feature Matrix
-
-| Feature | codedb MCP | codedb CLI | ast-grep | ripgrep | grep | ctags |
-|---------|-----------|-----------|----------|---------|------|-------|
-| Structural parsing | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
-| Trigram search index | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Inverted word index | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Dependency graph | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Version tracking | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Multi-agent locking | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Pre-indexed (warm) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| No process startup | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| MCP protocol | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Full-text search | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Atomic file edits | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
-| File watcher | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-
-> **codedb = tree-sitter + search index + dependency graph + agent runtime.** Zero external dependencies. Pure Zig. Single binary.
-
+Requires `gh auth login`. Builds from local source, uploads to GitHub Releases.
 
 ---
 
-## 🏗️ Architecture
+## MCP Tools
 
-```
-┌─────────────┐     ┌─────────────┐
-│  HTTP :7719 │     │  MCP stdio  │
-│  server.zig │     │  mcp.zig    │
-└──────┬──────┘     └──────┬──────┘
-       │                   │
-       └───────┬───────────┘
-               │
-    ┌──────────▼──────────┐
-    │     Explorer        │
-    │   explore.zig       │
-    │  ┌───────────────┐  │
-    │  │ WordIndex      │  │
-    │  │ TrigramIndex   │  │
-    │  │ Outlines       │  │
-    │  │ Contents       │  │
-    │  │ DepGraph       │  │
-    │  └───────────────┘  │
-    └──────────┬──────────┘
-               │
-    ┌──────────▼──────────┐
-    │      Store          │──── data.log
-    │    store.zig        │
-    └──────────┬──────────┘
-               │
-    ┌──────────▼──────────┐
-    │     Watcher         │ ← polls every 2s
-    │   watcher.zig       │
-    │  (FilteredWalker)   │
-    └─────────────────────┘
-```
-
-**No SQLite. No dependencies.** Purpose-built data model:
-
-- **Explorer** — structural index engine. Parses Zig, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, and Dart. Maintains outlines, trigram index, inverted word index, content cache, and dependency graph behind a single mutex.
-- **Store** — append-only version log. Every mutation (snapshot, edit, delete) gets a monotonically increasing sequence number. Version history capped at 100 per file.
-- **Watcher** — polling file watcher (2s interval). `FilteredWalker` prunes `.git`, `node_modules`, `zig-cache`, `__pycache__`, etc. before descending.
-- **Agents** — first-class structs with cursors, heartbeats, and exclusive file locks. Stale agents reaped after 30s.
-
-### Threading Model
-
-| Thread | Role |
-|--------|------|
-| Main | HTTP accept loop or MCP read loop |
-| Watcher | Polls filesystem every 2s via `FilteredWalker` |
-| ISR | Rebuilds snapshot when stale flag is set |
-| Reap | Cleans up stale agents every 5s |
-| Per-connection | HTTP server spawns a thread per connection |
-
-All threads share a `shutdown: atomic.Value(bool)` for graceful termination.
+| Tool | Speed | Use |
+|------|-------|-----|
+| `codedb_tree` | <0.1ms | Project structure |
+| `codedb_outline` | <1ms | File symbols |
+| `codedb_symbol` | <4ms | Find definition |
+| `codedb_search` | <50ms | Full-text search |
+| `codedb_word` | <1ms | Identifier lookup |
+| `codedb_deps` | <2ms | Import graph |
+| `codedb_read` | <1ms | Read file/range |
+| `codedb_edit` | <1ms | Line-based edit |
+| `codedb_hot` | <4ms | Recent changes |
+| `codedb_find` | <5ms | Fuzzy filename |
+| `codedb_remote` | varies | Public repo query |
+| `codedb_index` | varies | Index a folder |
+| `codedb_status` | <1ms | Index info |
+| `codedb_changes` | <1ms | File changes |
 
 ---
 
-## 🔒 Data & Privacy
+## Repo Structure
 
-codedb collects anonymous usage telemetry to improve the tool. Telemetry is **on by default** — written to `~/.codedb/telemetry.ndjson` and periodically synced to the codedb analytics endpoint. **No source code, file contents, file paths, or search queries are collected** — only aggregate tool call counts, latency, and startup stats.
-
-| Location | Contents | Purpose |
-|----------|----------|---------|
-| `~/.codedb/projects/<hash>/` | Trigram index, frequency table, data log | Persistent index cache |
-| `~/.codedb/telemetry.ndjson` | Aggregate tool calls and startup stats | Local telemetry log |
-| `./codedb.snapshot` | File tree, outlines, content, frequency table | Portable snapshot for instant MCP startup |
-
-**Not stored:** No source code is sent anywhere. No file contents, file paths, or search queries are collected in telemetry. Sensitive files auto-excluded (`.env*`, `credentials.json`, `secrets.*`, `.pem`, `.key`, SSH keys, AWS configs).
-
-To disable telemetry: set `CODEDB_NO_TELEMETRY=1` or pass `--no-telemetry`.
-
-To sync the local NDJSON file into Postgres for analysis or dashboards, use [`scripts/sync-telemetry.py`](./scripts/sync-telemetry.py) with the schema in [`docs/telemetry/postgres-schema.sql`](./docs/telemetry/postgres-schema.sql). The data flow is documented in [`docs/telemetry.md`](./docs/telemetry.md).
-
-```bash
-codedb nuke                # uninstall binary, clear caches/snapshots, remove MCP registrations
-rm -rf ~/.codedb/          # cache-only cleanup if you want to keep the binary installed
-rm -f codedb.snapshot      # remove snapshot from current project only
 ```
-
----
-
-## 🔨 Building from Source
-
-**Requirements:** Zig 0.16+
-
-```bash
-git clone https://github.com/justrach/codedb.git
-cd codedb
-zig build                              # debug build
-zig build -Doptimize=ReleaseFast       # release build
-zig build test                         # run tests
-zig build bench                        # run benchmarks
+codedb_custom/
+├── src/
+│   ├── csharp_parser.zig    # C# parser
+│   ├── fsharp_parser.zig    # F# parser
+│   ├── snapshot.zig          # Snapshot format
+│   ├── watcher.zig           # File walker + .codedbignore
+│   ├── config.zig            # .codedbrc loader
+│   ├── mcp.zig               # MCP server
+│   └── ...
+├── scripts/
+│   ├── setup-codedb.sh      # Consumer install
+│   ├── uninstall-codedb.sh  # Remove everything
+│   ├── build-codedb.sh      # Build from source
+│   └── publish-codedb.sh    # Publish release
+├── build.zig
+└── README.md
 ```
-
-Binary: `zig-out/bin/codedb`
-
-### Cross-compilation
-
-```bash
-zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux
-zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux
-zig build -Doptimize=ReleaseFast -Dtarget=x86_64-macos
-```
-
-### Releasing
-
-```bash
-./release.sh 0.2.0              # build, codesign, notarize, upload to GitHub Releases
-./release.sh 0.2.0 --dry-run    # preview without executing
-```
-
----
-
-## License
-
-See [LICENSE](LICENSE) for details.

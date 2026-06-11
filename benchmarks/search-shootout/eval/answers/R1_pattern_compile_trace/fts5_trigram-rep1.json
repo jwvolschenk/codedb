@@ -1,9 +1,0 @@
-{
-  "entry_file": "src/regex/string.rs",
-  "entry_function": "Regex::new",
-  "trace": "Regex::new delegates immediately to RegexBuilder::new(re).build(), which calls build_one_string() in src/builders.rs. That method configures a meta::Builder and calls meta::Builder::build_many() (regex-automata/src/meta/regex.rs), which first parses each pattern into an AST via the syntax parser, then translates each AST into a High-level Intermediate Representation (HIR) via the HIR translator. Finally, build_many_from_hir() is called: it constructs a RegexInfo from the HIR, then calls strategy::new(&info, &hirs) to select and build the optimal matcher strategy (e.g., DFA, lazy DFA, PikeVM, backtracker, or one-pass DFA), and wraps it in a Regex with a cache pool.",
-  "tool_calls": 11,
-  "wall_seconds": 32,
-  "tokens": 22645,
-  "notes": "table is 'files' with 'body' column"
-}

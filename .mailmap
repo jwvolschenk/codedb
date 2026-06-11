@@ -1,9 +1,0 @@
-# Canonical author identity for git log and GitHub display.
-# Format: <canonical-name> <canonical-email> <commit-name> <commit-email>
-# See: https://git-scm.com/docs/gitmailmap
-
-# Map both the personal email and any wrong-id noreply attempts to the
-# canonical GitHub noreply form for the justrach account (user id 54503978).
-justrach <54503978+justrach@users.noreply.github.com> Rach Pradhan <rachxpradhan@gmail.com>
-justrach <54503978+justrach@users.noreply.github.com> justrach <49574145+justrach@users.noreply.github.com>
-justrach <54503978+justrach@users.noreply.github.com> Rach Pradhan <49574145+justrach@users.noreply.github.com>

@@ -1,9 +1,0 @@
-{
-  "file": "packages/react-reconciler/src/ReactFiberLane.js",
-  "function": "getNextLanes",
-  "snippet": "const pendingLanes = root.pendingLanes;\nif (pendingLanes === NoLanes) { return NoLanes; }\nconst nonIdlePendingLanes = pendingLanes & NonIdleLanes;\nconst nonIdleUnblockedLanes = nonIdlePendingLanes & ~suspendedLanes;\nnextLanes = getHighestPriorityLanes(nonIdleUnblockedLanes);\nconst nextLane = getHighestPriorityLane(nextLanes);",
-  "eligibility": "A lane is eligible if it is in root.pendingLanes and is not suspended (not in suspendedLanes), or is suspended but has been pinged (in pingedLanes); non-idle lanes always take priority over idle lanes.",
-  "tool_calls": 16,
-  "wall_seconds": 123,
-  "tokens": 21212
-}

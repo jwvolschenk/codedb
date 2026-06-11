@@ -1,9 +1,0 @@
-{
-  "file": "packages/react-reconciler/src/ReactFiberLane.js",
-  "function": "getNextLanes",
-  "snippet": "  const nonIdleUnblockedLanes = nonIdlePendingLanes & ~suspendedLanes;\n  if (nonIdleUnblockedLanes !== NoLanes) {\n    nextLanes = getHighestPriorityLanes(nonIdleUnblockedLanes);\n  } else {\n    const nonIdlePingedLanes = nonIdlePendingLanes & pingedLanes;\n    if (nonIdlePingedLanes !== NoLanes) {\n      nextLanes = getHighestPriorityLanes(nonIdlePingedLanes);\n    }\n  }",
-  "eligibility": "A lane is eligible if it has pending work and is either not suspended (fresh/unblocked), has been pinged (a previously-suspended lane that received a retry signal), or needs prewarming \u2014 always preferring non-idle lanes over idle ones and highest-priority within each category.",
-  "tool_calls": 5,
-  "wall_seconds": 18,
-  "tokens": 2800
-}
