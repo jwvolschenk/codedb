@@ -82,7 +82,24 @@ No WSL, Git Bash, or git required. Runs natively in PowerShell.
 This will:
 1. Download the latest binary from [Releases](https://github.com/jwvolschenk/codedb/releases)
 2. Install to `~/.local/bin/codedb` (Linux/macOS) or `$env:LOCALAPPDATA\codedb\bin` (Windows)
-3. Register with all detected AI agents
+
+### Install for a specific agent
+
+Pass `--agent` to get MCP registration instructions for your agent after install.
+
+**Linux / macOS:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jwvolschenk/codedb/main/scripts/setup-codedb.sh | bash -s -- --agent Copilot
+```
+
+**Windows (PowerShell):**
+
+```powershell
+$script = "$env:TEMP\setup-codedb.ps1"; irm https://raw.githubusercontent.com/jwvolschenk/codedb/main/scripts/setup-codedb.ps1 -OutFile $script; & $script -Agent Copilot
+```
+
+Available agents: `Hermes`, `Copilot`, `Claude`, `Codex`, `Gemini`, `Antigravity`, `Cursor`
 
 ### Update
 
