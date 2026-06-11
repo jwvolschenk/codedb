@@ -6,6 +6,8 @@
 zig-out/
 .zig-cache/
 zig-cache/
+zig-pkg/
+website/dist/
 
 # codedb runtime (local per-machine snapshots)
 .codedb/
