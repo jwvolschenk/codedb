@@ -18,7 +18,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="${REPO_DIR}/.build"
 RELEASE_DIR="${REPO_DIR}/.release"
 ZIG_VERSION="${ZIG_VERSION:-0.16.0}"
-FORK_REPO="jwvolschenk_crdc/codedb_custom"
+FORK_REPO="jwvolschenk/codedb"
 
 # All supported cross-compilation targets
 ALL_TARGETS=(

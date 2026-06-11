@@ -27,7 +27,7 @@ If you need to apply a quick fix against upstream without merging:
 
 2. Make your changes and generate a patch:
    ```bash
-   git diff > /path/to/codedb_custom/patches/001-my-fix.patch
+   git diff > /path/to/codedb/patches/001-my-fix.patch
    ```
 
 3. The patch will be available for reference but won't be auto-applied

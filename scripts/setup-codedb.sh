@@ -6,14 +6,14 @@
 #   linux-x86_64, linux-aarch64, darwin-x86_64, darwin-aarch64, windows-x86_64, windows-aarch64
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/jwvolschenk_crdc/codedb_custom/main/scripts/setup-codedb.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/jwvolschenk/codedb/main/scripts/setup-codedb.sh | bash
 #   bash scripts/setup-codedb.sh
 #   CODEDB_VERSION=v0.2.6000 bash scripts/setup-codedb.sh
 set -euo pipefail
 
 # ── Config ───────────────────────────────────────────────────────────────
 INSTALL_DIR="${CODEDB_DIR:-$HOME/.local/bin}"
-FORK_REPO="jwvolschenk_crdc/codedb_custom"
+FORK_REPO="jwvolschenk/codedb"
 
 # ── Colors ───────────────────────────────────────────────────────────────
 R='\033[0;31m' G='\033[0;32m' Y='\033[0;33m' C='\033[0;36m'

@@ -27,7 +27,7 @@ $ErrorActionPreference = "Stop"
 if (-not $InstallDir) {
     $InstallDir = Join-Path $env:LOCALAPPDATA "codedb\bin"
 }
-$ForkRepo = "jwvolschenk_crdc/codedb_custom"
+$ForkRepo = "jwvolschenk/codedb"
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 function Write-Ok($msg)  { Write-Host "  " -NoNewline; Write-Host "$([char]0x2713)" -ForegroundColor Green -NoNewline; Write-Host " $msg" }

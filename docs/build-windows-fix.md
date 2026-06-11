@@ -50,8 +50,8 @@ To make this permanent, add the `export PATH` line to your `~/.bashrc` or `~/.zs
 ## Step 2 — Clone / update the repo
 
 ```bash
-git clone https://github.com/jwvolschenk_crdc/codedb_custom.git
-cd codedb_custom
+git clone https://github.com/jwvolschenk/codedb.git
+cd codedb
 
 # If already cloned:
 git pull
@@ -65,7 +65,7 @@ git log --oneline -3   # verify ff9a0a1 "cio: implement Windows CreateProcess pa
 Zig cross-compilation is built-in — no MinGW, Wine, or Windows SDK needed.
 
 ```bash
-# From inside the codedb_custom directory:
+# From inside the codedb directory:
 zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows
 ```
 
@@ -156,7 +156,7 @@ You can also sanity-check the binary version from PowerShell:
 | Symptom | Cause | Fix |
 |---|---|---|
 | `zig: command not found` | PATH not updated | Re-run `export PATH="$ZIG_DIR:$PATH"` |
-| `error: build.zig not found` | Not in repo root | `cd codedb_custom` first |
+| `error: build.zig not found` | Not in repo root | `cd codedb` first |
 | `file` says ELF not PE | Wrong target | Use `-Dtarget=x86_64-windows` |
 | Tests fail after the change | Something else broke | Run `zig build test 2>&1` and check error messages |
 | MCP still shows old error | Server not restarted | Restart Claude Code / VS Code extension host |

@@ -2,7 +2,7 @@
 name: codedb-instructions
 description: "Use when querying, searching, or navigating a codebase via codedb MCP tools. Covers indexing, search, symbols, dependencies, and batching patterns."
 version: 1.0.0
-author: codedb_custom
+author: codedb
 license: MIT
 metadata:
   hermes:
