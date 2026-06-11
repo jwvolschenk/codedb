@@ -127,6 +127,18 @@ get_version_tag() {
     echo "$tag"
 }
 
+# ── Inject version into release_info.zig ─────────────────────────────────
+inject_version() {
+    local tag="$1"
+    # Strip v/V prefix
+    local semver="${tag#v}"
+    semver="${semver#V}"
+    local file="${REPO_DIR}/src/release_info.zig"
+    [ -f "$file" ] || die "release_info.zig not found"
+    printf 'pub const semver = "%s";\n' "$semver" > "$file"
+    info "Injected version ${semver} into release_info.zig"
+}
+
 # ── Resolve which targets to build ───────────────────────────────────────
 resolve_targets() {
     # If PLATFORMS env var is set, use it (space-separated friendly names)
@@ -195,6 +207,9 @@ main() {
     local tag
     tag="$(get_version_tag "${1:-}")"
     info "Version tag: ${tag}"
+
+    # Inject version into source before building
+    inject_version "$tag"
 
     # Clean release dir for fresh build
     rm -rf "$RELEASE_DIR"
