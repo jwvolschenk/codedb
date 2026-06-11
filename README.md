@@ -99,22 +99,19 @@ precise structural answers in milliseconds.
 
 ```mermaid
 flowchart TD
-    A["Your Codebase"] -->|"codedb index"| B["Structural Index"]
+    A["Your Codebase"] -->|"codedb index<br/>(one-time, incremental)"| B
 
-    subgraph "Index"
-        B --> C["Symbols & Outlines"]
-        B --> D["Word & Trigram Index"]
-        B --> E["Dependency Graph"]
-        B --> F["Type & Call Graph"]
+    subgraph B["Structural Index"]
+        direction LR
+        C["Symbols & Outlines"]
+        D["Word & Trigram Index"]
+        E["Dependency Graph"]
+        F["Type & Call Graph"]
     end
 
-    B -->|"MCP (stdio)"| G["AI Agent"]
-
-    G -->|"codedb_symbol"| C
-    G -->|"codedb_search"| D
-    G -->|"codedb_deps"| E
-    G -->|"codedb_callers"| F
-    G -->|"codedb_read"| A
+    G["AI Agent"] -->|"MCP tools (stdio)<br/>symbol · search · deps · callers"| B
+    B -.->|"file : line, refs, types"| G
+    G -->|"codedb_read<br/>(only matched lines)"| A
 
     style B fill:#2d333b,stroke:#58a6ff,color:#e6edf3
     style A fill:#1a1e24,stroke:#8b949e,color:#e6edf3
