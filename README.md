@@ -32,26 +32,93 @@ project's contribution guidelines if you are working with the original
 
 ## How It Works
 
+codedb parses your source code into a structural index — not just text, but
+symbols, types, call graphs, and dependency chains. An AI agent queries this
+index through MCP to understand your codebase without reading every file.
+
+### Indexing
+
+When you run `codedb /path/to/project`, it:
+
+1. **Walks** the file tree, skipping `.gitignore`/`.codedbignore` patterns
+2. **Parses** each file with a language-aware parser (C#, F#, Zig, Razor, JS, TS, Python, Go, Rust, and more)
+3. **Extracts** symbols — classes, functions, interfaces, enums, imports — with line-precise locations
+4. **Builds** an inverted word index, trigram index, and dependency graph
+5. **Writes** a `codedb.snapshot` (portable, binary) and a central cache at `~/.codedb/projects/`
+
+Subsequent runs are incremental — only changed files are re-parsed.
+
+### What the index contains
+
+```
+Source File
+    ├── Symbols        (class, function, interface, enum, const)
+    │   ├── Name
+    │   ├── Kind
+    │   ├── Line range
+    │   ├── Decorators   ([Authorize], [HttpPost], etc.)
+    │   └── Body         (optional, on-demand)
+    ├── Imports        (what this file depends on)
+    ├── Exports        (what this file provides)
+    └── Word index     (every identifier, O(1) lookup)
+
+Cross-file
+    ├── Dependency graph   (file → imports → files)
+    ├── Call graph         (function → callers → functions)
+    ├── Type graph         (interface → implementations)
+    └── Inheritance tree   (class → bases → derived)
+```
+
+### How an agent uses it
+
+An AI agent connected to codedb via MCP can:
+
+```
+Agent: "What calls the PaymentService.ProcessRefund method?"
+
+  1. codedb_symbol name="ProcessRefund"     → finds definition at src/Services/PaymentService.cs:142
+  2. codedb_callers name="ProcessRefund"    → returns 3 call sites with context
+  3. codedb_read path=... lines="140-160"   → reads the implementation
+
+  Total: ~10ms, 3 round trips, zero file scanning
+```
+
+Without codedb, the agent would have to `grep` across hundreds of files,
+parse each match, and hope it didn't miss anything. With codedb, it gets
+precise structural answers in milliseconds.
+
+### Typical agent workflows
+
+| Task | codedb tools used |
+|------|-------------------|
+| Find a bug's origin | `search` → `callers` → `read` |
+| Understand a feature | `find` → `outline` → `deps transitive=true` |
+| Impact analysis before refactor | `symbol` → `callers` → `types` |
+| Navigate unfamiliar code | `tree` → `outline grouped=true` → `search` |
+| ASP.NET config audit | `config_xref` → `routes` |
+
 ```mermaid
-flowchart LR
-    subgraph "Developer Host"
-        A["Your Code"] -->|"codedb index"| B["codedb binary"]
-        B -->|"MCP (stdio)"| C["AI Agent"]
-        C -->|"reads/writes"| A
+flowchart TD
+    A["Your Codebase"] -->|"codedb index"| B["Structural Index"]
+
+    subgraph "Index"
+        B --> C["Symbols & Outlines"]
+        B --> D["Word & Trigram Index"]
+        B --> E["Dependency Graph"]
+        B --> F["Type & Call Graph"]
     end
 
-    subgraph "Agent Options"
-        C --> D["Hermes"]
-        C --> E["Copilot"]
-        C --> F["Claude"]
-        C --> G["Codex"]
-        C --> H["Gemini"]
-        C --> I["Cursor"]
-    end
+    B -->|"MCP (stdio)"| G["AI Agent"]
+
+    G -->|"codedb_symbol"| C
+    G -->|"codedb_search"| D
+    G -->|"codedb_deps"| E
+    G -->|"codedb_callers"| F
+    G -->|"codedb_read"| A
 
     style B fill:#2d333b,stroke:#58a6ff,color:#e6edf3
     style A fill:#1a1e24,stroke:#8b949e,color:#e6edf3
-    style C fill:#1a1e24,stroke:#8b949e,color:#e6edf3
+    style G fill:#1a1e24,stroke:#8b949e,color:#e6edf3
 ```
 
 ---
