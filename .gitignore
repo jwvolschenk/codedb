@@ -9,6 +9,7 @@ zig-cache/
 
 # codedb runtime (local per-machine snapshots)
 .codedb/
+codedb.snapshot
 
 # OS
 .DS_Store
