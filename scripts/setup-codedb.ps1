@@ -78,7 +78,7 @@ function Download-Binary($platform, $tag, $dest) {
     # Download via Invoke-WebRequest (public repo)
     $url = "https://github.com/${ForkRepo}/releases/download/${tag}/${artifact}"
     try {
-        Invoke-WebRequest -Uri $url -OutFile $tmp -UserAgent "codedb-setup" | Out-Null
+        Invoke-WebRequest -Uri $url -OutFile $tmp -UserAgent "codedb-setup" -UseBasicParsing | Out-Null
     } catch {
         Die "Download failed. Check: https://github.com/${ForkRepo}/releases"
     }
@@ -86,7 +86,7 @@ function Download-Binary($platform, $tag, $dest) {
     # Verify checksum
     try {
         $checksumUrl = "https://github.com/${ForkRepo}/releases/download/${tag}/checksums.sha256"
-        $checksumText = (Invoke-WebRequest -Uri $checksumUrl -UserAgent "codedb-setup").Content
+        $checksumText = (Invoke-WebRequest -Uri $checksumUrl -UserAgent "codedb-setup" -UseBasicParsing).Content
 
         $expectedHash = ($checksumText -split "`n" | Where-Object { $_ -match $artifact } | ForEach-Object { ($_ -split '\s+')[0] })
         if ($expectedHash) {
