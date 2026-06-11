@@ -54,15 +54,7 @@ function Get-ArtifactName($platform) {
 
 # ── Fetch latest version tag ─────────────────────────────────────────────
 function Get-LatestVersion {
-    # Try gh CLI first (works with private repos)
-    if (Get-Command gh -ErrorAction SilentlyContinue) {
-        try {
-            $tag = gh release list --repo $ForkRepo --limit 1 --json tagName --jq '.[0].tagName' 2>$null
-            if ($tag) { return $tag }
-        } catch { }
-    }
-
-    # Fallback to unauthenticated API (works for public repos)
+    # Unauthenticated API (works for public repos)
     try {
         $resp = Invoke-RestMethod -Uri "https://api.github.com/repos/${ForkRepo}/releases/latest" -UserAgent "codedb-setup"
         return $resp.tag_name
@@ -83,42 +75,18 @@ function Download-Binary($platform, $tag, $dest) {
 
     Write-Info "Downloading $artifact $tag..."
 
-    # Try gh CLI first (works with private repos)
-    if (Get-Command gh -ErrorAction SilentlyContinue) {
-        try {
-            $dlDir = $env:TEMP
-            gh release download $tag --repo $ForkRepo --pattern $artifact --dir $dlDir 2>$null
-            $downloaded = Join-Path $dlDir $artifact
-            if (Test-Path $downloaded) {
-                Move-Item -Force $downloaded $tmp
-            } else {
-                Die "Download failed. Check: https://github.com/${ForkRepo}/releases"
-            }
-        } catch {
-            Die "Download failed via gh: $_"
-        }
-    } else {
-        # Fallback to Invoke-WebRequest (works for public repos)
-        $url = "https://github.com/${ForkRepo}/releases/download/${tag}/${artifact}"
-        try {
-            Invoke-WebRequest -Uri $url -OutFile $tmp -UserAgent "codedb-setup" | Out-Null
-        } catch {
-            Die "Download failed. Install gh CLI (winget install GitHub.cli) or check: https://github.com/${ForkRepo}/releases"
-        }
+    # Download via Invoke-WebRequest (public repo)
+    $url = "https://github.com/${ForkRepo}/releases/download/${tag}/${artifact}"
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $tmp -UserAgent "codedb-setup" | Out-Null
+    } catch {
+        Die "Download failed. Check: https://github.com/${ForkRepo}/releases"
     }
 
     # Verify checksum
     try {
-        if (Get-Command gh -ErrorAction SilentlyContinue) {
-            $checksumDir = Join-Path $env:TEMP "codedb-checksum-$PID"
-            if (-not (Test-Path $checksumDir)) { New-Item -ItemType Directory -Path $checksumDir -Force | Out-Null }
-            gh release download $tag --repo $ForkRepo --pattern "checksums.sha256" --dir $checksumDir --clobber 2>$null
-            $checksumText = Get-Content (Join-Path $checksumDir "checksums.sha256") -Raw -ErrorAction SilentlyContinue
-            Remove-Item -Force $checksumDir -Recurse -ErrorAction SilentlyContinue
-        } else {
-            $checksumUrl = "https://github.com/${ForkRepo}/releases/download/${tag}/checksums.sha256"
-            $checksumText = (Invoke-WebRequest -Uri $checksumUrl -UserAgent "codedb-setup").Content
-        }
+        $checksumUrl = "https://github.com/${ForkRepo}/releases/download/${tag}/checksums.sha256"
+        $checksumText = (Invoke-WebRequest -Uri $checksumUrl -UserAgent "codedb-setup").Content
 
         $expectedHash = ($checksumText -split "`n" | Where-Object { $_ -match $artifact } | ForEach-Object { ($_ -split '\s+')[0] })
         if ($expectedHash) {

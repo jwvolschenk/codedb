@@ -67,17 +67,11 @@ platform_to_artifact() {
 # Returns the raw tag name (e.g. "V1.0.2" or "v1.0.1") — case-sensitive.
 fetch_latest_version() {
     local tag=""
-    # Try gh CLI first (works with private repos)
-    if command -v gh >/dev/null 2>&1; then
-        tag="$(gh release list --repo "$FORK_REPO" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null)" || true
-    fi
-    # Fallback to unauthenticated API (works for public repos)
-    if [ -z "$tag" ]; then
-        tag="$(curl -fsSL -A 'codedb-setup' \
-            "https://api.github.com/repos/${FORK_REPO}/releases/latest" 2>/dev/null \
-            | grep -oE '"tag_name"\s*:\s*"[^"]*"' \
-            | cut -d'"' -f4)" || true
-    fi
+    # Unauthenticated API (works for public repos)
+    tag="$(curl -fsSL -A 'codedb-setup' \
+        "https://api.github.com/repos/${FORK_REPO}/releases/latest" 2>/dev/null \
+        | grep -oE '"tag_name"\s*:\s*"[^"]*"' \
+        | cut -d'"' -f4)" || true
     printf '%s' "$tag"
 }
 
@@ -95,32 +89,17 @@ download_binary() {
 
     info "Downloading ${artifact} ${tag}..."
 
-    # Try gh CLI first (works with private repos)
-    if command -v gh >/dev/null 2>&1; then
-        if ! gh release download "$tag" --repo "$FORK_REPO" \
-            --pattern "$artifact" --dir "$(dirname "$tmp")" 2>/dev/null; then
-            rm -f "$tmp"
-            die "Download failed. Check: https://github.com/${FORK_REPO}/releases"
-        fi
-        mv -f "$(dirname "$tmp")/${artifact}" "$tmp"
-    else
-        # Fallback to curl (works for public repos)
-        local url="https://github.com/${FORK_REPO}/releases/download/${tag}/${artifact}"
-        if ! curl -fsSL -A 'codedb-setup' "$url" -o "$tmp" 2>/dev/null; then
-            rm -f "$tmp"
-            die "Download failed. Install gh CLI or check: https://github.com/${FORK_REPO}/releases"
-        fi
+    # Download via curl (public repo)
+    local url="https://github.com/${FORK_REPO}/releases/download/${tag}/${artifact}"
+    if ! curl -fsSL -A 'codedb-setup' "$url" -o "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        die "Download failed. Check: https://github.com/${FORK_REPO}/releases"
     fi
 
     # Verify checksum
     local checksum_text expected_hash
-    if command -v gh >/dev/null 2>&1; then
-        checksum_text="$(gh release download "$tag" --repo "$FORK_REPO" \
-            --pattern "checksums.sha256" --dir - 2>/dev/null)" || true
-    else
-        local checksum_url="https://github.com/${FORK_REPO}/releases/download/${tag}/checksums.sha256"
-        checksum_text="$(curl -fsSL -A 'codedb-setup' "$checksum_url" 2>/dev/null || true)"
-    fi
+    local checksum_url="https://github.com/${FORK_REPO}/releases/download/${tag}/checksums.sha256"
+    checksum_text="$(curl -fsSL -A 'codedb-setup' "$checksum_url" 2>/dev/null || true)"
     expected_hash="$(printf '%s\n' "$checksum_text" | awk "/${artifact}\$/ { print \$1 }")"
     if [ -n "$expected_hash" ]; then
         local actual_hash
