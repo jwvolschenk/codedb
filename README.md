@@ -60,16 +60,7 @@ flowchart LR
 
 | Dependency | Why | Install |
 |-----------|-----|---------|
-| **gh** (GitHub CLI) | Downloads from private repos | [cli.github.com](https://cli.github.com/) |
-| **git** | Version detection | Usually pre-installed |
-
-### Verify and authenticate gh
-
-```bash
-gh --version        # should print gh 2.x
-gh auth status      # should show logged in
-gh auth login       # if not authenticated
-```
+| **git** | Clone the repo | Usually pre-installed |
 
 ---
 
@@ -78,22 +69,18 @@ gh auth login       # if not authenticated
 ### Linux / macOS
 
 ```bash
-git clone git@github.com:jwvolschenk_crdc/codedb_custom.git
-cd codedb_custom
-bash scripts/setup-codedb.sh
+git clone https://github.com/jwvolschenk/codedb.git && cd codedb && bash scripts/setup-codedb.sh
 ```
 
 This will:
-1. Download the latest binary from [Releases](https://github.com/jwvolschenk_crdc/codedb_custom/releases)
+1. Download the latest binary from [Releases](https://github.com/jwvolschenk/codedb/releases)
 2. Install to `~/.local/bin/codedb`
 3. Register with all detected AI agents
 
 ### Windows (WSL2)
 
 ```powershell
-git clone git@github.com:jwvolschenk_crdc/codedb_custom.git
-cd codedb_custom
-.\scripts\setup-codedb.ps1
+git clone https://github.com/jwvolschenk/codedb.git; cd codedb; .\scripts\setup-codedb.ps1
 ```
 
 ### Update
@@ -535,8 +522,8 @@ cp skills/codedb-instructions.md /path/to/your/agent/rules/
 ## Build from Source
 
 ```bash
-git clone git@github.com:jwvolschenk_crdc/codedb_custom.git
-cd codedb_custom
+git clone https://github.com/jwvolschenk/codedb.git
+cd codedb
 bash scripts/build-codedb.sh
 ```
 
@@ -578,7 +565,7 @@ Requires `gh auth login`. Builds from local source, uploads to GitHub Releases.
 ## Repo Structure
 
 ```
-codedb_custom/
+codedb/
 ├── src/
 │   ├── csharp_parser.zig    # C# parser
 │   ├── fsharp_parser.zig    # F# parser
