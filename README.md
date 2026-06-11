@@ -58,9 +58,8 @@ flowchart LR
 
 ## Prerequisites
 
-| Dependency | Why | Install |
-|-----------|-----|---------|
-| **git** | Clone the repo | Usually pre-installed |
+**Linux / macOS:** `curl` (usually pre-installed)
+**Windows:** PowerShell 5.1+ (built into Windows)
 
 ---
 
@@ -69,25 +68,25 @@ flowchart LR
 ### Linux / macOS
 
 ```bash
-git clone https://github.com/jwvolschenk/codedb.git && cd codedb && bash scripts/setup-codedb.sh
+curl -fsSL https://raw.githubusercontent.com/jwvolschenk/codedb/main/scripts/setup-codedb.sh | bash
 ```
+
+### Windows (native PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/jwvolschenk/codedb/main/scripts/setup-codedb.ps1 | iex
+```
+
+No WSL, Git Bash, or git required. Runs natively in PowerShell.
 
 This will:
 1. Download the latest binary from [Releases](https://github.com/jwvolschenk/codedb/releases)
-2. Install to `~/.local/bin/codedb`
+2. Install to `~/.local/bin/codedb` (Linux/macOS) or `$env:LOCALAPPDATA\codedb\bin` (Windows)
 3. Register with all detected AI agents
-
-### Windows (WSL2)
-
-```powershell
-git clone https://github.com/jwvolschenk/codedb.git; cd codedb; .\scripts\setup-codedb.ps1
-```
 
 ### Update
 
-```bash
-bash scripts/setup-codedb.sh
-```
+Re-run the same one-liner for your platform.
 
 ### Uninstall
 
