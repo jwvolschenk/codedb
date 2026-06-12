@@ -1282,7 +1282,7 @@ pub const Explorer = struct {
                 outline.symbols.items.len,
                 s.reset,
             });
-            if (descriptor) |d| try writer.print(" — {s}", .{d});
+            if (descriptor) |d| try writer.print(" - {s}", .{d});
             try writer.writeAll("\n");
         }
 

@@ -349,10 +349,10 @@ pub fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
     out.appendSlice(alloc, "/") catch {};
     out.appendSlice(alloc, action) catch {};
     if (body.len > 0) {
-        out.appendSlice(alloc, " — ") catch {};
+        out.appendSlice(alloc, " - ") catch {};
         out.appendSlice(alloc, body[0..@min(body.len, 200)]) catch {};
     } else if (remote.captured.stderr.len > 0) {
-        out.appendSlice(alloc, " — ") catch {};
+        out.appendSlice(alloc, " - ") catch {};
         out.appendSlice(alloc, remote.captured.stderr[0..@min(remote.captured.stderr.len, 200)]) catch {};
     }
 }

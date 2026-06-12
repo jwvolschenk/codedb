@@ -231,8 +231,8 @@ fn writeHumanSummary(allocator: std.mem.Allocator, file: cio.File, file_count: u
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
     const writer = cio.listWriter(&out, allocator);
-    try writer.print("── E2E MCP Tool Benchmarks ({d} files, {d}KB) ──\n", .{ file_count, total_bytes / 1024 });
-    try writer.writeAll("Tool              Latency    Size     Ops/sec   TelemetryΔ\n");
+    try writer.print("-- E2E MCP Tool Benchmarks ({d} files, {d}KB) --\n", .{ file_count, total_bytes / 1024 });
+    try writer.writeAll("Tool              Latency    Size     Ops/sec   Telemetry%\n");
     for (results) |result| {
         var latency_buf: [32]u8 = undefined;
         var delta_buf: [32]u8 = undefined;

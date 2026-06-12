@@ -3200,7 +3200,7 @@ fn handleIndex(
         out.appendSlice(alloc, "error: indexing failed for ") catch {};
         out.appendSlice(alloc, abs_path) catch {};
         if (result.stderr.len > 0) {
-            out.appendSlice(alloc, " — ") catch {};
+            out.appendSlice(alloc, " - ") catch {};
             out.appendSlice(alloc, result.stderr[0..@min(result.stderr.len, 300)]) catch {};
         }
         return;
@@ -3404,7 +3404,7 @@ fn handleLs(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std
             }) catch "\n";
             out.appendSlice(alloc, meta) catch {};
             if (!no_descriptor and e.descriptor.len > 0) {
-                out.appendSlice(alloc, " — ") catch {};
+                out.appendSlice(alloc, " - ") catch {};
                 out.appendSlice(alloc, e.descriptor) catch {};
             }
             out.appendSlice(alloc, "\n") catch {};
