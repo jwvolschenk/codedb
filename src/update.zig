@@ -268,6 +268,16 @@ fn downloadAndReplaceBinary(io: std.Io, allocator: std.mem.Allocator, version: [
         }
     }
 
+    // On Windows, a running executable is locked. Rename it out of the way
+    // first — Windows allows renaming a running exe (the handle stays valid).
+    if (builtin.os.tag == .windows) {
+        const old_path = try std.fmt.allocPrint(allocator, "{s}.old", .{dest_path});
+        defer allocator.free(old_path);
+        // Best-effort cleanup of a leftover .old from a previous update.
+        std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
+        std.Io.Dir.renameAbsolute(dest_path, old_path, io) catch {};
+    }
+
     try std.Io.Dir.renameAbsolute(tmp_path, dest_path, io);
 }
 
