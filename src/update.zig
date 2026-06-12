@@ -4,7 +4,7 @@ const builtin = @import("builtin");
 const sty = @import("style.zig");
 const release_info = @import("release_info.zig");
 
-const github_repo = "justrach/codedb";
+const github_repo = "jwvolschenk/codedb";
 const default_base_url = "https://codedb.codegraff.com";
 const user_agent = "codedb-update";
 
@@ -309,7 +309,6 @@ fn sha256FileHex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]
 // the old inode mapped for the running process; subsequent invocations get the
 // new binary.
 
-const auto_update_install_url = "https://codedb.codegraff.com/install.sh";
 const auto_update_throttle_ms: i64 = 24 * 60 * 60 * 1000;
 const auto_update_stamp_filename = "last_auto_update_check";
 
@@ -348,12 +347,18 @@ pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
 }
 
 fn autoUpdateWorker() void {
-    // sh -c handles the curl-into-bash pipeline. We keep stdout/stderr captured
-    // and immediately discard so the install script's progress output doesn't
-    // leak into the parent's stdio (which is the MCP transport).
+    // Use the binary's own `update` command instead of curl-pipe-bash.
+    // This reuses the checksum-verified self-update path and doesn't depend
+    // on a hosted install script.
+    const self_path: []const u8 = switch (builtin.os.tag) {
+        .linux => "/proc/self/exe",
+        .freebsd => "/proc/curproc/file",
+        else => return,
+    };
+
     const result = cio.runCapture(.{
         .allocator = std.heap.page_allocator,
-        .argv = &.{ "sh", "-c", "curl -fsSL " ++ auto_update_install_url ++ " | bash" },
+        .argv = &.{ self_path, "update" },
         .max_output_bytes = 64 * 1024,
     }) catch return;
     std.heap.page_allocator.free(result.stdout);

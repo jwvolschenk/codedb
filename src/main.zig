@@ -18,10 +18,7 @@ const snapshot_mod = @import("snapshot.zig");
 const telemetry = @import("telemetry.zig");
 const root_policy = @import("root_policy.zig");
 const nuke_mod = @import("nuke.zig");
-const update_mod = struct {
-    pub fn run(_: anytype, _: anytype, _: anytype, _: anytype) void {}
-    pub fn maybeAutoUpdate(_: anytype, _: anytype) void {}
-};
+const update_mod = @import("update.zig");
 const release_info = @import("release_info.zig");
 const Config = @import("config.zig").Config;
 
