@@ -34,7 +34,7 @@ pub fn mcpFormatDuration(buf: []u8, ns: i128) []const u8 {
     } else if (uns < 1_000_000) {
         const us = uns / 1_000;
         const frac = (uns % 1_000) / 100;
-        return std.fmt.bufPrint(buf, "  " ++ MCP_CYAN ++ MCP_ZAP ++ " {d}.{d}\xc2\xb5s" ++ MCP_RESET, .{ us, frac }) catch "";
+        return std.fmt.bufPrint(buf, "  " ++ MCP_CYAN ++ MCP_ZAP ++ " {d}.{d}us" ++ MCP_RESET, .{ us, frac }) catch "";
     } else if (uns < 1_000_000_000) {
         const ms = uns / 1_000_000;
         const frac = (uns % 1_000_000) / 100_000;

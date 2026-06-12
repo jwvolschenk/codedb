@@ -27,7 +27,7 @@ const Out = struct {
     file: cio.File,
     alloc: std.mem.Allocator,
 
-    fn p(self: Out, comptime fmt: []const u8, args: anytype) void {
+    pub fn p(self: Out, comptime fmt: []const u8, args: anytype) void {
         const str = std.fmt.allocPrint(self.alloc, fmt, args) catch return;
         defer self.alloc.free(str);
         self.file.writeAll(str) catch {};
@@ -71,6 +71,13 @@ fn mainImpl() !void {
     const use_color = stdout.isTty();
     const s = sty.style(use_color);
     var out = Out{ .file = stdout, .alloc = allocator };
+
+    // On Windows, apply any staged .pending update before doing real work.
+    if (builtin.os.tag == .windows) {
+        const stderr_file = cio.File.stderr();
+        var stderr_out = Out{ .file = stderr_file, .alloc = allocator };
+        update_mod.applyPendingUpdate(io, &stderr_out);
+    }
 
     const raw_args = try cio.argsAlloc(allocator);
     defer cio.argsFree(allocator, raw_args);

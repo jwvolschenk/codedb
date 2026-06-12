@@ -82,17 +82,17 @@ pub fn style(color: bool) Style {
 }
 
 /// Format nanoseconds as a human-readable duration.
-/// Fast ops (<10ms) get an ⚡ prefix.
+/// Fast ops (<10ms) get a prefix.
 pub fn formatDuration(buf: []u8, ns: i128) []const u8 {
     const abs_ns: u128 = if (ns < 0) @intCast(-ns) else @intCast(ns);
     if (abs_ns < 1_000) {
-        return std.fmt.bufPrint(buf, "\xe2\x9a\xa1 {d}ns", .{abs_ns}) catch "";
+        return std.fmt.bufPrint(buf, "{d}ns", .{abs_ns}) catch "";
     } else if (abs_ns < 1_000_000) {
         const us = @as(f64, @floatFromInt(abs_ns)) / 1_000.0;
-        return std.fmt.bufPrint(buf, "\xe2\x9a\xa1 {d:.1}\xc2\xb5s", .{us}) catch "";
+        return std.fmt.bufPrint(buf, "{d:.1}us", .{us}) catch "";
     } else if (abs_ns < 10_000_000) {
         const ms = @as(f64, @floatFromInt(abs_ns)) / 1_000_000.0;
-        return std.fmt.bufPrint(buf, "\xe2\x9a\xa1 {d:.1}ms", .{ms}) catch "";
+        return std.fmt.bufPrint(buf, "{d:.1}ms", .{ms}) catch "";
     } else if (abs_ns < 1_000_000_000) {
         const ms = @as(f64, @floatFromInt(abs_ns)) / 1_000_000.0;
         return std.fmt.bufPrint(buf, "{d:.1}ms", .{ms}) catch "";
@@ -105,8 +105,8 @@ pub fn formatDuration(buf: []u8, ns: i128) []const u8 {
 /// Return a color scaled to elapsed duration.
 pub fn durationColor(s: Style, ns: i128) []const u8 {
     const abs_ns: u128 = if (ns < 0) @intCast(-ns) else @intCast(ns);
-    if (abs_ns < 10_000_000) return s.cyan; // <10ms  → cyan ⚡
-    if (abs_ns < 100_000_000) return s.green; // <100ms → green
-    if (abs_ns < 1_000_000_000) return s.blue; // <1s    → blue
-    return s.yellow; // 1s+    → yellow
+    if (abs_ns < 10_000_000) return s.cyan; // <10ms  -> cyan
+    if (abs_ns < 100_000_000) return s.green; // <100ms -> green
+    if (abs_ns < 1_000_000_000) return s.blue; // <1s    -> blue
+    return s.yellow; // 1s+    -> yellow
 }

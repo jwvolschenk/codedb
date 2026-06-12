@@ -91,7 +91,11 @@ pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Alloca
         std.process.exit(1);
     };
 
-    out.p("{s}v{s} updated to codedb {s}\n", .{ s.green, s.reset, resolved.value });
+    if (builtin.os.tag == .windows) {
+        out.p("{s}v{s} update staged for codedb {s} (applies on next restart)\n", .{ s.green, s.reset, resolved.value });
+    } else {
+        out.p("{s}v{s} updated to codedb {s}\n", .{ s.green, s.reset, resolved.value });
+    }
 }
 
 pub fn assetNameForTarget(os_tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) ?[]const u8 {
@@ -268,17 +272,50 @@ fn downloadAndReplaceBinary(io: std.Io, allocator: std.mem.Allocator, version: [
         }
     }
 
-    // On Windows, a running executable is locked. Rename it out of the way
-    // first — Windows allows renaming a running exe (the handle stays valid).
     if (builtin.os.tag == .windows) {
-        const old_path = try std.fmt.allocPrint(allocator, "{s}.old", .{dest_path});
-        defer allocator.free(old_path);
-        // Best-effort cleanup of a leftover .old from a previous update.
-        std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
-        std.Io.Dir.renameAbsolute(dest_path, old_path, io) catch {};
+        // Windows locks running executables. Stage the update as .pending;
+        // applyPendingUpdate() swaps it in on next startup.
+        const pending_path = try std.fmt.allocPrint(allocator, "{s}.pending", .{dest_path});
+        defer allocator.free(pending_path);
+        std.Io.Dir.deleteFileAbsolute(io, pending_path) catch {};
+        try std.Io.Dir.renameAbsolute(tmp_path, pending_path, io);
+    } else {
+        // POSIX: atomic rename works even over a running binary.
+        try std.Io.Dir.renameAbsolute(tmp_path, dest_path, io);
     }
+}
 
-    try std.Io.Dir.renameAbsolute(tmp_path, dest_path, io);
+/// Called very early on startup. If a .pending file exists next to the running
+/// executable, swap it in. Best-effort: prints a warning on failure but never
+/// blocks normal execution.
+pub fn applyPendingUpdate(io: std.Io, err_out: anytype) void {
+    const self_path = std.process.executablePathAlloc(io, std.heap.page_allocator) catch return;
+    defer std.heap.page_allocator.free(self_path);
+
+    const pending_path = std.fmt.allocPrint(std.heap.page_allocator, "{s}.pending", .{self_path}) catch return;
+    defer std.heap.page_allocator.free(pending_path);
+
+    // Check if .pending exists.
+    std.Io.Dir.accessAbsolute(io, pending_path, .{}) catch return;
+
+    // Try to swap: rename running exe to .old, then rename .pending into place.
+    const old_path = std.fmt.allocPrint(std.heap.page_allocator, "{s}.old", .{self_path}) catch return;
+    defer std.heap.page_allocator.free(old_path);
+
+    std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
+    std.Io.Dir.renameAbsolute(self_path, old_path, io) catch |err| {
+        err_out.p("warning: staged update found but cannot rename running exe: {s}\n", .{@errorName(err)});
+        err_out.p("  close all codedb instances and run again to apply\n", .{});
+        return;
+    };
+    std.Io.Dir.renameAbsolute(pending_path, self_path, io) catch |err| {
+        // Roll back: put the old binary back.
+        std.Io.Dir.renameAbsolute(old_path, self_path, io) catch {};
+        err_out.p("warning: staged update found but cannot apply: {s}\n", .{@errorName(err)});
+        return;
+    };
+    // Success. Old binary is .old (still running from its handle). Clean up later.
+    std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
 }
 
 fn downloadToFile(allocator: std.mem.Allocator, url: []const u8, dest_path: []const u8) !void {
