@@ -34,13 +34,13 @@ pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Alloca
     const out = Out{ .file = stdout, .alloc = allocator };
 
     const resolved = resolveTargetVersion(allocator) catch |err| {
-        out.p("{s}✗{s} failed to resolve update target: {s}\n", .{ s.red, s.reset, @errorName(err) });
+        out.p("{s}x{s} failed to resolve update target: {s}\n", .{ s.red, s.reset, @errorName(err) });
         std.process.exit(1);
     };
     defer allocator.free(resolved.value);
 
     const version_order = compareVersions(release_info.semver, resolved.value) catch |err| {
-        out.p("{s}✗{s} invalid release version: {s}\n", .{ s.red, s.reset, @errorName(err) });
+        out.p("{s}x{s} invalid release version: {s}\n", .{ s.red, s.reset, @errorName(err) });
         std.process.exit(1);
     };
 
@@ -50,14 +50,14 @@ pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Alloca
             return;
         },
         .gt => {
-            out.p("{s}✗{s} refusing to replace codedb {s} with older release {s}\n", .{ s.red, s.reset, release_info.semver, resolved.value });
+            out.p("{s}x{s} refusing to replace codedb {s} with older release {s}\n", .{ s.red, s.reset, release_info.semver, resolved.value });
             std.process.exit(1);
         },
         .lt => {},
     }
 
     const asset_name = assetNameForTarget(builtin.os.tag, builtin.cpu.arch) orelse {
-        out.p("{s}✗{s} self-update is unsupported on this platform\n", .{ s.red, s.reset });
+        out.p("{s}x{s} self-update is unsupported on this platform\n", .{ s.red, s.reset });
         std.process.exit(1);
     };
 
@@ -70,40 +70,45 @@ pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Alloca
     out.p("  asset:  {s}\n", .{asset_name});
 
     const manifest = fetchChecksumsManifest(allocator, resolved.value) catch |err| {
-        out.p("{s}✗{s} failed to download checksums for v{s}: {s}\n", .{ s.red, s.reset, resolved.value, @errorName(err) });
+        out.p("{s}x{s} failed to download checksums for v{s}: {s}\n", .{ s.red, s.reset, resolved.value, @errorName(err) });
         std.process.exit(1);
     };
     defer allocator.free(manifest);
 
     const expected_hash = checksumForBinary(manifest, asset_name) orelse {
-        out.p("{s}✗{s} release v{s} is missing a checksum for {s}\n", .{ s.red, s.reset, resolved.value, asset_name });
+        out.p("{s}x{s} release v{s} is missing a checksum for {s}\n", .{ s.red, s.reset, resolved.value, asset_name });
         std.process.exit(1);
     };
 
     const self_path = std.process.executablePathAlloc(io, allocator) catch |err| {
-        out.p("{s}✗{s} cannot locate current executable: {s}\n", .{ s.red, s.reset, @errorName(err) });
+        out.p("{s}x{s} cannot locate current executable: {s}\n", .{ s.red, s.reset, @errorName(err) });
         std.process.exit(1);
     };
     defer allocator.free(self_path);
 
     downloadAndReplaceBinary(io, allocator, resolved.value, asset_name, self_path, expected_hash) catch |err| {
-        out.p("{s}✗{s} update failed: {s}\n", .{ s.red, s.reset, @errorName(err) });
+        out.p("{s}x{s} update failed: {s}\n", .{ s.red, s.reset, @errorName(err) });
         std.process.exit(1);
     };
 
-    out.p("{s}✓{s} updated to codedb {s}\n", .{ s.green, s.reset, resolved.value });
+    out.p("{s}v{s} updated to codedb {s}\n", .{ s.green, s.reset, resolved.value });
 }
 
 pub fn assetNameForTarget(os_tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) ?[]const u8 {
     return switch (os_tag) {
         .macos => switch (arch) {
-            .aarch64 => "codedb-darwin-arm64",
-            .x86_64 => "codedb-darwin-x86_64",
+            .aarch64 => "codedb-aarch64-darwin",
+            .x86_64 => "codedb-x86_64-darwin",
             else => null,
         },
         .linux => switch (arch) {
-            .aarch64 => "codedb-linux-arm64",
-            .x86_64 => "codedb-linux-x86_64",
+            .aarch64 => "codedb-aarch64-linux",
+            .x86_64 => "codedb-x86_64-linux",
+            else => null,
+        },
+        .windows => switch (arch) {
+            .aarch64 => "codedb-aarch64-windows.exe",
+            .x86_64 => "codedb-x86_64-windows.exe",
             else => null,
         },
         else => null,

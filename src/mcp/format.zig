@@ -19,12 +19,12 @@ pub const MCP_MAGENTA = "\x1b[35m";
 pub const MCP_BLUE = "\x1b[34m";
 pub const MCP_BRIGHT_GREEN = "\x1b[92m";
 
-pub const MCP_CHECK = "\xe2\x9c\x93"; // ✓
-pub const MCP_CROSS = "\xe2\x9c\x97"; // ✗
-pub const MCP_DASH = " \xe2\x80\x94 "; //  —
-pub const MCP_ARROW = "\xe2\x86\x92 "; // →
-pub const MCP_DOT = "\xe2\x80\xa2 "; // •
-pub const MCP_ZAP = "\xe2\x9a\xa1"; // ⚡
+pub const MCP_CHECK = "v"; // was ✓
+pub const MCP_CROSS = "x"; // was ✗
+pub const MCP_DASH = " - "; // was  —
+pub const MCP_ARROW = "-> "; // was →
+pub const MCP_DOT = "* "; // was •
+pub const MCP_ZAP = ""; // was ⚡
 
 pub fn mcpFormatDuration(buf: []u8, ns: i128) []const u8 {
     if (ns <= 0) return "";

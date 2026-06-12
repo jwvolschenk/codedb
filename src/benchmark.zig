@@ -235,12 +235,12 @@ fn printHuman(allocator: std.mem.Allocator, file: cio.File, r: BenchResult) !voi
     try w.print("    id_to_path after   : {d}\n", .{r.reindex.id_to_path_after});
     try w.print("    free_ids remaining : {d}\n", .{r.reindex.free_ids_after});
     const bounded = r.reindex.id_to_path_after <= r.reindex.id_to_path_before + r.reindex.files_per_cycle + 1;
-    try w.print("    id_to_path bounded : {s}\n", .{if (bounded) "yes ✓" else "no — unexpected growth"});
+    try w.print("    id_to_path bounded : {s}\n", .{if (bounded) "yes" else "no - unexpected growth"});
 
     try w.print("\n  .git/HEAD mtime gate:\n", .{});
     var sb: [32]u8 = undefined;
     try w.print("    stat cost (avg 5x) : {s}\n", .{fmtNs(r.git_head.stat_ns, &sb)});
-    try w.print("    mtime stable       : {s}\n\n", .{if (r.git_head.stat_stable) "yes ✓ — getGitHead would be skipped" else "no — HEAD changed during bench"});
+    try w.print("    mtime stable       : {s}\n\n", .{if (r.git_head.stat_stable) "yes - getGitHead would be skipped" else "no - HEAD changed during bench"});
     try file.writeAll(out.items);
 }
 
