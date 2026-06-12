@@ -1,3 +1,0 @@
-\d+
-
-version 1.2.345 build 678

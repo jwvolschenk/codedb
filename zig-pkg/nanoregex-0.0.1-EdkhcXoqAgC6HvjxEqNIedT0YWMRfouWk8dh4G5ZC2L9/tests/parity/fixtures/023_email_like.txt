@@ -1,3 +1,0 @@
-[a-zA-Z0-9_.]+@[a-zA-Z0-9.]+
-
-contact me at alice@example.com or bob.test@host.io
