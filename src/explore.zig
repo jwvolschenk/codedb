@@ -7,6 +7,7 @@ const fsharp_parser = @import("fsharp_parser.zig");
 const autumn_parser = @import("autumn_parser.zig");
 const t4_parser = @import("t4_parser.zig");
 const tsql_parser = @import("tsql_parser.zig");
+const ssrs_parser = @import("ssrs_parser.zig");
 const Store = @import("store.zig").Store;
 const idx = @import("index.zig");
 const WordIndex = idx.WordIndex;
@@ -802,6 +803,48 @@ pub const Explorer = struct {
                     },
                     .directive_import => |imp| {
                         try appendImportSymbol(parser.allocator, &outline, imp.namespace, line_num, trimmed);
+                    },
+                }
+            } else if (outline.language == .ssrs_report or outline.language == .ssrs_dataset or
+                outline.language == .ssrs_datasource or outline.language == .ssrs_project)
+            {
+                // SSRS files: .rdl, .rsd, .rds, .rptproj
+                const result: ssrs_parser.ParsedLine = switch (outline.language) {
+                    .ssrs_report => blk: {
+                        // Check for <ReportName> inside <Subreport> blocks (dependency link)
+                        if (ssrs_parser.parseSubreportRef(trimmed)) |subreport_name| {
+                            break :blk .{ .import = .{ .path = subreport_name } };
+                        }
+                        break :blk ssrs_parser.parseRdlLine(trimmed);
+                    },
+                    .ssrs_dataset => ssrs_parser.parseRsdLine(trimmed),
+                    .ssrs_datasource => ssrs_parser.parseRdsLine(trimmed),
+                    .ssrs_project => ssrs_parser.parseRptprojLine(trimmed),
+                    else => unreachable,
+                };
+                switch (result) {
+                    .none => {},
+                    .symbol => |sym| {
+                        const sk: SymbolKind = switch (sym.kind) {
+                            .report_parameter => .variable,
+                            .dataset => .variable,
+                            .datasource => .variable,
+                            .variable => .variable,
+                            .subreport => .variable,
+                            .shared_dataset_ref => unreachable,
+                            .datasource_ref => unreachable,
+                            .command_text => .function,
+                            .report_item => unreachable,
+                            .dataset_item => unreachable,
+                            .datasource_item => unreachable,
+                        };
+                        var detail_buf: [256]u8 = undefined;
+                        const structured = ssrs_parser.extractDetail(trimmed, sym.kind, &detail_buf);
+                        const detail = if (structured.len > 0) structured else trimmed;
+                        try appendOutlineSymbol(parser.allocator, &outline, sym.name, sk, line_num, detail);
+                    },
+                    .import => |imp| {
+                        try appendImportSymbol(parser.allocator, &outline, imp.path, line_num, trimmed);
                     },
                 }
             }

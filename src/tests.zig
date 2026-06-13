@@ -9,6 +9,7 @@ const AgentRegistry = @import("agent.zig").AgentRegistry;
 const Explorer = @import("explore.zig").Explorer;
 const csharp_parser = @import("csharp_parser.zig");
 const tsql_parser = @import("tsql_parser.zig");
+const ssrs_parser = @import("ssrs_parser.zig");
 const SearchResult = @import("explore.zig").SearchResult;
 const WordIndex = @import("index.zig").WordIndex;
 const TrigramIndex = @import("index.zig").TrigramIndex;
@@ -13205,4 +13206,236 @@ test "TSQL parser: UPDATE dependency" {
     const result = tsql_parser.parseLine("UPDATE dbo.Users SET Name = 'test'");
     try testing.expect(result == .import);
     try testing.expectEqualStrings("dbo.Users", result.import.path);
+}
+
+// ── SSRS parser tests ────────────────────────────────────────────
+
+test "detectLanguage: SSRS extensions" {
+    try testing.expect(explore.detectLanguage("Report.rdl") == .ssrs_report);
+    try testing.expect(explore.detectLanguage("DataSet.rsd") == .ssrs_dataset);
+    try testing.expect(explore.detectLanguage("Autumn.rds") == .ssrs_datasource);
+    try testing.expect(explore.detectLanguage("Regulatory.rptproj") == .ssrs_project);
+    try testing.expect(explore.detectLanguage("sub Cover (Landscape).rdl") == .ssrs_report);
+}
+
+test "SSRS parser: RDL extracts report parameters" {
+    const result = ssrs_parser.parseRdlLine("    <ReportParameter Name=\"pvc_UserId\">");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("pvc_UserId", result.symbol.name);
+    try testing.expect(result.symbol.kind == .report_parameter);
+}
+
+test "SSRS parser: RDL extracts datasets" {
+    const result = ssrs_parser.parseRdlLine("    <DataSet Name=\"GetReportEntity\">");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("GetReportEntity", result.symbol.name);
+    try testing.expect(result.symbol.kind == .dataset);
+}
+
+test "SSRS parser: RDL extracts data sources" {
+    const result = ssrs_parser.parseRdlLine("    <DataSource Name=\"Autumn\">");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("Autumn", result.symbol.name);
+    try testing.expect(result.symbol.kind == .datasource);
+}
+
+test "SSRS parser: RDL extracts variables" {
+    const result = ssrs_parser.parseRdlLine("    <Variable Name=\"Expense\">");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("Expense", result.symbol.name);
+    try testing.expect(result.symbol.kind == .variable);
+}
+
+test "SSRS parser: RDL extracts subreports" {
+    const result = ssrs_parser.parseRdlLine("                  <Subreport Name=\"PortfolioSummary\">");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("PortfolioSummary", result.symbol.name);
+    try testing.expect(result.symbol.kind == .subreport);
+}
+
+test "SSRS parser: RDL extracts shared dataset references as imports" {
+    const result = ssrs_parser.parseRdlLine("        <SharedDataSetReference>/Datasets/GetReportEntity</SharedDataSetReference>");
+    try testing.expect(result == .import);
+    try testing.expectEqualStrings("GetReportEntity", result.import.path);
+}
+
+test "SSRS parser: RDL extracts datasource references as imports" {
+    const result = ssrs_parser.parseRdlLine("      <DataSourceReference>/Data Sources/Autumn</DataSourceReference>");
+    try testing.expect(result == .import);
+    try testing.expectEqualStrings("Autumn", result.import.path);
+}
+
+test "SSRS parser: RDL extracts command text" {
+    const result = ssrs_parser.parseRdlLine("      <CommandText>Reporting.ReportExPost</CommandText>");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("Reporting.ReportExPost", result.symbol.name);
+    try testing.expect(result.symbol.kind == .command_text);
+}
+
+test "SSRS parser: RDL extracts subreport refs as imports" {
+    const result = ssrs_parser.parseSubreportRef("                    <ReportName>sub SA Tax Information Summary</ReportName>");
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("sub SA Tax Information Summary", result.?);
+}
+
+test "SSRS parser: RSD extracts command text" {
+    const result = ssrs_parser.parseRsdLine("      <CommandText>SELECT [Common].[GetReportEntity](@pvc_ReportEntity, @pb_Consolidate) AS ReportEntity</CommandText>");
+    try testing.expect(result == .symbol);
+    try testing.expect(result.symbol.kind == .command_text);
+    try testing.expect(std.mem.startsWith(u8, result.symbol.name, "SELECT"));
+}
+
+test "SSRS parser: RSD extracts datasource reference" {
+    const result = ssrs_parser.parseRsdLine("      <DataSourceReference>Autumn</DataSourceReference>");
+    try testing.expect(result == .import);
+    try testing.expectEqualStrings("Autumn", result.import.path);
+}
+
+test "SSRS parser: RSD extracts dataset parameters" {
+    const result = ssrs_parser.parseRsdLine("        <DataSetParameter Name=\"@pvc_ReportEntity\">");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("@pvc_ReportEntity", result.symbol.name);
+    try testing.expect(result.symbol.kind == .report_parameter);
+}
+
+test "SSRS parser: RDS extracts datasource name" {
+    const result = ssrs_parser.parseRdsLine("<RptDataSource xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" Name=\"Autumn\">");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("Autumn", result.symbol.name);
+    try testing.expect(result.symbol.kind == .datasource);
+}
+
+test "SSRS parser: RDS extracts connection string" {
+    const result = ssrs_parser.parseRdsLine("    <ConnectString>Data Source=sql-dbc1;Initial Catalog=Autumn</ConnectString>");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("Data Source=sql-dbc1;Initial Catalog=Autumn", result.symbol.name);
+    try testing.expect(result.symbol.kind == .datasource);
+}
+
+test "SSRS parser: RPTPROJ extracts report items as imports" {
+    const result = ssrs_parser.parseRptprojLine("    <Report Include=\"CGIX Tax Certificates.rdl\" />");
+    try testing.expect(result == .import);
+    try testing.expectEqualStrings("CGIX Tax Certificates.rdl", result.import.path);
+}
+
+test "SSRS parser: RPTPROJ extracts dataset items as imports" {
+    const result = ssrs_parser.parseRptprojLine("    <DataSet Include=\"GetDate.rsd\" />");
+    try testing.expect(result == .import);
+    try testing.expectEqualStrings("GetDate.rsd", result.import.path);
+}
+
+test "SSRS parser: RPTPROJ extracts datasource items as imports" {
+    const result = ssrs_parser.parseRptprojLine("    <DataSource Include=\"Autumn.rds\" />");
+    try testing.expect(result == .import);
+    try testing.expectEqualStrings("Autumn.rds", result.import.path);
+}
+
+test "SSRS parser: RDL ignores non-matching lines" {
+    const result = ssrs_parser.parseRdlLine("      <Author>Credo Capital Plc</Author>");
+    try testing.expect(result == .none);
+}
+
+test "SSRS parser: RDL extractDetail for report_parameter" {
+    var buf: [256]u8 = undefined;
+    const detail = ssrs_parser.extractDetail("      <DataType>String</DataType>", .report_parameter, &buf);
+    try testing.expectEqualStrings("String", detail);
+}
+
+test "SSRS parser: integration — index RDL via Explorer" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    const rdl_content =
+        \\<Report xmlns="http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition">
+        \\  <DataSources>
+        \\    <DataSource Name="Autumn">
+        \\      <DataSourceReference>/Data Sources/Autumn</DataSourceReference>
+        \\    </DataSource>
+        \\  </DataSources>
+        \\  <DataSets>
+        \\    <DataSet Name="GetDate">
+        \\      <SharedDataSet>
+        \\        <SharedDataSetReference>/Datasets/GetDate</SharedDataSetReference>
+        \\      </SharedDataSet>
+        \\    </DataSet>
+        \\  </DataSets>
+        \\  <ReportParameters>
+        \\    <ReportParameter Name="pvc_FromDate">
+        \\      <DataType>String</DataType>
+        \\    </ReportParameter>
+        \\  </ReportParameters>
+        \\</Report>
+    ;
+
+    try explorer.indexFile("TestReport.rdl", rdl_content);
+    const outline = explorer.outlines.get("TestReport.rdl").?;
+
+    try testing.expectEqual(explore.Language.ssrs_report, outline.language);
+
+    // Should have symbols: DataSource, DataSet, ReportParameter
+    var found_datasource = false;
+    var found_dataset = false;
+    var found_param = false;
+    for (outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "Autumn") and sym.kind == .variable) found_datasource = true;
+        if (std.mem.eql(u8, sym.name, "GetDate") and sym.kind == .variable) found_dataset = true;
+        if (std.mem.eql(u8, sym.name, "pvc_FromDate") and sym.kind == .variable) found_param = true;
+    }
+    try testing.expect(found_datasource);
+    try testing.expect(found_dataset);
+    try testing.expect(found_param);
+
+    // Should have imports: Autumn, GetDate
+    var found_rds_import = false;
+    var found_rsd_import = false;
+    for (outline.imports.items) |imp| {
+        if (std.mem.eql(u8, imp, "Autumn")) found_rds_import = true;
+        if (std.mem.eql(u8, imp, "GetDate")) found_rsd_import = true;
+    }
+    try testing.expect(found_rds_import);
+    try testing.expect(found_rsd_import);
+}
+
+test "SSRS parser: integration — index RPTPROJ via Explorer" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    const proj_content =
+        \\<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+        \\  <ItemGroup>
+        \\    <DataSet Include="GetDate.rsd" />
+        \\    <DataSet Include="GetReportEntity.rsd" />
+        \\  </ItemGroup>
+        \\  <ItemGroup>
+        \\    <DataSource Include="Autumn.rds" />
+        \\  </ItemGroup>
+        \\  <ItemGroup>
+        \\    <Report Include="ExPostCostAndCharges.rdl" />
+        \\    <Report Include="CGIX Tax Pack.rdl" />
+        \\  </ItemGroup>
+        \\</Project>
+    ;
+
+    try explorer.indexFile("Regulatory.rptproj", proj_content);
+    const outline = explorer.outlines.get("Regulatory.rptproj").?;
+
+    try testing.expectEqual(explore.Language.ssrs_project, outline.language);
+
+    // All items should be imports
+    try testing.expect(outline.imports.items.len == 5);
+    var found_report = false;
+    var found_dataset = false;
+    var found_datasource = false;
+    for (outline.imports.items) |imp| {
+        if (std.mem.eql(u8, imp, "ExPostCostAndCharges.rdl")) found_report = true;
+        if (std.mem.eql(u8, imp, "GetDate.rsd")) found_dataset = true;
+        if (std.mem.eql(u8, imp, "Autumn.rds")) found_datasource = true;
+    }
+    try testing.expect(found_report);
+    try testing.expect(found_dataset);
+    try testing.expect(found_datasource);
 }

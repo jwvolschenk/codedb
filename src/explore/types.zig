@@ -124,6 +124,10 @@ pub const Language = enum(u8) {
     autumn_adpt,
     autumn_arc,
     t4_template,
+    ssrs_report,
+    ssrs_dataset,
+    ssrs_datasource,
+    ssrs_project,
 };
 
 pub fn detectLanguage(path: []const u8) Language {
@@ -170,6 +174,10 @@ pub fn detectLanguage(path: []const u8) Language {
     if (std.mem.endsWith(u8, path, ".adpt")) return .autumn_adpt;
     if (std.mem.endsWith(u8, path, ".arc")) return .autumn_arc;
     if (std.mem.endsWith(u8, path, ".tt") or std.mem.endsWith(u8, path, ".t4")) return .t4_template;
+    if (std.mem.endsWith(u8, path, ".rdl")) return .ssrs_report;
+    if (std.mem.endsWith(u8, path, ".rsd")) return .ssrs_dataset;
+    if (std.mem.endsWith(u8, path, ".rds")) return .ssrs_datasource;
+    if (std.mem.endsWith(u8, path, ".rptproj")) return .ssrs_project;
     return .unknown;
 }
 
