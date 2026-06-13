@@ -8,6 +8,7 @@ const ChangeEntry = @import("store.zig").ChangeEntry;
 const AgentRegistry = @import("agent.zig").AgentRegistry;
 const Explorer = @import("explore.zig").Explorer;
 const csharp_parser = @import("csharp_parser.zig");
+const tsql_parser = @import("tsql_parser.zig");
 const SearchResult = @import("explore.zig").SearchResult;
 const WordIndex = @import("index.zig").WordIndex;
 const TrigramIndex = @import("index.zig").TrigramIndex;
@@ -13001,4 +13002,207 @@ test "notify drain preserves other projects' absolute paths" {
     try testing.expect(!watcher.notifyLineBelongsToOtherRoot("src/A.cs", root));
     // Sibling dir sharing a prefix must be treated as foreign (boundary check).
     try testing.expect(watcher.notifyLineBelongsToOtherRoot("/home/u/repos/pro-old/src/A.cs", root));
+}
+
+test "TSQL parser: full outline with symbols and imports" {
+    const alloc = testing.allocator;
+    var explorer = Explorer.init(alloc);
+    defer explorer.deinit();
+
+    try explorer.indexFile("sql/StoredProcedures.sql",
+        \\-- TSQL stored procedures and dependencies
+        \\CREATE TABLE dbo.Users (
+        \\    Id INT PRIMARY KEY,
+        \\    Name NVARCHAR(100),
+        \\    Email NVARCHAR(255)
+        \\);
+        \\
+        \\CREATE TABLE dbo.Orders (
+        \\    Id INT PRIMARY KEY,
+        \\    UserId INT,
+        \\    Total DECIMAL(18,2)
+        \\);
+        \\
+        \\CREATE PROCEDURE dbo.GetUsersByStatus
+        \\    @Status INT
+        \\AS
+        \\BEGIN
+        \\    SELECT u.Id, u.Name
+        \\    FROM dbo.Users u
+        \\    INNER JOIN dbo.Orders o ON o.UserId = u.Id
+        \\    WHERE u.Status = @Status;
+        \\END
+        \\
+        \\CREATE FUNCTION dbo.CalculateTotal(@UserId INT)
+        \\RETURNS DECIMAL(18,2)
+        \\AS
+        \\BEGIN
+        \\    DECLARE @Total DECIMAL(18,2);
+        \\    SELECT @Total = SUM(Total) FROM dbo.Orders WHERE UserId = @UserId;
+        \\    RETURN @Total;
+        \\END
+        \\
+        \\CREATE VIEW dbo.ActiveUsers AS
+        \\SELECT u.Id, u.Name, o.Total
+        \\FROM dbo.Users u
+        \\LEFT JOIN dbo.Orders o ON o.UserId = u.Id;
+        \\
+        \\CREATE TRIGGER dbo.tr_Users_Audit
+        \\ON dbo.Users
+        \\AFTER INSERT, UPDATE
+        \\AS
+        \\BEGIN
+        \\    INSERT INTO dbo.AuditLog (TableName, Action)
+        \\    VALUES ('Users', 'MODIFY');
+        \\END
+        \\
+        \\CREATE PROCEDURE dbo.ProcessOrder
+        \\    @OrderId INT
+        \\AS
+        \\BEGIN
+        \\    EXEC dbo.UpdateInventory @OrderId;
+        \\    DELETE FROM dbo.PendingOrders WHERE OrderId = @OrderId;
+        \\END
+        \\
+        \\GO
+    );
+
+    var outline = try explorer.getOutline("sql/StoredProcedures.sql", alloc) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expectEqual(Language.sql, outline.language);
+
+    // Object definitions
+    try expectOutlineSymbol(&outline, "dbo.Users", .struct_def);
+    try expectOutlineSymbol(&outline, "dbo.Orders", .struct_def);
+    try expectOutlineSymbol(&outline, "dbo.GetUsersByStatus", .function);
+    try expectOutlineSymbol(&outline, "dbo.CalculateTotal", .function);
+    try expectOutlineSymbol(&outline, "dbo.ActiveUsers", .struct_def);
+    try expectOutlineSymbol(&outline, "dbo.tr_Users_Audit", .method);
+    try expectOutlineSymbol(&outline, "dbo.ProcessOrder", .function);
+
+    // Variables (only DECLARE statements)
+    try expectOutlineSymbol(&outline, "@Total", .variable);
+
+    // Dependency tracking - verify imports exist
+    try testing.expect(outline.imports.items.len > 0);
+}
+
+test "TSQL parser: stripLineComment respects string literals" {
+    const result = tsql_parser.stripLineComment("SELECT 'hello--world' FROM t -- comment");
+    try testing.expectEqualStrings("SELECT 'hello--world' FROM t", result);
+}
+
+test "TSQL parser: escaped quotes in strings" {
+    const result = tsql_parser.stripLineComment("SELECT 'it''s a test' -- comment");
+    try testing.expectEqualStrings("SELECT 'it''s a test'", result);
+}
+
+test "TSQL parser: CREATE OR ALTER PROCEDURE" {
+    const result = tsql_parser.parseLine("CREATE OR ALTER PROCEDURE dbo.GetUsers");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("dbo.GetUsers", result.symbol.name);
+    try testing.expect(result.symbol.kind == .procedure);
+}
+
+test "TSQL parser: ALTER FUNCTION" {
+    const result = tsql_parser.parseLine("ALTER FUNCTION dbo.CalculateTotal");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("dbo.CalculateTotal", result.symbol.name);
+    try testing.expect(result.symbol.kind == .function_def);
+}
+
+test "TSQL parser: EXEC procedure dependency" {
+    const result = tsql_parser.parseLine("EXEC dbo.UpdateInventory @OrderId = 1");
+    try testing.expect(result == .import);
+    try testing.expectEqualStrings("dbo.UpdateInventory", result.import.path);
+}
+
+test "TSQL parser: FROM table dependency" {
+    const result = tsql_parser.parseLine("SELECT * FROM dbo.Users u");
+    try testing.expect(result == .import);
+    try testing.expectEqualStrings("dbo.Users", result.import.path);
+}
+
+test "TSQL parser: INNER JOIN dependency" {
+    const result = tsql_parser.parseLine("INNER JOIN dbo.Orders o ON o.UserId = u.Id");
+    try testing.expect(result == .import);
+    try testing.expectEqualStrings("dbo.Orders", result.import.path);
+}
+
+test "TSQL parser: INSERT INTO dependency" {
+    const result = tsql_parser.parseLine("INSERT INTO dbo.AuditLog (TableName) VALUES ('test')");
+    try testing.expect(result == .import);
+    try testing.expectEqualStrings("dbo.AuditLog", result.import.path);
+}
+
+test "TSQL parser: DELETE FROM dependency" {
+    const result = tsql_parser.parseLine("DELETE FROM dbo.PendingOrders WHERE Id = 1");
+    try testing.expect(result == .import);
+    try testing.expectEqualStrings("dbo.PendingOrders", result.import.path);
+}
+
+test "TSQL parser: DECLARE variable" {
+    const result = tsql_parser.parseLine("DECLARE @UserId INT = 0");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("@UserId", result.symbol.name);
+    try testing.expect(result.symbol.kind == .variable);
+}
+
+test "TSQL parser: GO separator is none" {
+    const result = tsql_parser.parseLine("GO");
+    try testing.expect(result == .none);
+}
+
+test "TSQL parser: skip @table_variable in FROM" {
+    const result = tsql_parser.parseLine("SELECT * FROM @TempTable");
+    try testing.expect(result == .none);
+}
+
+test "TSQL parser: skip EXEC dynamic SQL" {
+    const result = tsql_parser.parseLine("EXEC('SELECT 1')");
+    try testing.expect(result == .none);
+}
+
+test "TSQL parser: skip EXEC @variable assignment" {
+    const result = tsql_parser.parseLine("EXEC @ret = dbo.MyProc");
+    try testing.expect(result == .none);
+}
+
+test "TSQL parser: LEFT OUTER JOIN dependency" {
+    const result = tsql_parser.parseLine("LEFT OUTER JOIN dbo.UserProfiles up ON up.UserId = u.Id");
+    try testing.expect(result == .import);
+    try testing.expectEqualStrings("dbo.UserProfiles", result.import.path);
+}
+
+test "TSQL parser: CREATE SEQUENCE" {
+    const result = tsql_parser.parseLine("CREATE SEQUENCE dbo.OrderNumbers START WITH 1");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("dbo.OrderNumbers", result.symbol.name);
+    try testing.expect(result.symbol.kind == .sequence);
+}
+
+test "TSQL parser: CREATE SYNONYM" {
+    const result = tsql_parser.parseLine("CREATE SYNONYM dbo.RemoteUsers FOR Server2.Database1.dbo.Users");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("dbo.RemoteUsers", result.symbol.name);
+    try testing.expect(result.symbol.kind == .synonym);
+}
+
+test "TSQL parser: bracketed name" {
+    const result = tsql_parser.parseLine("CREATE TABLE [dbo].[User Accounts] (");
+    try testing.expect(result == .symbol);
+    try testing.expect(result.symbol.kind == .table_def);
+}
+
+test "TSQL parser: CREATE INDEX" {
+    const result = tsql_parser.parseLine("CREATE INDEX IX_Users_Email ON dbo.Users (Email)");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("IX_Users_Email", result.symbol.name);
+    try testing.expect(result.symbol.kind == .index_def);
+}
+
+test "TSQL parser: UPDATE dependency" {
+    const result = tsql_parser.parseLine("UPDATE dbo.Users SET Name = 'test'");
+    try testing.expect(result == .import);
+    try testing.expectEqualStrings("dbo.Users", result.import.path);
 }

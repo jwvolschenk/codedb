@@ -6,6 +6,7 @@ const csharp_parser = @import("csharp_parser.zig");
 const fsharp_parser = @import("fsharp_parser.zig");
 const autumn_parser = @import("autumn_parser.zig");
 const t4_parser = @import("t4_parser.zig");
+const tsql_parser = @import("tsql_parser.zig");
 const Store = @import("store.zig").Store;
 const idx = @import("index.zig");
 const WordIndex = idx.WordIndex;
@@ -604,7 +605,7 @@ pub const Explorer = struct {
                 outline.language == .css or outline.language == .scss or
                 outline.language == .protobuf or outline.language == .mlir or
                 outline.language == .tablegen or outline.language == .c_sharp or
-                outline.language == .razor)
+                outline.language == .razor or outline.language == .sql)
             {
                 if (in_block_comment) {
                     if (std.mem.indexOf(u8, trimmed, "*/")) |close_pos| {
@@ -681,7 +682,34 @@ pub const Explorer = struct {
             } else if (outline.language == .css or outline.language == .scss) {
                 try parser.parseStyleLine(trimmed, line_num, &outline);
             } else if (outline.language == .sql) {
-                try parser.parseSqlLine(trimmed, line_num, &outline);
+                const result = tsql_parser.parseLine(trimmed);
+                switch (result) {
+                    .none => {},
+                    .symbol => |sym| {
+                        const sk: SymbolKind = switch (sym.kind) {
+                            .procedure => .function,
+                            .function_def => .function,
+                            .view => .struct_def,
+                            .table_def => .struct_def,
+                            .trigger => .method,
+                            .schema => .type_alias,
+                            .type_def => .type_alias,
+                            .sequence => .constant,
+                            .synonym => .type_alias,
+                            .index_def => .constant,
+                            .variable => .variable,
+                            .exec_ref => unreachable,
+                            .table_ref => unreachable,
+                        };
+                        var detail_buf: [256]u8 = undefined;
+                        const structured = tsql_parser.extractDetail(trimmed, sym.kind, &detail_buf);
+                        const detail = if (structured.len > 0) structured else trimmed;
+                        try appendOutlineSymbol(parser.allocator, &outline, sym.name, sk, line_num, detail);
+                    },
+                    .import => |imp| {
+                        try appendImportSymbol(parser.allocator, &outline, imp.path, line_num, trimmed);
+                    },
+                }
             } else if (outline.language == .protobuf) {
                 try parser.parseProtoLine(trimmed, line_num, &outline);
             } else if (outline.language == .fortran) {

@@ -25,6 +25,7 @@ pub const Style = struct {
         if (std.mem.eql(u8, lang, "dart")) return self.cyan;
         if (std.mem.eql(u8, lang, "c") or std.mem.eql(u8, lang, "cpp")) return self.blue;
         if (std.mem.eql(u8, lang, "c_sharp") or std.mem.eql(u8, lang, "razor") or std.mem.eql(u8, lang, "t4_template")) return self.magenta;
+        if (std.mem.eql(u8, lang, "sql")) return self.cyan;
         if (std.mem.eql(u8, lang, "markdown")) return self.dim;
         if (std.mem.eql(u8, lang, "json") or std.mem.eql(u8, lang, "yaml")) return self.dim;
         return self.dim; // unknown
