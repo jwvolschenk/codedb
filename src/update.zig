@@ -285,20 +285,25 @@ fn downloadAndReplaceBinary(io: std.Io, allocator: std.mem.Allocator, version: [
     }
 }
 
-/// Called very early on startup. If a .pending file exists next to the running
-/// executable, swap it in. Best-effort: prints a warning on failure but never
-/// blocks normal execution.
+/// Called very early on startup. Two jobs:
+/// 1. Clean up stale .old / .tmp files from previous updates (best-effort).
+/// 2. If a .pending file exists next to the running executable, swap it in.
 pub fn applyPendingUpdate(io: std.Io, err_out: anytype) void {
     const self_path = std.process.executablePathAlloc(io, std.heap.page_allocator) catch return;
     defer std.heap.page_allocator.free(self_path);
 
+    const self_dir = std.fs.path.dirname(self_path) orelse return;
+
+    // --- Job 1: best-effort cleanup of leftover update artifacts -----------
+    cleanupStaleFiles(io, self_dir, self_path);
+
+    // --- Job 2: apply a staged .pending update -----------------------------
     const pending_path = std.fmt.allocPrint(std.heap.page_allocator, "{s}.pending", .{self_path}) catch return;
     defer std.heap.page_allocator.free(pending_path);
 
     // Check if .pending exists.
     std.Io.Dir.accessAbsolute(io, pending_path, .{}) catch return;
 
-    // Try to swap: rename running exe to .old, then rename .pending into place.
     const old_path = std.fmt.allocPrint(std.heap.page_allocator, "{s}.old", .{self_path}) catch return;
     defer std.heap.page_allocator.free(old_path);
 
@@ -314,8 +319,36 @@ pub fn applyPendingUpdate(io: std.Io, err_out: anytype) void {
         err_out.p("warning: staged update found but cannot apply: {s}\n", .{@errorName(err)});
         return;
     };
-    // Success. Old binary is .old (still running from its handle). Clean up later.
-    std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
+    // Swap succeeded. .old may still be locked by this process — it will be
+    // cleaned up on a future startup by cleanupStaleFiles() once all old
+    // processes have exited.
+}
+
+/// Remove leftover .old and .tmp.{timestamp} files from previous updates.
+/// On Windows, .old may still be locked by a running process — the delete
+/// silently fails and will succeed on a future run.
+fn cleanupStaleFiles(io: std.Io, dir_path: []const u8, self_path: []const u8) void {
+    const self_base = std.fs.path.basename(self_path);
+
+    var dir = std.Io.Dir.openDirAbsolute(io, dir_path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    var iter = dir.iterate();
+    while (iter.next(io) catch null) |entry| {
+        const name = entry.name;
+        // Clean up .old files matching our binary name.
+        if (std.mem.endsWith(u8, name, ".old") and std.mem.startsWith(u8, name, self_base)) {
+            const full = std.fmt.allocPrint(std.heap.page_allocator, "{s}/{s}", .{ dir_path, name }) catch continue;
+            defer std.heap.page_allocator.free(full);
+            std.Io.Dir.deleteFileAbsolute(io, full) catch {};
+        }
+        // Clean up stale .tmp files from interrupted downloads.
+        if (std.mem.startsWith(u8, name, self_base) and std.mem.indexOf(u8, name, ".tmp.") != null) {
+            const full = std.fmt.allocPrint(std.heap.page_allocator, "{s}/{s}", .{ dir_path, name }) catch continue;
+            defer std.heap.page_allocator.free(full);
+            std.Io.Dir.deleteFileAbsolute(io, full) catch {};
+        }
+    }
 }
 
 fn downloadToFile(allocator: std.mem.Allocator, url: []const u8, dest_path: []const u8) !void {
