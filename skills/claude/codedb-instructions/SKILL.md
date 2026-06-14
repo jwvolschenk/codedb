@@ -249,3 +249,59 @@ To remove a project's index: delete `codedb.snapshot` from the project root and 
 3. **Forgetting to re-index after changing `.codedbignore`.** Use `codedb_index force=true`.
 4. **Making individual calls when batch is possible.** Use `codedb_query` for dependent chains, batch independent ops.
 5. **Using `codedb_search` for exact identifiers.** Use `codedb_word` (O(1)) instead of `codedb_search` (O(n)).
+## SQL Server / TSQL Projects
+
+codedb has a dedicated TSQL parser for `.sql` files. It extracts CREATE VIEW/PROCEDURE/FUNCTION/TABLE as symbols and tracks FROM/JOIN/INSERT/UPDATE/DELETE/EXEC as dependencies.
+
+### What Works Well
+
+- **Forward dependencies** (`codedb_deps direction=depends_on`): Correctly resolves cross-schema references from FROM/JOIN clauses.
+- **Reverse dependencies** (`codedb_deps direction=imported_by`): Resolves "who uses this view/table?" via the dependency graph.
+- **Symbol lookup** (`codedb_symbol`): Finds definitions by bare name (e.g., `vPosition`) or schema-qualified name (e.g., `Holding.vPosition`).
+- **Outlines**: Captures CREATE objects, DECLARE variables, and cross-schema imports at correct line numbers.
+
+### Caveats and Limitations
+
+1. **Common names explode.** `codedb_symbol name="Account"` may return hundreds of hits across schemas. Always scope with `path_glob` or use the schema-qualified name:
+   ```
+   codedb_symbol name="vPosition" path_glob="**/Holding/**"
+   codedb_symbol name="Holding.vPosition"
+   ```
+
+2. **`codedb_types` is not useful for SQL.** SQL has no typed function signatures like C#/TS. Skip this tool for SQL repos.
+
+3. **`codedb_callers` won't trace EXEC calls.** SQL EXEC/EXECUTE is tracked as an import (dependency), not a function call. Use `codedb_search` to find EXEC patterns instead:
+   ```
+   codedb_search query="LoadDecomAccount" path_glob="**/*.sql"
+   ```
+
+4. **`codedb_tree` output is very large for big SQL repos** (18k+ files). Prefer `codedb_ls ranked=true` or `codedb_hot` for orientation instead.
+
+5. **Some files have shallow outlines.** User Defined Types and short template functions may show as `[stub]` with minimal symbols. This is expected — they're small files.
+
+6. **`.sqlproj` files are not parsed.** MSBuild XML project files are indexed but have no code intelligence. They don't affect SQL parsing.
+
+7. **Backup/deprecated files** (`_xxx_backup.sql`, `_old/*.sql`) are indexed but may lack trigram search. Use `codedb_word` for exact lookups on these.
+
+### Recommended SQL Workflow
+
+```
+# Orient: what schemas exist?
+codedb_ls path="" project=/path/to/sql ranked=true
+
+# Find a specific object
+codedb_symbol name="vAccount" project=/path/to/sql
+
+# What does this view depend on? (forward)
+codedb_deps path="src/Portfolio/Views/vAccount.sql" direction="depends_on" project=/path/to/sql
+
+# Who depends on this view? (reverse)
+codedb_deps path="src/Portfolio/Views/vAccount.sql" direction="imported_by" project=/path/to/sql
+
+# Find all EXEC calls to a proc
+codedb_search query="LoadDecomAccount" path_glob="**/*.sql" project=/path/to/sql
+
+# Find FROM/JOIN references to a table
+codedb_search query="[Portfolio].[Account]" path_glob="**/*.sql" project=/path/to/sql
+```
+

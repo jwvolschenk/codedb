@@ -705,10 +705,16 @@ pub const Explorer = struct {
                         var detail_buf: [256]u8 = undefined;
                         const structured = tsql_parser.extractDetail(trimmed, sym.kind, &detail_buf);
                         const detail = if (structured.len > 0) structured else trimmed;
-                        try appendOutlineSymbol(parser.allocator, &outline, sym.name, sk, line_num, detail);
+                        // Normalize SQL names: strip brackets [dbo].[Table] -> dbo.Table
+                        var name_buf: [256]u8 = undefined;
+                        const normalized_name = tsql_parser.normalizeSqlName(sym.name, &name_buf);
+                        try appendOutlineSymbol(parser.allocator, &outline, normalized_name, sk, line_num, detail);
                     },
                     .import => |imp| {
-                        try appendImportSymbol(parser.allocator, &outline, imp.path, line_num, trimmed);
+                        // Normalize SQL import names: strip brackets
+                        var imp_buf: [256]u8 = undefined;
+                        const normalized_imp = tsql_parser.normalizeSqlName(imp.path, &imp_buf);
+                        try appendImportSymbol(parser.allocator, &outline, normalized_imp, line_num, trimmed);
                     },
                 }
             } else if (outline.language == .protobuf) {
@@ -1375,7 +1381,7 @@ pub const Explorer = struct {
                 var param_types: []const []const u8 = &.{};
                 if (self.outlines.getPtr(loc.path)) |outline| {
                     for (outline.symbols.items) |sym| {
-                        if (sym.line_start == loc.line_start and std.mem.eql(u8, sym.name, name)) {
+                        if (sym.line_start == loc.line_start and symbolNameMatches(sym.name, name)) {
                             detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null;
                             decorators = try cloneDecorators(allocator, sym.decorators);
                             return_type = if (sym.return_type) |rt| try allocator.dupe(u8, rt) else null;
@@ -1408,7 +1414,7 @@ pub const Explorer = struct {
         var iter = self.outlines.iterator();
         while (iter.next()) |entry| {
             for (entry.value_ptr.symbols.items) |sym| {
-                if (std.mem.eql(u8, sym.name, name)) {
+                if (symbolNameMatches(sym.name, name)) {
                     return .{
                         .path = try allocator.dupe(u8, entry.key_ptr.*),
                         .symbol = .{
@@ -1456,7 +1462,7 @@ pub const Explorer = struct {
                 var param_types: []const []const u8 = &.{};
                 if (self.outlines.getPtr(loc.path)) |outline| {
                     for (outline.symbols.items) |sym| {
-                        if (sym.line_start == loc.line_start and std.mem.eql(u8, sym.name, name)) {
+                        if (sym.line_start == loc.line_start and symbolNameMatches(sym.name, name)) {
                             detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null;
                             decorators = try cloneDecorators(allocator, sym.decorators);
                             return_type = if (sym.return_type) |rt| try allocator.dupe(u8, rt) else null;
@@ -1491,7 +1497,7 @@ pub const Explorer = struct {
         var iter = self.outlines.iterator();
         while (iter.next()) |entry| {
             for (entry.value_ptr.symbols.items) |sym| {
-                if (!std.mem.eql(u8, sym.name, name)) continue;
+                if (!symbolNameMatches(sym.name, name)) continue;
                 var key_buf: [std.fs.max_path_bytes + 32]u8 = undefined;
                 const key = std.fmt.bufPrint(&key_buf, "{s}:{d}", .{ entry.key_ptr.*, sym.line_start }) catch continue;
                 if (seen.contains(key)) continue;
@@ -4768,7 +4774,23 @@ pub const Explorer = struct {
         var seen = std.StringHashMap(void).init(self.allocator);
         defer seen.deinit();
 
+        const is_sql = outline.language == .sql;
+
         for (outline.imports.items) |imp| {
+            // For SQL imports, try to resolve object names to file paths.
+            // SQL imports are like "dbo.vwHalfCommClients" or "Holding.vPosition".
+            // We need to find the actual file path for proper dependency tracking.
+            if (is_sql) {
+                const resolved = self.resolveSqlDepKey(imp);
+                if (resolved) |key| {
+                    const gop = try seen.getOrPut(key);
+                    if (!gop.found_existing) {
+                        try deps.append(self.allocator, key);
+                    }
+                    continue;
+                }
+            }
+
             const dep_key = resolveDependencyKey(path, imp, self.allocator) orelse continue;
             const gop = try seen.getOrPut(dep_key.key);
             if (gop.found_existing) continue;
@@ -4776,6 +4798,30 @@ pub const Explorer = struct {
         }
 
         try self.dep_graph.setDeps(path, deps);
+    }
+
+    /// Resolve a SQL import (e.g., "dbo.vwHalfCommClients") to a file path
+    /// by looking up the bare object name in the symbol index.
+    /// Returns the file path if found, or the bare object name as fallback.
+    fn resolveSqlDepKey(self: *Explorer, imp: []const u8) ?[]const u8 {
+        const trimmed = std.mem.trim(u8, imp, " \t\r\n\"'");
+        if (trimmed.len == 0) return null;
+
+        // Extract bare object name: dbo.vwHalfCommClients -> vwHalfCommClients
+        const bare = tsql_parser.extractBareObjectName(trimmed);
+        if (bare.len == 0) return null;
+
+        // Look up the bare name in the symbol index
+        if (self.symbol_index.get(bare)) |locs| {
+            if (locs.items.len > 0) {
+                // Return the file path of the first match
+                return locs.items[0].path;
+            }
+        }
+
+        // Fallback: use the bare object name as the dep key.
+        // This enables reverse lookup via stem matching in getImportedBy.
+        return bare;
     }
 
     const DependencyKey = struct {
@@ -4814,6 +4860,34 @@ pub const Explorer = struct {
                 .line_start = sym.line_start,
                 .line_end = sym.line_end,
             }) catch {};
+
+            // For SQL files, also register the bare object name as an alias.
+            // This enables codedb_symbol(name="vPosition") to find [Holding].[vPosition].
+            if (outline.language == .sql and sym.kind != .import and sym.kind != .variable) {
+                const bare = tsql_parser.extractBareObjectName(sym.name);
+                if (bare.len > 0 and !std.mem.eql(u8, bare, sym.name)) {
+                    const alias_gop = self.symbol_index.getOrPut(bare) catch continue;
+                    if (!alias_gop.found_existing) {
+                        alias_gop.value_ptr.* = std.ArrayList(SymbolLocation).empty;
+                    }
+                    // Check if this path is already registered for the alias
+                    var already = false;
+                    for (alias_gop.value_ptr.items) |existing| {
+                        if (std.mem.eql(u8, existing.path, path) and existing.line_start == sym.line_start) {
+                            already = true;
+                            break;
+                        }
+                    }
+                    if (!already) {
+                        alias_gop.value_ptr.append(self.allocator, .{
+                            .path = path,
+                            .kind = sym.kind,
+                            .line_start = sym.line_start,
+                            .line_end = sym.line_end,
+                        }) catch {};
+                    }
+                }
+            }
         }
     }
 
@@ -4877,6 +4951,20 @@ pub const Explorer = struct {
             }
         }
         return null;
+    }
+
+    /// Check if a symbol name matches a query, supporting SQL schema-qualified names.
+    /// Exact match first, then checks if sym_name ends with ".query" (e.g. "API_V1.DecomAccount" matches "DecomAccount").
+    fn symbolNameMatches(sym_name: []const u8, query: []const u8) bool {
+        if (std.mem.eql(u8, sym_name, query)) return true;
+        // SQL schema-qualified: "schema.object" matches bare "object"
+        if (query.len > 0 and sym_name.len > query.len + 1) {
+            const dot_pos = sym_name.len - query.len - 1;
+            if (sym_name[dot_pos] == '.' and std.mem.eql(u8, sym_name[dot_pos + 1 ..], query)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     fn isHierarchyKeyword(token: []const u8) bool {

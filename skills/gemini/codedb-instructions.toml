@@ -88,5 +88,27 @@ codedb /path/to/project outline src/File.cs
 3. Forgetting to re-index after .codedbignore changes. Use codedb_index force=true.
 4. Making individual calls when batch is possible. Use codedb_query for chains.
 5. Using codedb_search for exact identifiers. Use codedb_word (O(1)) instead.
+
+## SQL Server / TSQL Projects
+
+codedb has a TSQL parser for .sql files. Extracts CREATE VIEW/PROCEDURE/FUNCTION/TABLE as symbols, tracks FROM/JOIN/INSERT/UPDATE/DELETE/EXEC as deps.
+
+**Works well:** Forward deps, reverse deps, symbol lookup by bare or schema-qualified name, outlines with correct line numbers.
+
+**Caveats:**
+- Common names explode (codedb_symbol name="Account" = 758 hits). Scope with path_glob or use schema-qualified names.
+- codedb_types is not useful for SQL (no typed signatures).
+- codedb_callers won't trace EXEC calls. Use codedb_search for EXEC patterns.
+- codedb_tree is huge for 18k+ file repos. Use codedb_ls ranked=true or codedb_hot.
+- Some files have shallow outlines (UDTs, short templates). Expected.
+- .sqlproj files are not parsed (MSBuild XML).
+
+**SQL Workflow:**
+```
+codedb_ls path="" project=/path/to/sql ranked=true
+codedb_symbol name="vAccount" project=/path/to/sql
+codedb_deps path="src/Portfolio/Views/vAccount.sql" direction="imported_by" project=/path/to/sql
+codedb_search query="LoadDecomAccount" path_glob="**/*.sql" project=/path/to/sql
+```
 """
 description = "codedb code intelligence MCP tools — indexing, search, symbols, dependencies, batching"

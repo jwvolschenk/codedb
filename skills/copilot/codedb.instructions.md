@@ -78,3 +78,24 @@ codedb_search query="UserService" project=/home/user/monorepo/services/api
 3. **Forgetting to re-index after `.codedbignore` changes.** Use `codedb_index force=true`.
 4. **Making individual calls when batch is possible.** Use `codedb_query` for chains.
 5. **Using `codedb_search` for exact identifiers.** Use `codedb_word` (O(1)) instead.
+
+## SQL Server / TSQL Projects
+
+codedb has a TSQL parser for `.sql` files. Extracts CREATE VIEW/PROCEDURE/FUNCTION/TABLE as symbols, tracks FROM/JOIN/INSERT/UPDATE/DELETE/EXEC as deps.
+
+**Works well:** Forward deps, reverse deps, symbol lookup by bare or schema-qualified name.
+
+**Caveats:**
+- Common names explode — scope with `path_glob` or use schema-qualified names
+- `codedb_types` not useful for SQL (no typed signatures)
+- `codedb_callers` won't trace EXEC — use `codedb_search` instead
+- `codedb_tree` huge for large repos — use `codedb_ls ranked=true` or `codedb_hot`
+- `.sqlproj` files not parsed (MSBuild XML)
+
+**SQL Workflow:**
+```
+codedb_ls path="" project=/path/to/sql ranked=true
+codedb_symbol name="vAccount" project=/path/to/sql
+codedb_deps path="src/Portfolio/Views/vAccount.sql" direction="imported_by" project=/path/to/sql
+codedb_search query="LoadDecomAccount" path_glob="**/*.sql" project=/path/to/sql
+```

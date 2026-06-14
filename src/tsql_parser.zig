@@ -68,7 +68,12 @@ pub fn isCommentOrBlank(raw_line: []const u8) bool {
 /// Parse a TSQL line. Returns the parsed result.
 /// The caller is responsible for block comment state tracking.
 pub fn parseLine(raw_line: []const u8) ParsedLine {
-    const line = stripLineComment(raw_line);
+    // Strip UTF-8 BOM (EF BB BF) — Visual Studio-generated SQL files often have this
+    const unbommed = if (raw_line.len >= 3 and raw_line[0] == 0xEF and raw_line[1] == 0xBB and raw_line[2] == 0xBF)
+        raw_line[3..]
+    else
+        raw_line;
+    const line = stripLineComment(unbommed);
     if (line.len == 0) return .none;
 
     // ── GO batch separator (skip) ─────────────────────────────────
@@ -407,6 +412,101 @@ fn normalizeBracketedName(s: []const u8) []const u8 {
     return s;
 }
 
+/// Normalize a SQL name by stripping brackets and converting to schema.object format.
+/// Writes the normalized name into `buf` and returns the slice.
+/// Examples:
+///   [dbo].[Table] -> dbo.Table
+///   [Holding].[vPosition] -> Holding.vPosition
+///   dbo.Table -> dbo.Table (unchanged)
+///   vPosition -> vPosition (unchanged)
+pub fn normalizeSqlName(name: []const u8, buf: []u8) []const u8 {
+    if (name.len == 0) return "";
+    if (name.len >= buf.len) return name; // too long, return as-is
+
+    // Fast path: no brackets present
+    var has_bracket = false;
+    for (name) |c| {
+        if (c == '[' or c == ']') {
+            has_bracket = true;
+            break;
+        }
+    }
+    if (!has_bracket) return name;
+
+    // Strip brackets
+    var out_pos: usize = 0;
+    var i: usize = 0;
+    while (i < name.len) {
+        if (name[i] == '[') {
+            // Skip opening bracket
+            i += 1;
+            // Copy until closing bracket
+            while (i < name.len and name[i] != ']') {
+                if (out_pos < buf.len) {
+                    buf[out_pos] = name[i];
+                    out_pos += 1;
+                }
+                i += 1;
+            }
+            // Skip closing bracket
+            if (i < name.len and name[i] == ']') i += 1;
+            // Skip dot after bracket
+            if (i < name.len and name[i] == '.') {
+                if (out_pos < buf.len) {
+                    buf[out_pos] = '.';
+                    out_pos += 1;
+                }
+                i += 1;
+            }
+        } else if (name[i] == ']') {
+            // Stray closing bracket, skip
+            i += 1;
+        } else {
+            if (out_pos < buf.len) {
+                buf[out_pos] = name[i];
+                out_pos += 1;
+            }
+            i += 1;
+        }
+    }
+    return buf[0..out_pos];
+}
+
+/// Extract the bare object name from a schema-qualified SQL name.
+/// Examples:
+///   dbo.GetUsers -> GetUsers
+///   [Holding].[vPosition] -> vPosition
+///   vPosition -> vPosition
+pub fn extractBareObjectName(name: []const u8) []const u8 {
+    if (name.len == 0) return "";
+
+    // Find the last dot that's not inside brackets
+    var last_dot: ?usize = null;
+    var i: usize = 0;
+    while (i < name.len) {
+        if (name[i] == '[') {
+            // Skip bracketed section
+            while (i < name.len and name[i] != ']') i += 1;
+            if (i < name.len) i += 1; // skip ]
+        } else if (name[i] == '.') {
+            last_dot = i;
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+
+    const bare = if (last_dot) |dot| name[dot + 1 ..] else name;
+
+    // Strip brackets from the bare name
+    var start: usize = 0;
+    var end: usize = bare.len;
+    if (start < end and bare[start] == '[') start += 1;
+    if (end > start and bare[end - 1] == ']') end -= 1;
+
+    return bare[start..end];
+}
+
 /// Extract a simple SQL identifier (possibly @-prefixed for variables)
 fn extractSqlIdent(s: []const u8) []const u8 {
     const trimmed = std.mem.trimStart(u8, s, " \t");
@@ -656,4 +756,96 @@ test "parseLine: CREATE SYNONYM" {
     try testing.expect(result == .symbol);
     try testing.expectEqualStrings("dbo.RemoteUsers", result.symbol.name);
     try testing.expect(result.symbol.kind == .synonym);
+}
+
+// ── normalizeSqlName tests ────────────────────────────────────────────
+
+test "normalizeSqlName: bracketed schema.object" {
+    var buf: [256]u8 = undefined;
+    const result = normalizeSqlName("[dbo].[Users]", &buf);
+    try testing.expectEqualStrings("dbo.Users", result);
+}
+
+test "normalizeSqlName: bracketed multi-part" {
+    var buf: [256]u8 = undefined;
+    const result = normalizeSqlName("[Holding].[vPosition]", &buf);
+    try testing.expectEqualStrings("Holding.vPosition", result);
+}
+
+test "normalizeSqlName: three-part bracketed" {
+    var buf: [256]u8 = undefined;
+    const result = normalizeSqlName("[MyDB].[dbo].[Users]", &buf);
+    try testing.expectEqualStrings("MyDB.dbo.Users", result);
+}
+
+test "normalizeSqlName: already normalized" {
+    var buf: [256]u8 = undefined;
+    const result = normalizeSqlName("dbo.Users", &buf);
+    try testing.expectEqualStrings("dbo.Users", result);
+}
+
+test "normalizeSqlName: bare name" {
+    var buf: [256]u8 = undefined;
+    const result = normalizeSqlName("Users", &buf);
+    try testing.expectEqualStrings("Users", result);
+}
+
+test "normalizeSqlName: empty string" {
+    var buf: [256]u8 = undefined;
+    const result = normalizeSqlName("", &buf);
+    try testing.expectEqualStrings("", result);
+}
+
+test "normalizeSqlName: bracketed with spaces" {
+    var buf: [256]u8 = undefined;
+    const result = normalizeSqlName("[dbo].[User Accounts]", &buf);
+    try testing.expectEqualStrings("dbo.User Accounts", result);
+}
+
+// ── extractBareObjectName tests ───────────────────────────────────────
+
+test "extractBareObjectName: schema.object" {
+    const result = extractBareObjectName("dbo.GetUsers");
+    try testing.expectEqualStrings("GetUsers", result);
+}
+
+test "extractBareObjectName: bracketed schema.object" {
+    const result = extractBareObjectName("[Holding].[vPosition]");
+    try testing.expectEqualStrings("vPosition", result);
+}
+
+test "extractBareObjectName: three-part name" {
+    const result = extractBareObjectName("[MyDB].[dbo].[Users]");
+    try testing.expectEqualStrings("Users", result);
+}
+
+test "extractBareObjectName: bare name" {
+    const result = extractBareObjectName("vPosition");
+    try testing.expectEqualStrings("vPosition", result);
+}
+
+test "extractBareObjectName: empty string" {
+    const result = extractBareObjectName("");
+    try testing.expectEqualStrings("", result);
+}
+
+test "extractBareObjectName: unbracketed three-part" {
+    const result = extractBareObjectName("Server2.Database1.dbo.Users");
+    try testing.expectEqualStrings("Users", result);
+}
+
+test "parseLine: BOM-prefixed CREATE VIEW" {
+    // UTF-8 BOM (EF BB BF) followed by CREATE VIEW
+    const bom_line = "\xEF\xBB\xBFCREATE VIEW [Portfolio].[vAccount] AS";
+    const result = parseLine(bom_line);
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("[Portfolio].[vAccount]", result.symbol.name);
+    try testing.expect(result.symbol.kind == .view);
+}
+
+test "parseLine: BOM-prefixed CREATE PROCEDURE" {
+    const bom_line = "\xEF\xBB\xBFCREATE PROCEDURE [dbo].[GetUsers]";
+    const result = parseLine(bom_line);
+    try testing.expect(result == .symbol);
+    try testing.expect(result.symbol.kind == .procedure);
 }
