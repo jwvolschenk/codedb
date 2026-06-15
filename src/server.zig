@@ -212,7 +212,7 @@ fn handleConnection(
         defer out.deinit(allocator);
         const w = cio.listWriter(&out, allocator);
         w.print("{{\"id\":{d},\"name\":\"", .{id}) catch return;
-        writeJsonEscaped(&out, allocator, name) catch return;
+        json_utils.writeEscapedToList(allocator, &out, name) catch return;
         w.writeAll("\"}") catch return;
         respondJson(&conn, "200 OK", out.items);
         return;
@@ -386,9 +386,9 @@ fn handleConnection(
         defer out.deinit(allocator);
         const w = cio.listWriter(&out, allocator);
         w.writeAll("{\"path\":\"") catch return;
-        writeJsonEscaped(&out, allocator, path) catch return;
+        json_utils.writeEscapedToList(allocator, &out, path) catch return;
         w.print("\",\"size\":{d},\"content\":\"", .{content.len}) catch return;
-        writeJsonEscaped(&out, allocator, content) catch return;
+        json_utils.writeEscapedToList(allocator, &out, content) catch return;
         w.writeAll("\"}") catch return;
         respondJson(&conn, "200 OK", out.items);
         return;
@@ -410,7 +410,7 @@ fn handleConnection(
         for (changes, 0..) |c, i| {
             if (i > 0) w.writeAll(",") catch return;
             w.writeAll("{\"path\":\"") catch return;
-            writeJsonEscaped(&out, allocator, c.path) catch return;
+            json_utils.writeEscapedToList(allocator, &out, c.path) catch return;
             w.print("\",\"seq\":{d},\"op\":\"{s}\",\"size\":{d},\"timestamp\":{d}}}", .{
                 c.seq, @tagName(c.op), c.size, c.timestamp,
             }) catch return;
@@ -432,7 +432,7 @@ fn handleConnection(
         defer out.deinit(allocator);
         const w = cio.listWriter(&out, allocator);
         w.writeAll("{\"tree\":\"") catch return;
-        writeJsonEscaped(&out, allocator, tree) catch return;
+        json_utils.writeEscapedToList(allocator, &out, tree) catch return;
         w.writeAll("\"}") catch return;
         respondJson(&conn, "200 OK", out.items);
         return;
@@ -465,20 +465,20 @@ fn handleConnection(
         defer out.deinit(allocator);
         const w = cio.listWriter(&out, allocator);
         w.writeAll("{\"path\":\"") catch return;
-        writeJsonEscaped(&out, allocator, outline.path) catch return;
+        json_utils.writeEscapedToList(allocator, &out, outline.path) catch return;
         w.print("\",\"language\":\"{s}\",\"lines\":{d},\"bytes\":{d},\"symbols\":[", .{
             @tagName(outline.language), outline.line_count, outline.byte_size,
         }) catch return;
         for (outline.symbols.items, 0..) |sym, i| {
             if (i > 0) w.writeAll(",") catch return;
             w.writeAll("{\"name\":\"") catch return;
-            writeJsonEscaped(&out, allocator, sym.name) catch return;
+            json_utils.writeEscapedToList(allocator, &out, sym.name) catch return;
             w.print("\",\"kind\":\"{s}\",\"line_start\":{d},\"line_end\":{d}", .{
                 @tagName(sym.kind), sym.line_start, sym.line_end,
             }) catch return;
             if (sym.detail) |d| {
                 w.writeAll(",\"detail\":\"") catch return;
-                writeJsonEscaped(&out, allocator, d) catch return;
+                json_utils.writeEscapedToList(allocator, &out, d) catch return;
                 w.writeAll("\"") catch return;
             }
             w.writeAll("}") catch return;
@@ -504,18 +504,18 @@ fn handleConnection(
         defer out.deinit(allocator);
         const w = cio.listWriter(&out, allocator);
         w.writeAll("{\"name\":\"") catch return;
-        writeJsonEscaped(&out, allocator, name) catch return;
+        json_utils.writeEscapedToList(allocator, &out, name) catch return;
         w.writeAll("\",\"results\":[") catch return;
         for (results, 0..) |r, i| {
             if (i > 0) w.writeAll(",") catch return;
             w.writeAll("{\"path\":\"") catch return;
-            writeJsonEscaped(&out, allocator, r.path) catch return;
+            json_utils.writeEscapedToList(allocator, &out, r.path) catch return;
             w.print("\",\"line\":{d},\"kind\":\"{s}\"", .{
                 r.symbol.line_start, @tagName(r.symbol.kind),
             }) catch return;
             if (r.symbol.detail) |d| {
                 w.writeAll(",\"detail\":\"") catch return;
-                writeJsonEscaped(&out, allocator, d) catch return;
+                json_utils.writeEscapedToList(allocator, &out, d) catch return;
                 w.writeAll("\"") catch return;
             }
             w.writeAll("}") catch return;
@@ -542,7 +542,7 @@ fn handleConnection(
         for (hot, 0..) |path, i| {
             if (i > 0) w.writeAll(",") catch return;
             w.writeAll("\"") catch return;
-            writeJsonEscaped(&out, allocator, path) catch return;
+            json_utils.writeEscapedToList(allocator, &out, path) catch return;
             w.writeAll("\"") catch return;
         }
         w.writeAll("]}") catch return;
@@ -574,12 +574,12 @@ fn handleConnection(
         defer out.deinit(allocator);
         const w = cio.listWriter(&out, allocator);
         w.writeAll("{\"path\":\"") catch return;
-        writeJsonEscaped(&out, allocator, path) catch return;
+        json_utils.writeEscapedToList(allocator, &out, path) catch return;
         w.writeAll("\",\"imported_by\":[") catch return;
         for (imported_by, 0..) |dep, i| {
             if (i > 0) w.writeAll(",") catch return;
             w.writeAll("\"") catch return;
-            writeJsonEscaped(&out, allocator, dep) catch return;
+            json_utils.writeEscapedToList(allocator, &out, dep) catch return;
             w.writeAll("\"") catch return;
         }
         w.writeAll("]}") catch return;
@@ -608,14 +608,14 @@ fn handleConnection(
         defer out.deinit(allocator);
         const w = cio.listWriter(&out, allocator);
         w.writeAll("{\"query\":\"") catch return;
-        writeJsonEscaped(&out, allocator, word) catch return;
+        json_utils.writeEscapedToList(allocator, &out, word) catch return;
         w.writeAll("\",\"hits\":[") catch return;
         explorer.mu.lockShared();
         defer explorer.mu.unlockShared();
         for (hits, 0..) |h, i| {
             if (i > 0) w.writeAll(",") catch return;
             w.writeAll("{\"path\":\"") catch return;
-            writeJsonEscaped(&out, allocator, explorer.word_index.hitPath(h)) catch return;
+            json_utils.writeEscapedToList(allocator, &out, explorer.word_index.hitPath(h)) catch return;
             w.print("\",\"line\":{d}}}", .{h.line_num}) catch return;
         }
         w.writeAll("]}") catch return;
@@ -647,14 +647,14 @@ fn handleConnection(
         defer out.deinit(allocator);
         const w = cio.listWriter(&out, allocator);
         w.writeAll("{\"query\":\"") catch return;
-        writeJsonEscaped(&out, allocator, query) catch return;
+        json_utils.writeEscapedToList(allocator, &out, query) catch return;
         w.writeAll("\",\"results\":[") catch return;
         for (results, 0..) |r, i| {
             if (i > 0) w.writeAll(",") catch return;
             w.writeAll("{\"path\":\"") catch return;
-            writeJsonEscaped(&out, allocator, r.path) catch return;
+            json_utils.writeEscapedToList(allocator, &out, r.path) catch return;
             w.print("\",\"line\":{d},\"text\":\"", .{r.line_num}) catch return;
-            writeJsonEscaped(&out, allocator, r.line_text) catch return;
+            json_utils.writeEscapedToList(allocator, &out, r.line_text) catch return;
             w.writeAll("\"}") catch return;
         }
         w.writeAll("]}") catch return;
@@ -699,6 +699,7 @@ fn readSome(io: std.Io, stream: std.Io.net.Stream, dest: []u8) !usize {
 // ── Response helpers ────────────────────────────────────────────
 
 const path_safety = @import("path_safety.zig");
+const json_utils = @import("json_utils.zig");
 const isPathSafe = path_safety.isPathSafe;
 
 fn respondJson(conn: *Conn, status: []const u8, body: []const u8) void {
@@ -710,26 +711,6 @@ fn respondJson(conn: *Conn, status: []const u8, body: []const u8) void {
 }
 
 /// Append a JSON-escaped version of `s` to the trailing `out` list.
-fn writeJsonEscaped(out: *std.ArrayList(u8), alloc: std.mem.Allocator, s: []const u8) !void {
-    for (s) |ch| {
-        switch (ch) {
-            '"' => try out.appendSlice(alloc, "\\\""),
-            '\\' => try out.appendSlice(alloc, "\\\\"),
-            '\n' => try out.appendSlice(alloc, "\\n"),
-            '\r' => try out.appendSlice(alloc, "\\r"),
-            '\t' => try out.appendSlice(alloc, "\\t"),
-            else => {
-                if (ch < 0x20) {
-                    const hex = "0123456789abcdef";
-                    const esc = [6]u8{ '\\', 'u', '0', '0', hex[ch >> 4], hex[ch & 0x0f] };
-                    try out.appendSlice(alloc, &esc);
-                } else {
-                    try out.append(alloc, ch);
-                }
-            },
-        }
-    }
-}
 
 // ── HTTP parsing helpers ────────────────────────────────────────
 

@@ -32,6 +32,7 @@ const SymbolKind = explore_mod.SymbolKind;
 const Language = explore_mod.Language;
 const Store = @import("store.zig").Store;
 const git_mod = @import("git.zig");
+const json_utils = @import("json_utils.zig");
 
 const MAGIC = [4]u8{ 'C', 'D', 'B', 0x01 };
 const FORMAT_VERSION: u16 = 3;
@@ -129,7 +130,7 @@ pub fn writeSnapshot(
             first = false;
             const outline = entry.value_ptr;
             try writer.writeAll("{\"path\":\"");
-            try writeJsonEscaped(writer, entry.key_ptr.*);
+            try json_utils.writeEscapedToWriter(writer, entry.key_ptr.*);
             try writer.print(
                 \\","language":"{s}","line_count":{d},"byte_size":{d},"symbol_count":{d}}}
             , .{
@@ -1060,21 +1061,3 @@ pub fn writeProjectCacheSnapshot(
     try writeSnapshot(io, explorer, root_path, secondary, allocator);
 }
 
-fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
-    for (s) |c| {
-        switch (c) {
-            '"' => try writer.writeAll("\\\""),
-            '\\' => try writer.writeAll("\\\\"),
-            '\n' => try writer.writeAll("\\n"),
-            '\r' => try writer.writeAll("\\r"),
-            '\t' => try writer.writeAll("\\t"),
-            else => if (c < 0x20) {
-                const hex = "0123456789abcdef";
-                const esc = [6]u8{ '\\', 'u', '0', '0', hex[c >> 4], hex[c & 0x0f] };
-                try writer.writeAll(&esc);
-            } else {
-                try writer.writeByte(c);
-            },
-        }
-    }
-}

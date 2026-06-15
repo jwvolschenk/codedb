@@ -10,6 +10,7 @@
 //   frees via wasm_free().
 
 const std = @import("std");
+const json_utils = @import("json_utils.zig");
 const Explorer = @import("explore.zig").Explorer;
 const FileOutline = @import("explore.zig").FileOutline;
 const TrigramIndex = @import("index.zig").TrigramIndex;
@@ -22,22 +23,7 @@ const allocator = std.heap.wasm_allocator;
 
 /// Write a JSON-escaped string (without surrounding quotes) to the writer.
 fn writeJsonEscaped(writer: anytype, s: []const u8) void {
-    for (s) |c| {
-        switch (c) {
-            '"' => writer.writeAll("\\\"") catch return,
-            '\\' => writer.writeAll("\\\\") catch return,
-            '\n' => writer.writeAll("\\n") catch return,
-            '\r' => writer.writeAll("\\r") catch return,
-            '\t' => writer.writeAll("\\t") catch return,
-            else => {
-                if (c < 0x20) {
-                    writer.print("\\u{x:0>4}", .{c}) catch return;
-                } else {
-                    writer.writeByte(c) catch return;
-                }
-            },
-        }
-    }
+    json_utils.writeEscapedToWriter(writer, s) catch {};
 }
 
 // Persistent explorer instance

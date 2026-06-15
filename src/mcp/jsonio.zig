@@ -1,5 +1,6 @@
 const std = @import("std");
 const cio = @import("../cio.zig");
+const json_utils = @import("../json_utils.zig");
 const mcpj = @import("mcp").json;
 
 pub fn writeResult(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, result: []const u8) void {
@@ -39,30 +40,7 @@ pub fn writeError(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Valu
 /// Fast JSON string escaper: batch-copies runs of safe characters via
 /// appendSlice instead of the per-byte append in mcpj.writeEscaped.
 pub fn writeEscaped(alloc: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) void {
-    var i: usize = 0;
-    while (i < s.len) {
-        const start = i;
-        while (i < s.len) : (i += 1) {
-            const c = s[i];
-            if (c < 0x20 or c == '"' or c == '\\') break;
-        }
-        if (i > start) out.appendSlice(alloc, s[start..i]) catch return;
-        if (i >= s.len) break;
-        const c = s[i];
-        switch (c) {
-            '"' => out.appendSlice(alloc, "\\\"") catch return,
-            '\\' => out.appendSlice(alloc, "\\\\") catch return,
-            '\n' => out.appendSlice(alloc, "\\n") catch return,
-            '\r' => out.appendSlice(alloc, "\\r") catch return,
-            '\t' => out.appendSlice(alloc, "\\t") catch return,
-            else => {
-                const hex = "0123456789abcdef";
-                const esc = [6]u8{ '\\', 'u', '0', '0', hex[c >> 4], hex[c & 0x0f] };
-                out.appendSlice(alloc, &esc) catch return;
-            },
-        }
-        i += 1;
-    }
+    json_utils.writeEscapedToList(alloc, out, s) catch {};
 }
 
 pub fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json.Value) void {

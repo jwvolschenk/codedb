@@ -1,5 +1,6 @@
 const std = @import("std");
 const cio = @import("cio.zig");
+const json_utils = @import("json_utils.zig");
 const Explorer = @import("explore.zig").Explorer;
 const Store = @import("store.zig").Store;
 
@@ -38,7 +39,7 @@ pub fn buildSnapshot(explorer: *Explorer, store: *Store, alloc: std.mem.Allocato
         for (paths.items, 0..) |path, pi| {
             if (pi > 0) try w.writeAll(",");
             try w.writeAll("\"");
-            try writeJsonEscaped(alloc, &buf, path);
+            try json_utils.writeEscapedToList(alloc, &buf, path);
             try w.writeAll("\":{");
 
             const outline = explorer.outlines.get(path) orelse continue;
@@ -48,13 +49,13 @@ pub fn buildSnapshot(explorer: *Explorer, store: *Store, alloc: std.mem.Allocato
             for (outline.symbols.items, 0..) |sym, si| {
                 if (si > 0) try w.writeAll(",");
                 try w.writeAll("{\"name\":\"");
-                try writeJsonEscaped(alloc, &buf, sym.name);
+                try json_utils.writeEscapedToList(alloc, &buf, sym.name);
                 try w.print("\",\"kind\":\"{s}\",\"line_start\":{d},\"line_end\":{d}", .{
                     @tagName(sym.kind), sym.line_start, sym.line_end,
                 });
                 if (sym.detail) |d| {
                     try w.writeAll(",\"detail\":\"");
-                    try writeJsonEscaped(alloc, &buf, d);
+                    try json_utils.writeEscapedToList(alloc, &buf, d);
                     try w.writeAll("\"");
                 }
                 if (sym.decorators.len > 0) {
@@ -62,7 +63,7 @@ pub fn buildSnapshot(explorer: *Explorer, store: *Store, alloc: std.mem.Allocato
                     for (sym.decorators, 0..) |decorator, di| {
                         if (di > 0) try w.writeAll(",");
                         try w.writeAll("\"");
-                        try writeJsonEscaped(alloc, &buf, decorator);
+                        try json_utils.writeEscapedToList(alloc, &buf, decorator);
                         try w.writeAll("\"");
                     }
                     try w.writeAll("]");
@@ -73,7 +74,7 @@ pub fn buildSnapshot(explorer: *Explorer, store: *Store, alloc: std.mem.Allocato
             for (outline.imports.items, 0..) |imp, ii| {
                 if (ii > 0) try w.writeAll(",");
                 try w.writeAll("\"");
-                try writeJsonEscaped(alloc, &buf, imp);
+                try json_utils.writeEscapedToList(alloc, &buf, imp);
                 try w.writeAll("\"");
             }
             try w.writeAll("]}");
@@ -95,13 +96,13 @@ pub fn buildSnapshot(explorer: *Explorer, store: *Store, alloc: std.mem.Allocato
         for (sym_keys.items, 0..) |name, ni| {
             if (ni > 0) try w.writeAll(",");
             try w.writeAll("\"");
-            try writeJsonEscaped(alloc, &buf, name);
+            try json_utils.writeEscapedToList(alloc, &buf, name);
             try w.writeAll("\":[");
             const locs = explorer.symbol_index.get(name) orelse continue;
             for (locs.items, 0..) |loc, li| {
                 if (li > 0) try w.writeAll(",");
                 try w.writeAll("{\"path\":\"");
-                try writeJsonEscaped(alloc, &buf, loc.path);
+                try json_utils.writeEscapedToList(alloc, &buf, loc.path);
                 try w.print("\",\"line\":{d},\"kind\":\"{s}\"}}", .{
                     loc.line_start, @tagName(loc.kind),
                 });
@@ -125,13 +126,13 @@ pub fn buildSnapshot(explorer: *Explorer, store: *Store, alloc: std.mem.Allocato
         for (dep_keys.items, 0..) |path, di| {
             if (di > 0) try w.writeAll(",");
             try w.writeAll("\"");
-            try writeJsonEscaped(alloc, &buf, path);
+            try json_utils.writeEscapedToList(alloc, &buf, path);
             try w.writeAll("\":[");
             const deps = explorer.dep_graph.get(path) orelse continue;
             for (deps.items, 0..) |dep, dj| {
                 if (dj > 0) try w.writeAll(",");
                 try w.writeAll("\"");
-                try writeJsonEscaped(alloc, &buf, dep);
+                try json_utils.writeEscapedToList(alloc, &buf, dep);
                 try w.writeAll("\"");
             }
             try w.writeAll("]");
@@ -168,7 +169,7 @@ fn writeTreeJsonEscaped(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explo
                 const depth = std.mem.count(u8, dir[0..sep], "/");
                 for (0..depth) |_| try w.writeAll("  ");
                 const dir_name = path[if (depth > 0) std.mem.lastIndexOfScalar(u8, dir[0..sep], '/').? + 1 else 0..sep];
-                try writeJsonEscaped(alloc, out, dir_name);
+                try json_utils.writeEscapedToList(alloc, out, dir_name);
                 try w.writeAll("/\\n");
             }
             prefix_end = sep + 1;
@@ -177,7 +178,7 @@ fn writeTreeJsonEscaped(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explo
         const depth = std.mem.count(u8, path, "/");
         for (0..depth) |_| try w.writeAll("  ");
         const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
-        try writeJsonEscaped(alloc, out, basename);
+        try json_utils.writeEscapedToList(alloc, out, basename);
         try w.print("  {s}  {d}L  {d} sym\\n", .{
             @tagName(outline.language),
             outline.line_count,
@@ -186,43 +187,3 @@ fn writeTreeJsonEscaped(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explo
     }
 }
 
-fn writeJsonEscaped(alloc: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) !void {
-    var start: usize = 0;
-    for (s, 0..) |c, i| {
-        switch (c) {
-            '"' => {
-                if (i > start) try out.appendSlice(alloc, s[start..i]);
-                try out.appendSlice(alloc, "\\\"");
-                start = i + 1;
-            },
-            '\\' => {
-                if (i > start) try out.appendSlice(alloc, s[start..i]);
-                try out.appendSlice(alloc, "\\\\");
-                start = i + 1;
-            },
-            '\n' => {
-                if (i > start) try out.appendSlice(alloc, s[start..i]);
-                try out.appendSlice(alloc, "\\n");
-                start = i + 1;
-            },
-            '\r' => {
-                if (i > start) try out.appendSlice(alloc, s[start..i]);
-                try out.appendSlice(alloc, "\\r");
-                start = i + 1;
-            },
-            '\t' => {
-                if (i > start) try out.appendSlice(alloc, s[start..i]);
-                try out.appendSlice(alloc, "\\t");
-                start = i + 1;
-            },
-            else => if (c < 0x20) {
-                if (i > start) try out.appendSlice(alloc, s[start..i]);
-                const hex = "0123456789abcdef";
-                const esc = [6]u8{ '\\', 'u', '0', '0', hex[c >> 4], hex[c & 0x0f] };
-                try out.appendSlice(alloc, &esc);
-                start = i + 1;
-            },
-        }
-    }
-    if (start < s.len) try out.appendSlice(alloc, s[start..]);
-}
