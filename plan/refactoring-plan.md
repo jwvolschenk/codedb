@@ -8,7 +8,8 @@
 - ✅ **Tier 2.3** — done — `src/snapshot.zig` now follows the aggregator pattern over `snapshot/{format,writer,loader_validated,loader_fast,sensitive}.zig`
 - ✅ **Tier 2.4** — done — `src/watcher.zig` now follows the aggregator pattern over `watcher/{skip_rules,filtered_walker,initial_scan,incremental}.zig`
 - ✅ **Tier 2.5** — done — `src/cio.zig` now follows the aggregator pattern over `cio/{platform,file,sync,time,process,spawn}.zig`
-- ⬜ Tier 3.x, 4.x, cross-cutting cleanup — not started
+- ✅ **Tier 3.1** — done (`fe59723`) — `src/main.zig` is now a 23-line executable shell; CLI command handlers live under `src/commands/`, shared CLI helpers under `src/cli/`
+- ⬜ Tier 3.2+, 4.x, cross-cutting cleanup — not started
 
 ## Goals
 
@@ -46,7 +47,7 @@ Consumers continue to write `@import("foo.zig").Thing` — no caller-side change
 | `src/tests.zig` | 13,442 | ⬜ pending (Tier 4) | worst offender — 1,684 test decls concatenated |
 | `src/explore.zig` | 451 | ✅ done (Tier 2.2) | was 5,309 — split into `explore/{type_extract,tree,deps,search,lifecycle,parsers/*}.zig` |
 | `src/mcp.zig` | 74 | ✅ done (Tier 2.1) | was 3,711 — now a thin aggregator over `mcp/*.zig` |
-| `src/main.zig` | 1,331 | ⬜ pending (Tier 3.1) | 727-line `mainImpl` switch-on-command |
+| `src/main.zig` | 23 | ✅ done (Tier 3.1) | was 1,331 — executable shell over `commands/mod.zig`, with command handlers in `commands/*.zig` and shared helpers in `cli/*.zig` |
 | `src/index/trigram.zig` | 30 | ✅ done (Tier 1.2) | was 1,482 — split into heap/mmap/any variants |
 | `src/watcher.zig` | 19 | ✅ done (Tier 2.4) | aggregator over `watcher/{skip_rules,filtered_walker,initial_scan,incremental}.zig` |
 | `src/explore/parse_utils.zig` | 1,299 | ⬜ pending (Tier 3.4) | grab-bag of per-language helpers |
@@ -162,7 +163,7 @@ The central `Explorer` struct stays in `explore.zig`, but the per-language `pars
 
 ## Tier 3 — Large structural splits (highest effort)
 
-### 3.1 — Split `src/main.zig`
+### 3.1 — Split `src/main.zig` — ✅ DONE (`fe59723`)
 
 The 727-line `mainImpl` switch-on-command becomes:
 
@@ -181,6 +182,8 @@ The 727-line `mainImpl` switch-on-command becomes:
 | `cli/disk_cache.zig` | 803–1062: `loadUserConfig`, `loadSnapshotIfHeadMatches`, `loadBestSnapshot`, `getDataDir`, `loadTrigramFromDiskIfPresent`, `loadWordIndexFromDiskIfPresent`, `persist*`, `compactMcpReadyMemory`, `wordIndexMatchesOutlines` |
 | `cli/scan.zig` | 1128–1299: `reapLoop`, `scanBg`, `triggerScanFromRoots`, `watcherDeferredLoop`, `idleWatchdog` |
 | `main.zig` (shell) | `main`, `mainInner`, `Out`, `isCommand`, `resolveRoot`, `printUsage` |
+
+**Result:** `main.zig` is now a 23-line executable shell preserving the original process-args setup and stack trampoline. The split added `commands/context.zig`, per-command modules for `tree`, `outline`, `find`, `search`, `word`, `hot`, `snapshot`, `serve`, and `mcp`, plus `cli/{shell,disk_cache,scan}.zig`. `commands/mod.zig` now owns CLI argument parsing, root/config setup, non-MCP scan/cache preparation, and dispatch. Verification passed: `zig build test`, `zig build`, and `python3 scripts/e2e_mcp_test.py --binary zig-out/bin/codedb --project /home/jwvolschenk/repos/codedb`.
 
 ### 3.2 — Split `src/mcp/query.zig`
 
