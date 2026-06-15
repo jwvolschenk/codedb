@@ -10,7 +10,8 @@
 - ✅ **Tier 2.5** — done — `src/cio.zig` now follows the aggregator pattern over `cio/{platform,file,sync,time,process,spawn}.zig`
 - ✅ **Tier 3.1** — done (`fe59723`) — `src/main.zig` is now a 23-line executable shell; CLI command handlers live under `src/commands/`, shared CLI helpers under `src/cli/`
 - ✅ **Tier 3.2** — done — `src/mcp/query.zig` is now a 9-line aggregator over `mcp/query/{driver,combo_boost,shared}.zig` and `mcp/query/steps/*.zig`
-- ⬜ Tier 3.3+, 4.x, cross-cutting cleanup — next: split `src/server.zig`
+- ✅ **Tier 3.3** — done — `src/server.zig` is now a 13-line aggregator over `server/{transport,routes,http_parsing}.zig`; `handleConnection` stayed byte-for-byte structural in `server/routes.zig` for the no-behavior-change split
+- ⬜ Tier 3.4+, 4.x, cross-cutting cleanup — next: split `src/explore/parse_utils.zig`
 
 ## Goals
 
@@ -56,7 +57,7 @@ Consumers continue to write `@import("foo.zig").Thing` — no caller-side change
 | `src/cio.zig` | 45 | ✅ done (Tier 2.5) | was 903 — aggregator over `cio/{platform,file,sync,time,process,spawn}.zig` |
 | `src/csharp_parser.zig` | 962 | — | single-concern, optional polish |
 | `src/mcp/query.zig` | 9 | ✅ done (Tier 3.2) | was 875 — aggregator over `mcp/query/{driver,combo_boost,shared}.zig` and per-op `mcp/query/steps/*.zig` |
-| `src/server.zig` | 858 | ⬜ pending (Tier 3.3) | 579-line `handleConnection` switch |
+| `src/server.zig` | 13 | ✅ done (Tier 3.3) | was 827 — aggregator over `server/{transport,routes,http_parsing}.zig`; route-handler extraction remains optional cleanup |
 | `src/tsql_parser.zig` | 583 | ✅ done (Tier 1.3) | was 852 — embedded tests extracted |
 | `src/index/word_index.zig` | 673 | ⬜ pending (not yet scheduled) | disk I/O = 45% of file |
 
@@ -215,10 +216,12 @@ The 754-line `handleQuery` switch became focused files for the dispatcher, share
 | Target | Contents |
 |---|---|
 | `server/transport.zig` | `serve`, `HandlerCtx`, `handleThread`, `Conn`, `readSome`, `respondJson` |
-| `server/routes.zig` | `handleConnection` (now a dispatcher calling per-route fns) |
-| `server/http_parsing.zig` | `writeJsonEscaped` (or delete in favor of Tier 1.5), `extractQueryParam*`, `percentDecode`, `extractBody`, `jsonString`, `jsonU64`, `findUnescapedQuote`, `extractJsonString` |
+| `server/routes.zig` | `handleConnection` HTTP route handler |
+| `server/http_parsing.zig` | `extractQueryParam*`, `percentDecode`, `extractBody`, `jsonString`, `jsonU64`, `findUnescapedQuote`, `extractJsonString` |
 
-After Tier 1.4, `server/routes.zig` should also call shared tool implementations instead of duplicating MCP's handlers (currently admitted in code comment at line 5 of `server.zig`). That dedup is **optional**, lower priority than the structural split.
+**Result:** `src/server.zig` is now a 13-line public API shell. The split moved transport setup/response helpers to `server/transport.zig`, HTTP parsing helpers to `server/http_parsing.zig`, and the existing route handler to `server/routes.zig` without route behavior changes. Verification passed: `zig build test`.
+
+**Next cleanup:** `server/routes.zig` is still 607 lines because `handleConnection` was preserved as one handler for the structural split. A later cleanup can extract per-route functions and/or call shared MCP tool implementations; that dedup is **optional** and lower priority than Tier 3.4.
 
 ### 3.4 — Split `src/explore/parse_utils.zig`
 
@@ -319,8 +322,8 @@ Each phase = one PR. CI must pass `zig build test` after every PR.
 5. ✅ **Tier 2.4, 2.5** — independent of each other and 2.1/2.2; can parallelize. DONE.
 6. ✅ **Tier 3.1** (main.zig) — independent. DONE.
 7. ✅ **Tier 3.2** (mcp/query.zig) — depends on Tier 2.1. DONE.
-8. **Tier 3.3** (server.zig) — independent. ← NEXT
-9. **Tier 3.4** (parse_utils.zig) — depends on Tier 2.2.
+8. ✅ **Tier 3.3** (server.zig) — independent. DONE.
+9. **Tier 3.4** (parse_utils.zig) — depends on Tier 2.2. ← NEXT
 10. **Tier 4.1** (tests.zig) — last; only after all source files are at their final locations.
 11. **Cross-cutting dedup + docs update.**
 
@@ -357,7 +360,7 @@ After full execution:
 | `snapshot.zig` | 1,124 | ~30 (aggregator) | — |
 | `cio.zig` | 903 | ~30 (aggregator) | — |
 | `mcp/query.zig` | 875 | ~80 (driver) | — |
-| `server.zig` | 858 | ~30 (aggregator) | — |
+| `server.zig` | 858 | ~30 (aggregator) | ✅ 13 |
 | `tsql_parser.zig` | 852 | ~580 (tests moved) | ✅ 583 |
 | `index/word_index.zig` | 673 | ~375 (persistence split) | — |
 
