@@ -5,8 +5,9 @@
 - ✅ **Tier 1.1–1.5** — done (`5542d1b`..`a5b1079`)
 - ✅ **Tier 2.1** — done (`9a40afc`..`44b0844`) — finished the in-progress `mcp.zig` split (now a 74-line aggregator)
 - ✅ **Tier 2.2** — done (`ac79bbd`..`6cb4c4b`) — `src/explore.zig` 5,309 → 451 lines; see `plan/tier-2.2-explore-split.md` for the member-level breakdown and the new `explore/{type_extract,tree,deps,search,lifecycle,parsers/*}.zig` files
-- ⬜ **Next up: Tier 2.3** (split `src/snapshot.zig`) — independent of 2.1/2.2, can start any time
-- ⬜ Tier 2.4, 2.5, 3.x, 4.x, cross-cutting cleanup — not started
+- ✅ **Tier 2.3** — done — `src/snapshot.zig` now follows the aggregator pattern over `snapshot/{format,writer,loader_validated,loader_fast,sensitive}.zig`
+- ⬜ **Next up: Tier 2.4** (split `src/watcher.zig`)
+- ⬜ Tier 2.5, 3.x, 4.x, cross-cutting cleanup — not started
 
 ## Goals
 
@@ -48,7 +49,7 @@ Consumers continue to write `@import("foo.zig").Thing` — no caller-side change
 | `src/index/trigram.zig` | 30 | ✅ done (Tier 1.2) | was 1,482 — split into heap/mmap/any variants |
 | `src/watcher.zig` | 1,371 | ⬜ pending (Tier 2.4) | skip-lists + initial scan + incremental loop |
 | `src/explore/parse_utils.zig` | 1,299 | ⬜ pending (Tier 3.4) | grab-bag of per-language helpers |
-| `src/snapshot.zig` | 1,124 | ⬜ pending (Tier 2.3) | format + writer + 2 loaders |
+| `src/snapshot.zig` | 44 | ✅ done (Tier 2.3) | aggregator over `snapshot/{format,writer,loader_validated,loader_fast,sensitive}.zig` |
 | `src/cio.zig` | 903 | ⬜ pending (Tier 2.5) | platform + sync + time + spawn |
 | `src/csharp_parser.zig` | 962 | — | single-concern, optional polish |
 | `src/mcp/query.zig` | 875 | ⬜ pending (Tier 3.2) | 754-line `handleQuery` switch |
@@ -124,7 +125,7 @@ The central `Explorer` struct stays in `explore.zig`, but the per-language `pars
 
 **Result:** see `plan/tier-2.2-explore-split.md` for the exact member-level table and the 7-commit breakdown actually used. Two deviations from the table above: (1) `parsers/jvm_static.zig` was dropped — its contents folded into `type_extract.zig`; (2) a new `parsers/systems.zig` was added for Zig/Rust/Go parsers, which this table omitted. `explore.zig` is now 451 lines (struct shell + 9 KEEP accessor methods + ~128 `pub const x = @import("explore/...").x;` delegations).
 
-### 2.3 — Split `src/snapshot.zig`
+### 2.3 — Split `src/snapshot.zig` — ✅ DONE
 
 | Target | Source | Contents |
 |---|---|---|
@@ -133,6 +134,8 @@ The central `Explorer` struct stays in `explore.zig`, but the per-language `pars
 | `snapshot/loader_validated.zig` | 488–646, 680–794 | `loadSnapshotValidated`, `loadOutlineStateMap`, `rebuildDepsFromOutline`, `insertRestoredFile` |
 | `snapshot/loader_fast.zig` | 795–957 | `loadSnapshotFast` |
 | `snapshot/sensitive.zig` | 985–1032 | `isSensitivePath` (after Tier 1.4 unifies it) |
+
+`snapshot.zig` is now the aggregator and preserves the existing public API. `cleanupStaleTmpFiles` lives in `snapshot/format.zig` with the other binary-format helpers; `snapshot/sensitive.zig` stays focused on the shared `path_safety.zig` re-export.
 
 ### 2.4 — Split `src/watcher.zig`
 
@@ -302,13 +305,14 @@ Each phase = one PR. CI must pass `zig build test` after every PR.
 1. ✅ **Tier 1.1–1.5** — five independent small PRs, can land in any order. DONE.
 2. ✅ **Tier 2.1** (mcp.zig finish) — depends on Tier 1.1. DONE.
 3. ✅ **Tier 2.2** (explore.zig) — independent of 2.1. DONE.
-4. **Tier 2.3, 2.4, 2.5** — independent of each other and 2.1/2.2; can parallelize. ← NEXT (start with 2.3, `src/snapshot.zig`)
-5. **Tier 3.1** (main.zig) — independent.
-6. **Tier 3.2** (mcp/query.zig) — depends on Tier 2.1.
-7. **Tier 3.3** (server.zig) — independent.
-8. **Tier 3.4** (parse_utils.zig) — depends on Tier 2.2.
-9. **Tier 4.1** (tests.zig) — last; only after all source files are at their final locations.
-10. **Cross-cutting dedup + docs update.**
+4. ✅ **Tier 2.3** (`src/snapshot.zig`) — DONE.
+5. **Tier 2.4, 2.5** — independent of each other and 2.1/2.2; can parallelize. ← NEXT (start with 2.4, `src/watcher.zig`)
+6. **Tier 3.1** (main.zig) — independent.
+7. **Tier 3.2** (mcp/query.zig) — depends on Tier 2.1.
+8. **Tier 3.3** (server.zig) — independent.
+9. **Tier 3.4** (parse_utils.zig) — depends on Tier 2.2.
+10. **Tier 4.1** (tests.zig) — last; only after all source files are at their final locations.
+11. **Cross-cutting dedup + docs update.**
 
 ---
 
