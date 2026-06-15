@@ -7,7 +7,7 @@
 - ✅ **Tier 2.2** — done (`ac79bbd`..`6cb4c4b`) — `src/explore.zig` 5,309 → 451 lines; see `plan/tier-2.2-explore-split.md` for the member-level breakdown and the new `explore/{type_extract,tree,deps,search,lifecycle,parsers/*}.zig` files
 - ✅ **Tier 2.3** — done — `src/snapshot.zig` now follows the aggregator pattern over `snapshot/{format,writer,loader_validated,loader_fast,sensitive}.zig`
 - ✅ **Tier 2.4** — done — `src/watcher.zig` now follows the aggregator pattern over `watcher/{skip_rules,filtered_walker,initial_scan,incremental}.zig`
-- ⬜ **Next up: Tier 2.5** (split `src/cio.zig`)
+- ✅ **Tier 2.5** — done — `src/cio.zig` now follows the aggregator pattern over `cio/{platform,file,sync,time,process,spawn}.zig`
 - ⬜ Tier 3.x, 4.x, cross-cutting cleanup — not started
 
 ## Goals
@@ -51,7 +51,7 @@ Consumers continue to write `@import("foo.zig").Thing` — no caller-side change
 | `src/watcher.zig` | 19 | ✅ done (Tier 2.4) | aggregator over `watcher/{skip_rules,filtered_walker,initial_scan,incremental}.zig` |
 | `src/explore/parse_utils.zig` | 1,299 | ⬜ pending (Tier 3.4) | grab-bag of per-language helpers |
 | `src/snapshot.zig` | 44 | ✅ done (Tier 2.3) | aggregator over `snapshot/{format,writer,loader_validated,loader_fast,sensitive}.zig` |
-| `src/cio.zig` | 903 | ⬜ pending (Tier 2.5) | platform + sync + time + spawn |
+| `src/cio.zig` | 45 | ✅ done (Tier 2.5) | was 903 — aggregator over `cio/{platform,file,sync,time,process,spawn}.zig` |
 | `src/csharp_parser.zig` | 962 | — | single-concern, optional polish |
 | `src/mcp/query.zig` | 875 | ⬜ pending (Tier 3.2) | 754-line `handleQuery` switch |
 | `src/server.zig` | 858 | ⬜ pending (Tier 3.3) | 579-line `handleConnection` switch |
@@ -147,7 +147,7 @@ The central `Explorer` struct stays in `explore.zig`, but the per-language `pars
 | `watcher/initial_scan.zig` | 466–925, `indexFileOutline` | All `*Worker*` types + `initialScan*` entrypoints + `buildTrigramsFromCache` |
 | `watcher/incremental.zig` | 926–1154, 1241–1370 | `incrementalLoop`, `incrementalDiff`, `hashFile`, `pushEventOrWait`, `indexFileContent`, `drainNotifyFile`, `notifyLineBelongsToOtherRoot`, `pathUnderRoot`, `EventKind`, `FsEvent`, `EventQueue` |
 
-### 2.5 — Split `src/cio.zig`
+### 2.5 — Split `src/cio.zig` — ✅ DONE
 
 | Target | Source | Contents |
 |---|---|---|
