@@ -18,6 +18,7 @@ const mcpj = mcp_lib.json;
 const getStr = mcpj.getStr;
 const getInt = mcpj.getInt;
 const getBool = mcpj.getBool;
+const ident = @import("../explore/ident_utils.zig");
 
 const mcp = @import("../mcp.zig");
 const appendBundleArgKeysDiagnostic = mcp.appendBundleArgKeysDiagnostic;
@@ -830,12 +831,7 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
     }
 }
 
-fn isIdentChar(c: u8) bool {
-    return (c >= 'a' and c <= 'z') or
-        (c >= 'A' and c <= 'Z') or
-        (c >= '0' and c <= '9') or
-        c == '_';
-}
+const isIdentChar = ident.isIdentChar;
 
 /// Returns true iff `needle` appears in `haystack` with non-identifier
 /// characters (or string boundary) on both sides — i.e. as a whole-word

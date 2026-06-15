@@ -1,4 +1,5 @@
 const std = @import("std");
+const ident = @import("explore/ident_utils.zig");
 
 pub const Kind = enum {
     class_def,
@@ -606,15 +607,7 @@ fn isInsideString(line: []const u8, pos: usize) bool {
 fn extractIdent(s: []const u8) ?[]const u8 {
     var rest = std.mem.trimStart(u8, s, " \t");
     if (startsWith(rest, "@")) rest = rest[1..];
-    const max_ident_len: usize = 256;
-    var end: usize = 0;
-    for (rest) |ch| {
-        if (end >= max_ident_len) break;
-        if (isIdentChar(ch)) {
-            end += 1;
-        } else break;
-    }
-    return if (end > 0) rest[0..end] else null;
+    return ident.extractIdent(rest);
 }
 
 fn extractQualifiedIdent(s: []const u8) ?[]const u8 {
@@ -733,44 +726,15 @@ fn extractLastTypeIdent(s: []const u8) ?[]const u8 {
     return extractLastIdent(trimmed);
 }
 
-const IdentSpan = struct {
-    text: []const u8,
-    start: usize,
-};
+const IdentSpan = ident.IdentSpan;
 
-fn extractLastIdentSpan(s: []const u8) ?IdentSpan {
-    if (s.len == 0) return null;
-    var end = s.len;
-    while (end > 0) {
-        const ch = s[end - 1];
-        if (isIdentChar(ch)) break;
-        end -= 1;
-    }
-    if (end == 0) return null;
-    var start = end;
-    while (start > 0) {
-        const ch = s[start - 1];
-        if (!isIdentChar(ch)) break;
-        start -= 1;
-    }
-    return .{ .text = s[start..end], .start = start };
-}
+const extractLastIdentSpan = ident.extractLastIdentSpan;
 
-fn extractLastIdent(s: []const u8) ?[]const u8 {
-    return if (extractLastIdentSpan(s)) |span| span.text else null;
-}
+const extractLastIdent = ident.extractLastIdent;
 
-fn isIdentChar(ch: u8) bool {
-    return std.ascii.isAlphanumeric(ch) or ch == '_';
-}
+const isIdentChar = ident.isIdentChar;
 
-fn isControlKeyword(name: []const u8) bool {
-    const keywords = [_][]const u8{ "if", "for", "while", "switch", "catch", "return", "throw", "new", "when" };
-    for (keywords) |kw| {
-        if (std.mem.eql(u8, name, kw)) return true;
-    }
-    return false;
-}
+const isControlKeyword = ident.isControlKeyword;
 
 fn isNonMemberName(name: []const u8) bool {
     const keywords = [_][]const u8{ "get", "set", "init", "add", "remove", "value", "if", "for", "while", "switch", "catch", "return", "throw", "new" };
@@ -780,9 +744,7 @@ fn isNonMemberName(name: []const u8) bool {
     return false;
 }
 
-fn startsWith(haystack: []const u8, needle: []const u8) bool {
-    return std.mem.startsWith(u8, haystack, needle);
-}
+const startsWith = ident.startsWith;
 
 fn startsWithAny(s: []const u8, prefixes: []const []const u8) bool {
     for (prefixes) |prefix| {
@@ -791,12 +753,7 @@ fn startsWithAny(s: []const u8, prefixes: []const []const u8) bool {
     return false;
 }
 
-fn containsAny(s: []const u8, needles: []const []const u8) bool {
-    for (needles) |needle| {
-        if (std.mem.indexOf(u8, s, needle) != null) return true;
-    }
-    return false;
-}
+const containsAny = ident.containsAny;
 
 /// Extract parameter types from the content between '(' and ')'.
 /// E.g. "int id, string name, ILogger logger" -> ["int", "string", "ILogger"]

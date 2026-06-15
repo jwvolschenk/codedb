@@ -11,89 +11,249 @@ codedb scans a project directory, builds in-memory indexes (outlines, symbols, t
 
 Both interfaces share the same core: `Explorer` (code intelligence) and `Store` (version tracking).
 
-## Modules
+## File Layout
 
-### `main.zig` — CLI Entry Point
+The codebase follows the **aggregator pattern**: a top-level `foo.zig` becomes a thin re-export shell over a `foo/` directory of focused modules. Consumers continue to write `@import("foo.zig").X` — no caller-side changes needed.
 
-Parses args, resolves the project root, runs an initial scan, then dispatches to one of:
+```
+src/
+├── main.zig                  # 23-line executable shell
+├── commands/                 # CLI command handlers
+│   ├── mod.zig               #   arg parse, root/config setup, dispatch
+│   ├── context.zig           #   shared Context struct
+│   ├── tree.zig              #   tree command
+│   ├── outline.zig           #   outline command
+│   ├── find.zig              #   find command
+│   ├── search.zig            #   search command
+│   ├── word.zig              #   word command
+│   ├── hot.zig               #   hot command
+│   ├── snapshot.zig          #   snapshot command
+│   ├── serve.zig             #   serve command
+│   └── mcp.zig               #   mcp command
+├── cli/                      # shared CLI helpers
+│   ├── shell.zig             #   Out writer, isCommand
+│   ├── disk_cache.zig        #   snapshot/config loading, persistence
+│   └── scan.zig              #   background scan, idle watchdog
+│
+├── explore.zig               # aggregator → Explorer struct + re-exports
+├── explore/
+│   ├── search.zig            #   searchContent, ranked, regex, fuzzy, scope
+│   ├── search_utils.zig      #   searchInContent, fuzzyScore, helpers
+│   ├── tree.zig              #   getTree, lsDir, globPaths
+│   ├── deps.zig              #   dependency graph, symbol/type index mutations
+│   ├── lifecycle.zig         #   indexFile, removeFile, symbol-end detection
+│   ├── type_extract.zig      #   per-language type-index extraction
+│   ├── types.zig             #   Symbol, FileOutline types
+│   ├── ident_utils.zig       #   shared identifier helpers (canonical)
+│   ├── outline_builders.zig  #   appendOutlineSymbol*, kind mappings
+│   ├── parse_utils.zig       #   compatibility shim over focused modules
+│   ├── glob.zig              #   glob matching
+│   ├── dependency_graph.zig  #   DependencyGraph struct
+│   └── parsers/              # per-language parser modules
+│       ├── systems.zig       #     Zig, Rust, Go
+│       ├── web.zig           #     TypeScript, JavaScript, CSS, Shell
+│       ├── jvm.zig           #     Java, Kotlin
+│       ├── clang.zig         #     C, C++, Objective-C, Swift
+│       ├── csharp_family.zig #     C#, F#, Razor, T4
+│       ├── scripting.zig     #     Ruby, PHP, Python
+│       ├── declarative.zig   #     HCL, R, SQL, Proto, Fortran, Dart, etc.
+│       ├── c_family.zig      #     C-family parser helpers
+│       ├── sql.zig           #     SQL parser helpers
+│       ├── shell_css.zig     #     Shell/CSS parser helpers
+│       └── misc.zig          #     misc language helpers
+│
+├── mcp.zig                   # aggregator → re-exports
+├── mcp/
+│   ├── server.zig            #   MCP session, scan-state machine, dispatch
+│   ├── explore_tools.zig     #   tree/outline/symbol/search/word/callers/hot/deps
+│   ├── mutation_tools.zig    #   read/edit/changes/status/snapshot
+│   ├── composite_tools.zig   #   types/bundle/projects/index/find/glob/ls
+│   ├── aspnet.zig            #   ASP.NET route/config analysis
+│   ├── query.zig             #   aggregator → query pipeline
+│   ├── query/
+│   │   ├── driver.zig        #     handleQuery dispatch
+│   │   ├── combo_boost.zig   #     combo-boost reranking
+│   │   ├── shared.zig        #     shared Context
+│   │   └── steps/            #     per-op pipeline steps
+│   │       ├── find.zig
+│   │       ├── search.zig
+│   │       ├── deps.zig
+│   │       ├── filter.zig
+│   │       ├── outline.zig
+│   │       ├── read.zig
+│   │       ├── word.zig
+│   │       ├── callers.zig
+│   │       ├── symbol.zig
+│   │       ├── limit.zig
+│   │       ├── transform.zig
+│   │       └── types.zig
+│   ├── format.zig            #   MCP JSON framing helpers
+│   ├── jsonio.zig            #   JSON read/write I/O
+│   ├── pathglob.zig          #   path glob matching
+│   ├── remote.zig            #   remote repo queries (api.wiki.codes)
+│   ├── wal.zig               #   write-ahead log
+│   └── tests.zig             #   MCP-specific tests
+│
+├── server.zig                # aggregator → re-exports
+├── server/
+│   ├── transport.zig         #   serve, HandlerCtx, Conn, respondJson
+│   ├── routes.zig            #   handleConnection HTTP route handler
+│   └── http_parsing.zig      #   query param extraction, percent decode
+│
+├── watcher.zig               # aggregator → re-exports
+├── watcher/
+│   ├── skip_rules.zig        #   skip_dirs/extensions, isSensitivePath (security)
+│   ├── filtered_walker.zig   #   FilteredWalker directory pruner
+│   ├── initial_scan.zig      #   initialScan, Worker types
+│   └── incremental.zig       #   incrementalLoop, FsEvent, EventQueue
+│
+├── snapshot.zig              # aggregator → re-exports
+├── snapshot/
+│   ├── format.zig            #   MAGIC, FORMAT_VERSION, SectionId, cleanup
+│   ├── writer.zig            #   writeSnapshot, writeSnapshotDual
+│   ├── loader_validated.zig  #   loadSnapshotValidated, rebuildDeps
+│   ├── loader_fast.zig       #   loadSnapshotFast
+│   └── sensitive.zig         #   re-exports path_safety.isSensitivePath
+│
+├── cio.zig                   # aggregator → re-exports
+├── cio/
+│   ├── platform.zig          #   posix/win backends
+│   ├── file.zig              #   File, ListWriter
+│   ├── sync.zig              #   Mutex, RwLock, flockFd
+│   ├── time.zig              #   nanoTimestamp, Timer, randU64
+│   ├── process.zig           #   pipes, getenv, args
+│   └── spawn.zig             #   CaptureResult, RunOptions, runCapture
+│
+├── index.zig                 # aggregator → re-exports
+├── index/
+│   ├── trigram.zig           #   aggregator → heap/mmap/any
+│   ├── trigram/
+│   │   ├── heap.zig          #     TrigramIndex (in-memory)
+│   │   ├── mmap.zig          #     MmapTrigramIndex (disk-mapped)
+│   │   └── any.zig           #     AnyTrigramIndex (tagged union)
+│   ├── word_index.zig        #   WordIndex inverted index
+│   ├── word_tokenizer.zig    #   WordTokenizer
+│   ├── sparse_ngram.zig      #   SparseNgramIndex
+│   ├── regex_query.zig       #   RegexQuery engine
+│   ├── type_index.zig        #   TypeIndex
+│   ├── type_graph.zig        #   TypeGraph
+│   ├── trigram_posting.zig   #   PostingMask bloom filter
+│   ├── frequency.zig         #   frequency table
+│   └── chars.zig             #   character classification
+│
+├── tests.zig                 # aggregator (31 lines) → 28 focused test files
+├── tests/
+│   ├── store.zig, agent.zig, word_tokenizer.zig, word_index.zig
+│   ├── trigram.zig, sparse_ngram.zig, bloom.zig, mmap_trigram.zig
+│   ├── explorer_core.zig, explorer_core_extra.zig
+│   ├── explorer_search.zig, explorer_search_extra.zig
+│   ├── edit.zig, regressions.zig, regressions_extra.zig
+│   ├── snapshot.zig, mcp_protocol.zig, mcp_search.zig
+│   ├── regex.zig, perf.zig, disk_index.zig, concurrency.zig
+│   ├── fuzzy.zig, query_pipeline.zig, nuke.zig, update.zig
+│   ├── git.zig, dep_graph.zig, symbol_index.zig, type_index.zig
+│   ├── path_safety.zig, root_policy.zig, glob.zig, telemetry.zig
+│   └── parsers/
+│       ├── c.zig, csharp.zig, fsharp.zig, php.zig, tsql.zig, misc.zig
+│
+├── path_safety.zig           # isPathSafe, isSensitivePath (canonical, security)
+├── json_utils.zig            # writeJsonEscaped (shared)
+├── store.zig                 # Store version log
+├── version.zig               # Version, Op, FileVersions
+├── edit.zig                  # line-range file editor
+├── snapshot_json.zig         # on-demand JSON snapshot renderer
+├── agent.zig                 # AgentRegistry, file locking, heartbeats
+├── telemetry.zig             # opt-out telemetry
+├── config.zig                # user config
+├── root_policy.zig           # root directory policy
+├── lib.zig                   # public module surface for importable codedb
+├── build.zig                 # Zig build system
+│
+├── csharp_parser.zig         # C# parser (imports ident_utils for shared helpers)
+├── fsharp_parser.zig         # F# parser (imports ident_utils for shared helpers)
+├── tsql_parser.zig           # T-SQL parser (imports ident_utils for shared helpers)
+├── ssrs_parser.zig           # SSRS/RDL parser
+├── t4_parser.zig             # T4 template parser
+├── autumn_parser.zig         # Autumn Equinox mapping parser
+├── nuke.zig                  # nuke command
+├── update.zig                # self-update command
+├── hot_cache.zig             # content cache
+├── git.zig                   # git helpers
+├── compat.zig                # cross-platform compatibility
+├── style.zig                 # terminal style/color
+├── wasm.zig                  # WASM bindings
+└── release_info.zig          # release version stub
+```
 
-| Command | Description |
-|---------|-------------|
-| `tree` | Print file tree with symbol counts |
-| `outline <path>` | Show symbols in a file |
-| `find <name>` | Find a symbol definition |
-| `search <query>` | Full-text search (trigram-accelerated) |
-| `word <id>` | Exact word lookup (inverted index, O(1)) |
-| `hot` | Recently modified files |
-| `serve` | Start HTTP daemon on :7719 |
-| `mcp` | Start MCP server (JSON-RPC over stdio) |
+## Core Modules
+
+### `main.zig` — CLI Entry Point (23 lines)
+
+Thin executable shell. Delegates to `commands/mod.zig` for arg parsing and dispatch.
+
+| Command | Handler |
+|---------|---------|
+| `tree` | `commands/tree.zig` |
+| `outline <path>` | `commands/outline.zig` |
+| `find <name>` | `commands/find.zig` |
+| `search <query>` | `commands/search.zig` |
+| `word <id>` | `commands/word.zig` |
+| `hot` | `commands/hot.zig` |
+| `serve` | `commands/serve.zig` |
+| `mcp` | `commands/mcp.zig` |
+| `snapshot` | `commands/snapshot.zig` |
+
+Shared CLI helpers live under `cli/`: `disk_cache.zig` (snapshot/config loading), `scan.zig` (background scan, idle watchdog), `shell.zig` (Out writer).
 
 Data is stored per-project at `~/.codedb/projects/<hash>/`.
 
-### `explore.zig` — Code Intelligence Engine
+### `explore.zig` — Code Intelligence Engine (452-line aggregator)
 
-The central struct. Holds all indexed data behind a single mutex.
+The central `Explorer` struct holds all indexed data behind a single mutex.
 
 **Data structures:**
-- `outlines: StringHashMap(FileOutline)` — per-file symbol lists (functions, structs, enums, imports)
+- `outlines: StringHashMap(FileOutline)` — per-file symbol lists
 - `contents: StringHashMap([]const u8)` — raw file content cache
 - `dep_graph: StringHashMap(ArrayList([]const u8))` — file → imported files
 - `word_index: WordIndex` — inverted word index for O(1) identifier lookup
 - `trigram_index: TrigramIndex` — trigram index for fast substring search
 
-**Language parsers:** Zig, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, and Dart. Each parser extracts functions, classes/structs, constants, imports, and test declarations from source lines.
+**Sub-modules** (all re-exported through `explore.zig`):
+- `explore/search.zig` — `searchContent`, ranked search, regex, fuzzy, scoped
+- `explore/tree.zig` — `getTree`, `lsDir`, `globPaths`
+- `explore/deps.zig` — dependency graph, symbol/type index mutations
+- `explore/lifecycle.zig` — `indexFile`, `removeFile`, symbol-end detection
+- `explore/type_extract.zig` — per-language type-index extraction
+- `explore/ident_utils.zig` — shared identifier helpers (canonical source for `extractIdent`, `isIdentChar`, `startsWith`, etc.)
+- `explore/parsers/` — per-language parser modules (systems, web, jvm, clang, csharp_family, scripting, declarative)
 
-**Key operations:**
-- `indexFile(path, content)` — parse + index a file (outline, content, words, trigrams, deps)
-- `indexFileOutlineOnly(path, content)` — fast path for initial scan (skips search indexes)
-- `removeFile(path)` — clean removal from all maps and indexes
-- `getTree()` — sorted file tree with directory nodes and symbol counts
-- `findSymbol(name)` / `findAllSymbols(name)` — symbol lookup across all files
-- `searchContent(query, max)` — trigram-accelerated full-text search
-- `searchWord(word)` — O(1) inverted index lookup
-- `getImportedBy(path)` — reverse dependency lookup
-- `getHotFiles(store, limit)` — files sorted by most recent change sequence
+### `index.zig` — Search Indexes (70-line aggregator)
 
-### `index.zig` — Search Indexes
+**WordIndex** — inverted index mapping words to `(path, line_num)` hits.
 
-**WordIndex** — inverted index mapping words to `(path, line_num)` hits. Tokenizes content into identifiers, skipping single-character tokens. Supports efficient re-indexing via per-file word tracking. Deduplicates results by `(path, line)`.
-
-**TrigramIndex** — maps 3-byte character sequences to file sets. Used to narrow full-text search candidates before brute-force scanning. Queries < 3 chars fall back to brute force. Intersection of trigram sets gives candidate files.
+**TrigramIndex** — maps 3-byte character sequences to file sets. Three variants:
+- `TrigramIndex` (heap) — in-memory
+- `MmapTrigramIndex` — disk-mapped
+- `AnyTrigramIndex` — tagged union
 
 ### `store.zig` — Version Store
 
-Append-only version log per file. Each mutation (snapshot, edit, delete) gets a monotonically increasing sequence number.
+Append-only version log per file. Each mutation gets a monotonically increasing sequence number.
 
-**Key features:**
-- `recordSnapshot/recordEdit/recordDelete` — append a version entry
-- `getLatest(path)` / `getAtCursor(path, cursor)` — version queries (return by value for safety)
-- `changesSince(seq)` / `changesSinceDetailed(seq)` — change tracking for polling clients
-- `currentSeq()` — atomic sequence counter
-- Optional `data.log` file for persisting diff data
-- Version history capped at 100 entries per file
+### `watcher.zig` — File System Watcher (19-line aggregator)
 
-### `version.zig` — Version Types
+Polling-based file watcher (2-second interval). Sub-modules:
+- `watcher/skip_rules.zig` — skip dirs/extensions, `isSensitivePath` (security-isolated)
+- `watcher/filtered_walker.zig` — `FilteredWalker` directory pruner
+- `watcher/initial_scan.zig` — `initialScan`, Worker types
+- `watcher/incremental.zig` — `incrementalLoop`, `FsEvent`, `EventQueue`
 
-- `Version` — seq, agent, timestamp, op, hash, size, data offset/len
-- `Op` — snapshot | replace | insert | delete | tombstone
-- `FileVersions` — ordered list of versions for a single file path
+### `server.zig` — HTTP Server (13-line aggregator)
 
-### `watcher.zig` — File System Watcher
-
-Polling-based file watcher (2-second interval). Uses mtime + content hash to detect changes.
-
-**FilteredWalker** — custom directory walker that prunes `.git`, `node_modules`, `.next`, `target`, `zig-out`, `zig-cache`, `__pycache__`, `.venv`, `dist`, `build` directories *before* descending. This prevents the CPU-hogging bug where `std.fs.Dir.walk()` would traverse tens of thousands of files in ignored directories every poll cycle.
-
-**Flow:**
-1. `initialScan` — walk all files, index outlines (fast path, no search indexes)
-2. `incrementalLoop` — poll every 2s, detect added/modified/deleted files
-3. `incrementalDiff` — compare current filesystem state against cached `FileMap`, push `FsEvent`s to `EventQueue`
-
-**EventQueue** — bounded ring buffer (256 entries) for filesystem events. Non-blocking push, blocking pop. Used to feed events to the HTTP server's SSE endpoint.
-
-### `server.zig` — HTTP Server
-
-Thread-per-connection HTTP server on `:7719`. Parses raw HTTP/1.1 requests.
+Thread-per-connection HTTP server on `:7719`. Sub-modules:
+- `server/transport.zig` — `serve`, `HandlerCtx`, `Conn`, `respondJson`
+- `server/routes.zig` — `handleConnection` HTTP route handler
+- `server/http_parsing.zig` — query param extraction, percent decode, JSON parsing
 
 **Endpoints:**
 
@@ -113,11 +273,15 @@ Thread-per-connection HTTP server on `:7719`. Parses raw HTTP/1.1 requests.
 | `/snapshot` | GET | Full pre-rendered JSON snapshot |
 | `/events` | GET | SSE stream of file change events |
 
-**Safety:** path traversal prevention (`isPathSafe`), JSON string escaping for user input, POST body size cap, FD leak protection on thread spawn failure.
+### `mcp.zig` — MCP Server (75-line aggregator)
 
-### `mcp.zig` — MCP Server
-
-JSON-RPC 2.0 over stdio with Content-Length framing. Implements the Model Context Protocol for LLM tool use.
+JSON-RPC 2.0 over stdio with Content-Length framing. Sub-modules:
+- `mcp/server.zig` — session management, scan-state machine, dispatch
+- `mcp/explore_tools.zig` — tree/outline/symbol/hierarchy/search/word/callers/hot/deps
+- `mcp/mutation_tools.zig` — read/edit/changes/status/snapshot
+- `mcp/composite_tools.zig` — types/bundle/projects/index/find/glob/ls
+- `mcp/aspnet.zig` — ASP.NET route/config analysis
+- `mcp/query.zig` — composable query pipeline (driver + per-op steps)
 
 **Tools exposed (16):**
 
@@ -139,38 +303,40 @@ JSON-RPC 2.0 over stdio with Content-Length framing. Implements the Model Contex
 | `codedb_remote` | Query indexed public repos via api.wiki.codes |
 | `codedb_projects` | List locally indexed projects |
 | `codedb_index` | Index a local folder |
-**Safety:** path validation, oversized message handling (drains >1MB lines instead of killing the loop).
 
-### `edit.zig` — File Editor
+### `snapshot.zig` — Snapshot (57-line aggregator)
 
-Line-range editing engine. Supports `replace` and `delete` operations on line ranges.
+Binary snapshot format for fast startup. Sub-modules:
+- `snapshot/format.zig` — MAGIC, FORMAT_VERSION, SectionId, cleanup
+- `snapshot/writer.zig` — `writeSnapshot`, `writeSnapshotDual`
+- `snapshot/loader_validated.zig` — `loadSnapshotValidated`, rebuildDeps
+- `snapshot/loader_fast.zig` — `loadSnapshotFast`
+- `snapshot/sensitive.zig` — re-exports `path_safety.isSensitivePath`
 
-**Atomic writes:** writes to a `.codedb_tmp` temp file then renames, preventing corruption on crash. Returns `EditResult` with new content, hash, size, and line count.
+### `cio.zig` — Cross-platform I/O (46-line aggregator)
 
-### `snapshot_json.zig` — Snapshot Renderer
+Platform abstraction layer. Sub-modules:
+- `cio/platform.zig` — posix/win backends
+- `cio/file.zig` — `File`, `ListWriter`
+- `cio/sync.zig` — `Mutex`, `RwLock`, `flockFd`
+- `cio/time.zig` — `nanoTimestamp`, `Timer`, `randU64`
+- `cio/process.zig` — pipes, getenv, args
+- `cio/spawn.zig` — `CaptureResult`, `RunOptions`, `runCapture`
 
-Builds a full JSON snapshot on demand containing tree, all outlines, symbol index, and dependency graph.
+### Shared Utilities
 
-- `buildSnapshot()` — builds deterministic JSON (sorted keys) from Explorer state
-
-### `agent.zig` — Agent Registry
-
-Multi-agent support. Agents register with names, get assigned integer IDs. Supports file locking (exclusive per-agent) and heartbeat-based stale agent reaping (30s timeout).
-
-### `build.zig` — Build Configuration
-
-Zig 0.15.x build system. Produces:
-- `codedb` CLI executable
-- Test runner (`zig build test`)
-- Benchmarks (`zig build bench`)
-- Importable `codedb` module via `src/lib.zig`
+| File | Purpose |
+|------|---------|
+| `path_safety.zig` | `isPathSafe`, `isSensitivePath` — canonical, security-isolated |
+| `json_utils.zig` | `writeJsonEscaped` — shared JSON string escaping |
+| `explore/ident_utils.zig` | `extractIdent`, `isIdentChar`, `startsWith`, `containsAny`, etc. |
 
 ## Architecture Diagram
 
 ```
 ┌─────────────┐     ┌─────────────┐
 │  HTTP :7719 │     │  MCP stdio  │
-│  server.zig │     │  mcp.zig    │
+│ server/*.zig│     │  mcp/*.zig  │
 └──────┬──────┘     └──────┬──────┘
        │                   │
        └───────┬───────────┘
@@ -194,10 +360,9 @@ Zig 0.15.x build system. Produces:
                │
     ┌──────────▼──────────┐
     │     Watcher         │ ← polls every 2s
-    │   watcher.zig       │
+    │   watcher/*.zig     │
     │  (FilteredWalker)   │
     └─────────────────────┘
-
 ```
 
 ## Threading Model

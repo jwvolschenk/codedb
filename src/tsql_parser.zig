@@ -1,4 +1,5 @@
 const std = @import("std");
+const ident = @import("explore/ident_utils.zig");
 
 /// TSQL-specific symbol kinds for .sql files.
 pub const Kind = enum {
@@ -554,9 +555,7 @@ fn isReservedKeyword(name: []const u8) bool {
 
 // ── String utility functions ────────────────────────────────────────
 
-fn startsWith(haystack: []const u8, prefix: []const u8) bool {
-    return std.mem.startsWith(u8, haystack, prefix);
-}
+const startsWith = ident.startsWith;
 
 fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
     if (haystack.len < prefix.len) return false;

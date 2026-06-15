@@ -1,4 +1,5 @@
 const std = @import("std");
+const ident = @import("explore/ident_utils.zig");
 
 pub const Kind = enum {
     class_def,
@@ -360,6 +361,4 @@ fn extractQualifiedIdent(s: []const u8) ?[]const u8 {
     return if (total_end > 0) rest[0..total_end] else null;
 }
 
-fn startsWith(haystack: []const u8, needle: []const u8) bool {
-    return std.mem.startsWith(u8, haystack, needle);
-}
+const startsWith = ident.startsWith;
