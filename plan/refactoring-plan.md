@@ -9,7 +9,8 @@
 - ✅ **Tier 2.4** — done — `src/watcher.zig` now follows the aggregator pattern over `watcher/{skip_rules,filtered_walker,initial_scan,incremental}.zig`
 - ✅ **Tier 2.5** — done — `src/cio.zig` now follows the aggregator pattern over `cio/{platform,file,sync,time,process,spawn}.zig`
 - ✅ **Tier 3.1** — done (`fe59723`) — `src/main.zig` is now a 23-line executable shell; CLI command handlers live under `src/commands/`, shared CLI helpers under `src/cli/`
-- ⬜ Tier 3.2+, 4.x, cross-cutting cleanup — not started
+- ✅ **Tier 3.2** — done — `src/mcp/query.zig` is now a 9-line aggregator over `mcp/query/{driver,combo_boost,shared}.zig` and `mcp/query/steps/*.zig`
+- ⬜ Tier 3.3+, 4.x, cross-cutting cleanup — next: split `src/server.zig`
 
 ## Goals
 
@@ -54,7 +55,7 @@ Consumers continue to write `@import("foo.zig").Thing` — no caller-side change
 | `src/snapshot.zig` | 44 | ✅ done (Tier 2.3) | aggregator over `snapshot/{format,writer,loader_validated,loader_fast,sensitive}.zig` |
 | `src/cio.zig` | 45 | ✅ done (Tier 2.5) | was 903 — aggregator over `cio/{platform,file,sync,time,process,spawn}.zig` |
 | `src/csharp_parser.zig` | 962 | — | single-concern, optional polish |
-| `src/mcp/query.zig` | 875 | ⬜ pending (Tier 3.2) | 754-line `handleQuery` switch |
+| `src/mcp/query.zig` | 9 | ✅ done (Tier 3.2) | was 875 — aggregator over `mcp/query/{driver,combo_boost,shared}.zig` and per-op `mcp/query/steps/*.zig` |
 | `src/server.zig` | 858 | ⬜ pending (Tier 3.3) | 579-line `handleConnection` switch |
 | `src/tsql_parser.zig` | 583 | ✅ done (Tier 1.3) | was 852 — embedded tests extracted |
 | `src/index/word_index.zig` | 673 | ⬜ pending (not yet scheduled) | disk I/O = 45% of file |
@@ -185,24 +186,29 @@ The 727-line `mainImpl` switch-on-command becomes:
 
 **Result:** `main.zig` is now a 23-line executable shell preserving the original process-args setup and stack trampoline. The split added `commands/context.zig`, per-command modules for `tree`, `outline`, `find`, `search`, `word`, `hot`, `snapshot`, `serve`, and `mcp`, plus `cli/{shell,disk_cache,scan}.zig`. `commands/mod.zig` now owns CLI argument parsing, root/config setup, non-MCP scan/cache preparation, and dispatch. Verification passed: `zig build test`, `zig build`, and `python3 scripts/e2e_mcp_test.py --binary zig-out/bin/codedb --project /home/jwvolschenk/repos/codedb`.
 
-### 3.2 — Split `src/mcp/query.zig`
+### 3.2 — Split `src/mcp/query.zig` — ✅ DONE
 
-The 754-line `handleQuery` switch becomes one file per pipeline op:
+The 754-line `handleQuery` switch became focused files for the dispatcher, shared query state, combo-boost reranking, and pipeline ops:
 
 | Target | Contents |
 |---|---|
-| `mcp/query/driver.zig` | arg validation, `StageInfo` tracking, summary tail, `handleQuery` itself (now ~80 lines of dispatch) |
-| `mcp/query/combo_boost.zig` | `applyComboBoosts`, `extractJson*Local`, `recordHitLine`, `COMBO_*` consts |
+| `mcp/query/driver.zig` | arg validation, `StageInfo` tracking, summary tail, and `handleQuery` dispatch |
+| `mcp/query/combo_boost.zig` | `applyComboBoosts`, `extractJson*Local`, `COMBO_*` consts |
+| `mcp/query/shared.zig` | shared query `Context`, `Explorer` / `Store` aliases, `recordHitLine` |
 | `mcp/query/steps/find.zig` | `find` op |
 | `mcp/query/steps/search.zig` | `search` op |
 | `mcp/query/steps/deps.zig` | `deps` op |
 | `mcp/query/steps/filter.zig` | `filter` op |
 | `mcp/query/steps/outline.zig` | `outline` op |
-| `mcp/query/steps/read.zig` | `read` op (107 lines) |
-| `mcp/query/steps/word.zig` | `word` + `symbol` ops |
-| `mcp/query/steps/callers.zig` | `callers` op (109 lines) |
-| `mcp/query/steps/transform.zig` | `limit`, `sort` ops |
+| `mcp/query/steps/read.zig` | `read` op |
+| `mcp/query/steps/word.zig` | `word` op |
+| `mcp/query/steps/callers.zig` | `callers` op |
+| `mcp/query/steps/symbol.zig` | `symbol` op |
+| `mcp/query/steps/limit.zig` | `limit` op |
+| `mcp/query/steps/transform.zig` | `sort` op |
 | `mcp/query/steps/types.zig` | `type_search`, `type_compat` ops |
+
+**Result:** `src/mcp/query.zig` is now a 9-line public API shell. The split keeps `handleQuery`, `applyComboBoosts`, and the local JSON extraction helpers exported from the same import path. Verification passed: `zig build test`.
 
 ### 3.3 — Split `src/server.zig`
 
@@ -310,10 +316,10 @@ Each phase = one PR. CI must pass `zig build test` after every PR.
 2. ✅ **Tier 2.1** (mcp.zig finish) — depends on Tier 1.1. DONE.
 3. ✅ **Tier 2.2** (explore.zig) — independent of 2.1. DONE.
 4. ✅ **Tier 2.3** (`src/snapshot.zig`) — DONE.
-5. **Tier 2.4, 2.5** — independent of each other and 2.1/2.2; can parallelize. ← NEXT (start with 2.4, `src/watcher.zig`)
-6. **Tier 3.1** (main.zig) — independent.
-7. **Tier 3.2** (mcp/query.zig) — depends on Tier 2.1.
-8. **Tier 3.3** (server.zig) — independent.
+5. ✅ **Tier 2.4, 2.5** — independent of each other and 2.1/2.2; can parallelize. DONE.
+6. ✅ **Tier 3.1** (main.zig) — independent. DONE.
+7. ✅ **Tier 3.2** (mcp/query.zig) — depends on Tier 2.1. DONE.
+8. **Tier 3.3** (server.zig) — independent. ← NEXT
 9. **Tier 3.4** (parse_utils.zig) — depends on Tier 2.2.
 10. **Tier 4.1** (tests.zig) — last; only after all source files are at their final locations.
 11. **Cross-cutting dedup + docs update.**
