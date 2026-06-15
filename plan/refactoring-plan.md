@@ -1,5 +1,13 @@
 # codedb Refactoring Plan — Agent Manageability
 
+## Status (updated 2026-06-15)
+
+- ✅ **Tier 1.1–1.5** — done (`5542d1b`..`a5b1079`)
+- ✅ **Tier 2.1** — done (`9a40afc`..`44b0844`) — finished the in-progress `mcp.zig` split (now a 74-line aggregator)
+- ✅ **Tier 2.2** — done (`ac79bbd`..`6cb4c4b`) — `src/explore.zig` 5,309 → 451 lines; see `plan/tier-2.2-explore-split.md` for the member-level breakdown and the new `explore/{type_extract,tree,deps,search,lifecycle,parsers/*}.zig` files
+- ⬜ **Next up: Tier 2.3** (split `src/snapshot.zig`) — independent of 2.1/2.2, can start any time
+- ⬜ Tier 2.4, 2.5, 3.x, 4.x, cross-cutting cleanup — not started
+
 ## Goals
 
 - **No behavior change, no new features** — pure file restructuring.
@@ -31,26 +39,26 @@ Consumers continue to write `@import("foo.zig").Thing` — no caller-side change
 
 ## Inventory — current monoliths (lines / symbols)
 
-| File | Lines | Notes |
-|---|---:|---|
-| `src/tests.zig` | 13,442 | worst offender — 1,684 test decls concatenated |
-| `src/explore.zig` | 5,309 | 142 fns, 22 types, ~25 language parsers inlined |
-| `src/mcp.zig` | 3,711 | mid-refactor; ASP.NET subsystem embedded |
-| `src/main.zig` | 1,331 | 727-line `mainImpl` switch-on-command |
-| `src/index/trigram.zig` | 1,482 | three distinct structs in one file |
-| `src/watcher.zig` | 1,371 | skip-lists + initial scan + incremental loop |
-| `src/explore/parse_utils.zig` | 1,300 | grab-bag of per-language helpers |
-| `src/snapshot.zig` | 1,124 | format + writer + 2 loaders |
-| `src/cio.zig` | 903 | platform + sync + time + spawn |
-| `src/csharp_parser.zig` | 962 | single-concern, optional polish |
-| `src/mcp/query.zig` | 875 | 754-line `handleQuery` switch |
-| `src/server.zig` | 858 | 579-line `handleConnection` switch |
-| `src/tsql_parser.zig` | 852 | ~270 lines (32%) are tests |
-| `src/index/word_index.zig` | 673 | disk I/O = 45% of file |
+| File | Lines | Status | Notes |
+|---|---:|---|---|
+| `src/tests.zig` | 13,442 | ⬜ pending (Tier 4) | worst offender — 1,684 test decls concatenated |
+| `src/explore.zig` | 451 | ✅ done (Tier 2.2) | was 5,309 — split into `explore/{type_extract,tree,deps,search,lifecycle,parsers/*}.zig` |
+| `src/mcp.zig` | 74 | ✅ done (Tier 2.1) | was 3,711 — now a thin aggregator over `mcp/*.zig` |
+| `src/main.zig` | 1,331 | ⬜ pending (Tier 3.1) | 727-line `mainImpl` switch-on-command |
+| `src/index/trigram.zig` | 30 | ✅ done (Tier 1.2) | was 1,482 — split into heap/mmap/any variants |
+| `src/watcher.zig` | 1,371 | ⬜ pending (Tier 2.4) | skip-lists + initial scan + incremental loop |
+| `src/explore/parse_utils.zig` | 1,299 | ⬜ pending (Tier 3.4) | grab-bag of per-language helpers |
+| `src/snapshot.zig` | 1,124 | ⬜ pending (Tier 2.3) | format + writer + 2 loaders |
+| `src/cio.zig` | 903 | ⬜ pending (Tier 2.5) | platform + sync + time + spawn |
+| `src/csharp_parser.zig` | 962 | — | single-concern, optional polish |
+| `src/mcp/query.zig` | 875 | ⬜ pending (Tier 3.2) | 754-line `handleQuery` switch |
+| `src/server.zig` | 858 | ⬜ pending (Tier 3.3) | 579-line `handleConnection` switch |
+| `src/tsql_parser.zig` | 583 | ✅ done (Tier 1.3) | was 852 — embedded tests extracted |
+| `src/index/word_index.zig` | 673 | ⬜ pending (not yet scheduled) | disk I/O = 45% of file |
 
 ---
 
-## Tier 1 — Quick wins, near-zero risk (do first)
+## Tier 1 — Quick wins, near-zero risk (do first) — ✅ ALL DONE (`5542d1b`..`a5b1079`)
 
 Each is a self-contained extract with minimal coupling.
 
@@ -85,7 +93,7 @@ Each is a self-contained extract with minimal coupling.
 
 ## Tier 2 — Medium-effort structural splits
 
-### 2.1 — Finish splitting `src/mcp.zig` (continues the in-progress refactor)
+### 2.1 — Finish splitting `src/mcp.zig` (continues the in-progress refactor) — ✅ DONE (`9a40afc`..`44b0844`)
 
 After Tier 1.1, the remaining ~3,330 lines split into:
 
@@ -99,7 +107,7 @@ After Tier 1.1, the remaining ~3,330 lines split into:
 
 `mcp.zig` becomes the aggregator. Pattern matches `index.zig` exactly.
 
-### 2.2 — Split `src/explore.zig` (5,309 lines)
+### 2.2 — Split `src/explore.zig` (5,309 lines) — ✅ DONE (`ac79bbd`..`6cb4c4b`)
 
 The central `Explorer` struct stays in `explore.zig`, but the per-language `parseXLine` functions and the search/tree/type code move out:
 
@@ -113,6 +121,8 @@ The central `Explorer` struct stays in `explore.zig`, but the per-language `pars
 | `explore/deps.zig` | `rebuildDepsFor`, `resolveSqlDepKey`, `resolveDependencyKey`, `getImportedBy`, `getTransitiveDependents`, `getTransitiveDependencies`, `rebuildSymbolIndexFor`, `removeSymbolIndexFor`, `rebuildTypeIndexes`, `buildTypeGraphForFile`, `extractAndRecordBases`, `findBasePortion`, `symbolNameMatches`, `isHierarchyKeyword`, `getHotFiles` | Dependency/type-graph/symbol-index mutations |
 
 `explore.zig` keeps the `Explorer` struct declaration, `init`/`deinit`/`setRoot`/`setIgnorePatterns`, and re-exports everything. All current `@import("explore.zig").X` references keep working.
+
+**Result:** see `plan/tier-2.2-explore-split.md` for the exact member-level table and the 7-commit breakdown actually used. Two deviations from the table above: (1) `parsers/jvm_static.zig` was dropped — its contents folded into `type_extract.zig`; (2) a new `parsers/systems.zig` was added for Zig/Rust/Go parsers, which this table omitted. `explore.zig` is now 451 lines (struct shell + 9 KEEP accessor methods + ~128 `pub const x = @import("explore/...").x;` delegations).
 
 ### 2.3 — Split `src/snapshot.zig`
 
@@ -289,10 +299,10 @@ The remaining ~4,000 lines of issue-specific regression tests get bucketed by su
 
 Each phase = one PR. CI must pass `zig build test` after every PR.
 
-1. **Tier 1.1–1.5** — five independent small PRs, can land in any order.
-2. **Tier 2.1** (mcp.zig finish) — depends on Tier 1.1.
-3. **Tier 2.2** (explore.zig) — independent of 2.1.
-4. **Tier 2.3, 2.4, 2.5** — independent of each other and 2.1/2.2; can parallelize.
+1. ✅ **Tier 1.1–1.5** — five independent small PRs, can land in any order. DONE.
+2. ✅ **Tier 2.1** (mcp.zig finish) — depends on Tier 1.1. DONE.
+3. ✅ **Tier 2.2** (explore.zig) — independent of 2.1. DONE.
+4. **Tier 2.3, 2.4, 2.5** — independent of each other and 2.1/2.2; can parallelize. ← NEXT (start with 2.3, `src/snapshot.zig`)
 5. **Tier 3.1** (main.zig) — independent.
 6. **Tier 3.2** (mcp/query.zig) — depends on Tier 2.1.
 7. **Tier 3.3** (server.zig) — independent.
@@ -321,21 +331,21 @@ Additionally, after each split: `rg '@import\("old/path\.zig"\)'` must return no
 
 After full execution:
 
-| File | Before | After (max) |
-|---|---:|---:|
-| `tests.zig` | 13,442 | ~50 (aggregator) |
-| `explore.zig` | 5,309 | ~600 (struct + lifecycle) |
-| `mcp.zig` | 3,711 | ~50 (aggregator) |
-| `main.zig` | 1,331 | ~250 (CLI shell) |
-| `index/trigram.zig` | 1,482 | ~30 (aggregator) |
-| `watcher.zig` | 1,371 | ~50 (aggregator) |
-| `explore/parse_utils.zig` | 1,300 | ~30 (aggregator) |
-| `snapshot.zig` | 1,124 | ~30 (aggregator) |
-| `cio.zig` | 903 | ~30 (aggregator) |
-| `mcp/query.zig` | 875 | ~80 (driver) |
-| `server.zig` | 858 | ~30 (aggregator) |
-| `tsql_parser.zig` | 852 | ~580 (tests moved) |
-| `index/word_index.zig` | 673 | ~375 (persistence split) |
+| File | Before | After (max) | Actual |
+|---|---:|---:|---:|
+| `tests.zig` | 13,442 | ~50 (aggregator) | — |
+| `explore.zig` | 5,309 | ~600 (struct + lifecycle) | ✅ 451 |
+| `mcp.zig` | 3,711 | ~50 (aggregator) | ✅ 74 |
+| `main.zig` | 1,331 | ~250 (CLI shell) | — |
+| `index/trigram.zig` | 1,482 | ~30 (aggregator) | ✅ 30 |
+| `watcher.zig` | 1,371 | ~50 (aggregator) | — |
+| `explore/parse_utils.zig` | 1,300 | ~30 (aggregator) | — |
+| `snapshot.zig` | 1,124 | ~30 (aggregator) | — |
+| `cio.zig` | 903 | ~30 (aggregator) | — |
+| `mcp/query.zig` | 875 | ~80 (driver) | — |
+| `server.zig` | 858 | ~30 (aggregator) | — |
+| `tsql_parser.zig` | 852 | ~580 (tests moved) | ✅ 583 |
+| `index/word_index.zig` | 673 | ~375 (persistence split) | — |
 
 Largest file in the repo drops from 13,442 lines to ~1,500.
 
