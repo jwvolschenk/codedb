@@ -172,8 +172,11 @@ Re-run the same one-liner for your platform.
 ### Uninstall
 
 ```bash
-bash scripts/uninstall-codedb.sh
+codedb nuke
 ```
+
+Removes the binary, cached indexes, and MCP registrations from all detected
+agents. No repo checkout required.
 
 ---
 
@@ -485,117 +488,66 @@ startup_timeout_sec = 30
 
 ## Agent Skills: codedb Instructions
 
-Install the codedb usage guide so your AI agent knows how to use codedb effectively. The guide covers indexing, search, symbols, dependencies, batching patterns, and mono-repo workflows.
+A single usage guide is provided at `skills/codedb-instructions.md`. It covers
+indexing, search, symbols, dependencies, batching patterns, and common
+workflows. Copy it to your agent's instruction location using the table below.
 
-Skills are available in `skills/` with platform-specific formats. Copy the appropriate file to your agent's skill location.
+| Agent | Location | Format |
+|-------|----------|--------|
+| **Hermes** | `~/.hermes/skills/codedb-instructions/SKILL.md` | Agent Skills standard |
+| **Claude Code** | `~/.claude/skills/codedb-instructions/SKILL.md` | Agent Skills standard |
+| **OpenAI Codex** | `~/.codex/skills/codedb-instructions/SKILL.md` | Agent Skills standard |
+| **Antigravity** | `~/.agy/skills/codedb-instructions/SKILL.md` | Agent Skills standard |
+| **OpenCode** | `~/.config/opencode/skills/codedb-instructions/SKILL.md` | Agent Skills standard |
+| **GitHub Copilot** | `<your-repo>/.github/instructions/codedb.instructions.md` | Project-level instructions |
+| **Gemini CLI** | `~/.gemini/commands/codedb-instructions.toml` | TOML command file |
+| **Cursor** | `<your-repo>/.cursor/rules/codedb.instructions.md` | Project-level rules |
 
-<details>
-<summary><strong>Hermes</strong> — <code>~/.hermes/skills/codedb-instructions/SKILL.md</code></summary>
+### Agent Skills standard (Hermes, Claude, Codex, Antigravity, OpenCode)
 
-Uses the Agent Skills standard. Copy the skill directory:
+These agents share the same SKILL.md format. Copy and rename:
 
 ```bash
+# Example: Hermes
 mkdir -p ~/.hermes/skills/codedb-instructions
-cp skills/hermes/codedb-instructions/SKILL.md ~/.hermes/skills/codedb-instructions/SKILL.md
-```
+cp skills/codedb-instructions.md ~/.hermes/skills/codedb-instructions/SKILL.md
 
-Hermes auto-discovers skills in `~/.hermes/skills/`. Restart your session to load.
-
-</details>
-
-<details>
-<summary><strong>Claude Code</strong> — <code>~/.claude/skills/codedb-instructions/SKILL.md</code></summary>
-
-Uses the Agent Skills standard. Copy the skill directory:
-
-```bash
+# Example: Claude Code
 mkdir -p ~/.claude/skills/codedb-instructions
-cp skills/claude/codedb-instructions/SKILL.md ~/.claude/skills/codedb-instructions/SKILL.md
+cp skills/codedb-instructions.md ~/.claude/skills/codedb-instructions/SKILL.md
 ```
 
-Invoke with `/codedb-instructions` slash command in Claude Code.
+### GitHub Copilot (VS Code / Copilot in IDE)
 
-</details>
-
-<details>
-<summary><strong>OpenAI Codex</strong> — <code>~/.codex/skills/codedb-instructions/SKILL.md</code></summary>
-
-Uses the Agent Skills standard. Copy the skill directory:
+Copy to your repo's `.github/instructions/` directory. The `.instructions.md`
+suffix is required for project-level rules. Copilot auto-loads files in
+`.github/instructions/`.
 
 ```bash
-mkdir -p ~/.codex/skills/codedb-instructions
-cp skills/codex/codedb-instructions/SKILL.md ~/.codex/skills/codedb-instructions/SKILL.md
+cp skills/codedb-instructions.md /path/to/your/repo/.github/instructions/codedb.instructions.md
 ```
 
-Codex auto-discovers skills in `~/.codex/skills/`.
+### Gemini CLI
 
-</details>
-
-<details>
-<summary><strong>GitHub Copilot</strong> — <code>.github/instructions/codedb.instructions.md</code></summary>
-
-Project-level instructions for VS Code / Copilot in IDE. Copy to your repo's `.github/instructions/` directory:
-
-```bash
-cp skills/copilot/codedb.instructions.md /path/to/your/repo/.github/instructions/codedb.instructions.md
-```
-
-The `.instructions.md` suffix is required for project-level rules. Copilot auto-loads files in `.github/instructions/`.
-
-</details>
-
-<details>
-<summary><strong>Gemini CLI</strong> — <code>~/.gemini/commands/codedb-instructions.toml</code></summary>
-
-Gemini uses TOML command files, not markdown SKILL.md:
+Gemini uses TOML command files. Wrap the markdown content in a TOML `prompt`
+field:
 
 ```bash
 mkdir -p ~/.gemini/commands
-cp skills/gemini/codedb-instructions.toml ~/.gemini/commands/codedb-instructions.toml
+# Convert: wrap the markdown in a TOML prompt string
+echo 'prompt = """' > ~/.gemini/commands/codedb-instructions.toml
+cat skills/codedb-instructions.md >> ~/.gemini/commands/codedb-instructions.toml
+echo '"""' >> ~/.gemini/commands/codedb-instructions.toml
+echo 'description = "codedb code intelligence MCP tools"' >> ~/.gemini/commands/codedb-instructions.toml
 ```
 
-Invoke with `/codedb-instructions` slash command in Gemini CLI.
+### Cursor
 
-</details>
-
-<details>
-<summary><strong>Antigravity</strong> — <code>~/.agy/skills/codedb-instructions/SKILL.md</code></summary>
-
-Uses the Agent Skills standard. Copy the skill directory:
+Copy to your repo's `.cursor/rules/` directory:
 
 ```bash
-mkdir -p ~/.agy/skills/codedb-instructions
-cp skills/antigravity/codedb-instructions/SKILL.md ~/.agy/skills/codedb-instructions/SKILL.md
+cp skills/codedb-instructions.md /path/to/your/repo/.cursor/rules/codedb.instructions.md
 ```
-
-Antigravity auto-discovers skills in `~/.agy/skills/`.
-
-</details>
-
-<details>
-<summary><strong>OpenCode / Crush</strong> — <code>~/.config/opencode/skills/codedb-instructions/SKILL.md</code></summary>
-
-Uses the Agent Skills standard. Copy the skill directory:
-
-```bash
-mkdir -p ~/.config/opencode/skills/codedb-instructions
-cp skills/opencode/codedb-instructions/SKILL.md ~/.config/opencode/skills/codedb-instructions/SKILL.md
-```
-
-Load on-demand via the skill tool in OpenCode.
-
-</details>
-
-<details>
-<summary><strong>Standalone (any platform)</strong> — <code>skills/codedb-instructions.md</code></summary>
-
-For any platform that reads plain markdown instructions, use the standalone file at `skills/codedb-instructions.md`. Copy it to your agent's instruction or rules directory.
-
-```bash
-cp skills/codedb-instructions.md /path/to/your/agent/rules/
-```
-
-</details>
 
 ---
 
@@ -649,16 +601,24 @@ codedb/
 ├── src/
 │   ├── csharp_parser.zig    # C# parser
 │   ├── fsharp_parser.zig    # F# parser
+│   ├── ssrs_parser.zig      # SSRS/RDL parser
+│   ├── tsql_parser.zig      # T-SQL parser
 │   ├── snapshot.zig          # Snapshot format
 │   ├── watcher.zig           # File walker + .codedbignore
 │   ├── config.zig            # .codedbrc loader
+│   ├── nuke.zig              # Built-in uninstall (codedb nuke)
 │   ├── mcp.zig               # MCP server
 │   └── ...
 ├── scripts/
-│   ├── setup-codedb.sh      # Consumer install
-│   ├── uninstall-codedb.sh  # Remove everything
+│   ├── setup-codedb.sh      # Consumer install (Linux/macOS)
+│   ├── setup-codedb.ps1     # Consumer install (Windows)
 │   ├── build-codedb.sh      # Build from source
-│   └── publish-codedb.sh    # Publish release
+│   ├── publish-codedb.sh    # Publish release
+│   └── e2e_mcp_test.py      # E2E MCP tests
+├── skills/
+│   └── codedb-instructions.md  # Agent usage guide (single file)
+├── docs/
+│   └── ...
 ├── build.zig
 └── README.md
 ```
