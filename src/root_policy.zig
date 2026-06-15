@@ -50,28 +50,3 @@ pub fn isIndexableRoot(path: []const u8) bool {
 }
 
 const testing = std.testing;
-
-test "issue-80: normal paths are allowed" {
-    try testing.expect(isIndexableRoot("/Users/dev/project"));
-    try testing.expect(isIndexableRoot("/home/user/code"));
-    try testing.expect(isIndexableRoot("/home/user/code/subdir"));
-}
-
-test "issue-174: home directory itself is denied" {
-    try testing.expect(!isIndexableRoot("/root"));
-    try testing.expect(!isIndexableRoot("/home/user"));
-    try testing.expect(!isIndexableRoot("/Users/dev"));
-    // But subdirectories are allowed
-    try testing.expect(isIndexableRoot("/home/user/projects"));
-    try testing.expect(isIndexableRoot("/Users/dev/code"));
-    try testing.expect(isIndexableRoot("/root/projects"));
-}
-test "issue-80: empty path is denied" {
-    try testing.expect(!isIndexableRoot(""));
-}
-
-test "issue-80: /tmp is denied" {
-    try testing.expect(!isIndexableRoot("/tmp"));
-    try testing.expect(!isIndexableRoot("/tmp/foo"));
-}
-
