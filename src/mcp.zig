@@ -22,6 +22,11 @@ const telemetry_mod = @import("telemetry.zig");
 const git_mod = @import("git.zig");
 const root_policy = @import("root_policy.zig");
 const release_info = @import("release_info.zig");
+
+// Pull in extracted unit tests (issue-258, issue-353, snapshot cache).
+comptime {
+    _ = @import("mcp/tests.zig");
+}
 pub const DeferredScan = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -126,7 +131,7 @@ const ProjectCtx = struct {
     snapshot_cache: *SnapshotCache,
 };
 
-fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]u8 {
+pub fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]u8 {
     const hash = std.hash.Wyhash.hash(0, project_path);
     const home = cio.getHomeDir() orelse {
         return std.fmt.allocPrint(allocator, "{s}/.codedb", .{project_path}) catch null;
@@ -215,7 +220,7 @@ fn shouldLoadWordIndexForSearch(args: *const std.json.ObjectMap) bool {
     return saw_word_char;
 }
 
-const ProjectCache = struct {
+pub const ProjectCache = struct {
     const MAX_CACHED = 5;
 
     const Entry = struct {
@@ -232,7 +237,7 @@ const ProjectCache = struct {
     default_path: []const u8,
     default_snapshot_cache: SnapshotCache,
 
-    fn init(alloc_: std.mem.Allocator, default_path_: []const u8) ProjectCache {
+    pub fn init(alloc_: std.mem.Allocator, default_path_: []const u8) ProjectCache {
         return .{
             .mu = .{},
             .alloc = alloc_,
@@ -242,7 +247,7 @@ const ProjectCache = struct {
         };
     }
 
-    fn deinit(self: *ProjectCache) void {
+    pub fn deinit(self: *ProjectCache) void {
         self.default_snapshot_cache.deinit(self.alloc);
         for (&self.entries) |*slot| {
             if (slot.*) |entry| {
@@ -260,7 +265,7 @@ const ProjectCache = struct {
         self.alloc.destroy(entry);
     }
 
-    fn invalidate(self: *ProjectCache, path: []const u8) void {
+    pub fn invalidate(self: *ProjectCache, path: []const u8) void {
         self.mu.lock();
         defer self.mu.unlock();
 
@@ -275,7 +280,7 @@ const ProjectCache = struct {
         }
     }
 
-    fn get(
+    pub fn get(
         self: *ProjectCache,
         io: std.Io,
         path: ?[]const u8,
@@ -2102,7 +2107,7 @@ fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
     }
 }
 
-fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+pub fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const path = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path' argument") catch {};
         appendBundleArgKeysDiagnostic(alloc, out, args);
@@ -3078,250 +3083,3 @@ const getStr = mcpj.getStr;
 const getInt = mcpj.getInt;
 pub const getBool = mcpj.getBool;
 const eql = mcpj.eql;
-
-test "issue-258: cached project reads use the project root after contents are released" {
-    const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.createDirPath(io, "src");
-    try tmp.dir.writeFile(io, .{
-        .sub_path = "src/main.zig",
-        .data = "const project = \"secondary\";\n",
-    });
-
-    var project_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const project_path_len = try tmp.dir.realPathFile(io, ".", &project_path_buf);
-    const project_path = project_path_buf[0..project_path_len];
-
-    var snapshot_src = Explorer.init(testing.allocator);
-    defer snapshot_src.deinit();
-    snapshot_src.setRoot(io, project_path);
-    try snapshot_src.indexFile("src/main.zig", "const project = \"secondary\";\n");
-
-    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.snapshot", .{project_path});
-    defer testing.allocator.free(snap_path);
-    try snapshot_mod.writeSnapshot(io, &snapshot_src, project_path, snap_path, testing.allocator);
-
-    var default_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const default_path_len = try std.Io.Dir.cwd().realPathFile(io, ".", &default_path_buf);
-    const default_path = default_path_buf[0..default_path_len];
-
-    var default_explorer = Explorer.init(testing.allocator);
-    defer default_explorer.deinit();
-    var default_store = Store.init(testing.allocator);
-    defer default_store.deinit();
-
-    var cache = ProjectCache.init(testing.allocator, default_path);
-    defer cache.deinit();
-
-    const ctx = try cache.get(io, project_path, &default_explorer, &default_store);
-    ctx.explorer.releaseContents();
-
-    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"path\":\"src/main.zig\"}", .{});
-    defer parsed.deinit();
-
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(testing.allocator);
-    handleRead(io, testing.allocator, &parsed.value.object, &out, ctx.explorer);
-
-    try testing.expect(std.mem.indexOf(u8, out.items, "const project = \"secondary\";") != null);
-}
-
-test "ProjectCache loads project from central snapshot cache" {
-    const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.createDirPath(io, "src");
-    try tmp.dir.writeFile(io, .{
-        .sub_path = "src/main.zig",
-        .data = "pub fn cachedProject() void {}\n",
-    });
-
-    var project_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const project_path_len = try tmp.dir.realPathFile(io, ".", &project_path_buf);
-    const project_path = project_path_buf[0..project_path_len];
-
-    const data_dir = getProjectDataDir(testing.allocator, project_path) orelse return error.OutOfMemory;
-    defer testing.allocator.free(data_dir);
-    const central_snapshot = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.snapshot", .{data_dir});
-    defer testing.allocator.free(central_snapshot);
-    const project_txt = try std.fmt.allocPrint(testing.allocator, "{s}/project.txt", .{data_dir});
-    defer testing.allocator.free(project_txt);
-    defer {
-        std.Io.Dir.cwd().deleteFile(io, central_snapshot) catch {};
-        std.Io.Dir.cwd().deleteFile(io, project_txt) catch {};
-        std.Io.Dir.cwd().deleteDir(io, data_dir) catch {};
-    }
-
-    var snapshot_src = Explorer.init(testing.allocator);
-    defer snapshot_src.deinit();
-    snapshot_src.setRoot(io, project_path);
-    try snapshot_src.indexFile("src/main.zig", "pub fn cachedProject() void {}\n");
-    try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_src, project_path, testing.allocator);
-
-    const root_snapshot = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.snapshot", .{project_path});
-    defer testing.allocator.free(root_snapshot);
-    if (std.Io.Dir.cwd().access(io, root_snapshot, .{})) |_| {
-        return error.UnexpectedRootSnapshot;
-    } else |_| {}
-
-    var default_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const default_path_len = try std.Io.Dir.cwd().realPathFile(io, ".", &default_path_buf);
-    const default_path = default_path_buf[0..default_path_len];
-
-    var default_explorer = Explorer.init(testing.allocator);
-    defer default_explorer.deinit();
-    var default_store = Store.init(testing.allocator);
-    defer default_store.deinit();
-
-    var cache = ProjectCache.init(testing.allocator, default_path);
-    defer cache.deinit();
-
-    const ctx = try cache.get(io, project_path, &default_explorer, &default_store);
-    try testing.expect(ctx.explorer.outlines.contains("src/main.zig"));
-}
-
-test "issue-353: explicit default project loads snapshot when default explorer is empty" {
-    const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.createDirPath(io, "src");
-    try tmp.dir.writeFile(io, .{
-        .sub_path = "src/main.zig",
-        .data = "pub fn issue353() void {}\n",
-    });
-
-    var project_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const project_path_len = try tmp.dir.realPathFile(io, ".", &project_path_buf);
-    const project_path = project_path_buf[0..project_path_len];
-
-    const data_dir = getProjectDataDir(testing.allocator, project_path) orelse return error.OutOfMemory;
-    defer testing.allocator.free(data_dir);
-    const central_snapshot = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.snapshot", .{data_dir});
-    defer testing.allocator.free(central_snapshot);
-    const project_txt = try std.fmt.allocPrint(testing.allocator, "{s}/project.txt", .{data_dir});
-    defer testing.allocator.free(project_txt);
-    defer {
-        std.Io.Dir.cwd().deleteFile(io, central_snapshot) catch {};
-        std.Io.Dir.cwd().deleteFile(io, project_txt) catch {};
-        std.Io.Dir.cwd().deleteDir(io, data_dir) catch {};
-    }
-
-    var snapshot_src = Explorer.init(testing.allocator);
-    defer snapshot_src.deinit();
-    snapshot_src.setRoot(io, project_path);
-    try snapshot_src.indexFile("src/main.zig", "pub fn issue353() void {}\n");
-    try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_src, project_path, testing.allocator);
-
-    var default_explorer = Explorer.init(testing.allocator);
-    defer default_explorer.deinit();
-    default_explorer.setRoot(io, project_path);
-    var default_store = Store.init(testing.allocator);
-    defer default_store.deinit();
-
-    var cache = ProjectCache.init(testing.allocator, project_path);
-    defer cache.deinit();
-
-    const ctx = try cache.get(io, project_path, &default_explorer, &default_store);
-    try testing.expect(ctx.explorer != &default_explorer);
-    try testing.expect(ctx.explorer.outlines.contains("src/main.zig"));
-    try testing.expectEqual(@as(u64, 0), default_store.currentSeq());
-}
-
-test "issue-353: project cache invalidation reloads newly written snapshots" {
-    const io = testing.io;
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.createDirPath(io, "src");
-
-    var project_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const project_path_len = try tmp.dir.realPathFile(io, ".", &project_path_buf);
-    const project_path = project_path_buf[0..project_path_len];
-
-    const data_dir = getProjectDataDir(testing.allocator, project_path) orelse return error.OutOfMemory;
-    defer testing.allocator.free(data_dir);
-    const central_snapshot = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.snapshot", .{data_dir});
-    defer testing.allocator.free(central_snapshot);
-    const project_txt = try std.fmt.allocPrint(testing.allocator, "{s}/project.txt", .{data_dir});
-    defer testing.allocator.free(project_txt);
-    defer {
-        std.Io.Dir.cwd().deleteFile(io, central_snapshot) catch {};
-        std.Io.Dir.cwd().deleteFile(io, project_txt) catch {};
-        std.Io.Dir.cwd().deleteDir(io, data_dir) catch {};
-    }
-
-    var snapshot_src = Explorer.init(testing.allocator);
-    defer snapshot_src.deinit();
-    snapshot_src.setRoot(io, project_path);
-    try snapshot_src.indexFile("src/old.zig", "pub fn oldSymbol() void {}\n");
-    try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_src, project_path, testing.allocator);
-
-    var default_explorer = Explorer.init(testing.allocator);
-    defer default_explorer.deinit();
-    var default_store = Store.init(testing.allocator);
-    defer default_store.deinit();
-
-    var cache = ProjectCache.init(testing.allocator, "/Users/example/default");
-    defer cache.deinit();
-
-    const old_ctx = try cache.get(io, project_path, &default_explorer, &default_store);
-    try testing.expect(old_ctx.explorer.outlines.contains("src/old.zig"));
-
-    var snapshot_next = Explorer.init(testing.allocator);
-    defer snapshot_next.deinit();
-    snapshot_next.setRoot(io, project_path);
-    try snapshot_next.indexFile("src/new.zig", "pub fn newSymbol() void {}\n");
-    try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_next, project_path, testing.allocator);
-
-    cache.invalidate(project_path);
-
-    const new_ctx = try cache.get(io, project_path, &default_explorer, &default_store);
-    try testing.expect(!new_ctx.explorer.outlines.contains("src/old.zig"));
-    try testing.expect(new_ctx.explorer.outlines.contains("src/new.zig"));
-}
-
-test "codedb_snapshot cache reuses output until store seq changes" {
-    const io = testing.io;
-    const alloc = testing.allocator;
-
-    var explorer = Explorer.init(alloc);
-    defer explorer.deinit();
-    try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
-
-    var store = Store.init(alloc);
-    defer store.deinit();
-    _ = try store.recordSnapshot("src/main.zig", "pub fn main() void {}\n".len, 0xabc);
-
-    var agents = AgentRegistry.init(alloc);
-    defer agents.deinit();
-    _ = try agents.register("__filesystem__");
-
-    var bench_ctx = BenchContext.init(alloc, ".");
-    defer bench_ctx.deinit();
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, "{}", .{});
-    defer parsed.deinit();
-    const args = &parsed.value.object;
-
-    var first: std.ArrayList(u8) = .empty;
-    defer first.deinit(alloc);
-    bench_ctx.runDispatch(io, alloc, .codedb_snapshot, args, &first, &store, &explorer, &agents);
-
-    var second: std.ArrayList(u8) = .empty;
-    defer second.deinit(alloc);
-    bench_ctx.runDispatch(io, alloc, .codedb_snapshot, args, &second, &store, &explorer, &agents);
-    try testing.expectEqualStrings(first.items, second.items);
-
-    try explorer.indexFile("src/main.zig", "pub fn changed() void {}\n");
-    _ = try store.recordSnapshot("src/main.zig", "pub fn changed() void {}\n".len, 0xdef);
-
-    var third: std.ArrayList(u8) = .empty;
-    defer third.deinit(alloc);
-    bench_ctx.runDispatch(io, alloc, .codedb_snapshot, args, &third, &store, &explorer, &agents);
-    try testing.expect(std.mem.indexOf(u8, third.items, "changed") != null);
-    try testing.expect(!std.mem.eql(u8, first.items, third.items));
-}
