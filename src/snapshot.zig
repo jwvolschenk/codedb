@@ -980,55 +980,12 @@ fn parseJsonU64(json: []const u8, key: []const u8) ?u64 {
     return null;
 }
 
-/// Returns true if a file path looks like it may contain secrets.
-/// These files are excluded from snapshots to prevent accidental exposure.
-fn isSensitivePath(path: []const u8) bool {
-    const sensitive_names = [_][]const u8{
-        ".env",
-        ".env.local",
-        ".env.production",
-        ".env.development",
-        ".env.staging",
-        ".env.test",
-        ".dev.vars",
-        "credentials.json",
-        "service-account.json",
-        "secrets.json",
-        "secrets.yaml",
-        "secrets.yml",
-        ".npmrc",
-        ".pypirc",
-        ".netrc",
-        "id_rsa",
-        "id_ed25519",
-        ".pem",
-    };
 
-    // Check exact filename (basename)
-    const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| path[sep + 1 ..] else path;
+// Sensitive-path filter lives in path_safety.zig so the watcher, snapshot
+// writer, and HTTP/MCP servers all share one reviewable implementation.
+const path_safety = @import("path_safety.zig");
+const isSensitivePath = path_safety.isSensitivePath;
 
-    for (sensitive_names) |name| {
-        if (std.mem.eql(u8, basename, name)) return true;
-    }
-
-    // Catch .env, .env.anything; do NOT match .envoy, .envrc, .environment, etc.
-    if (basename.len >= 4 and std.mem.eql(u8, basename[0..4], ".env") and
-        (basename.len == 4 or basename[4] == '.')) return true;
-
-    // Check extensions
-    if (endsWith(basename, ".pem")) return true;
-    if (endsWith(basename, ".key")) return true;
-    if (endsWith(basename, ".p12")) return true;
-    if (endsWith(basename, ".pfx")) return true;
-    if (endsWith(basename, ".jks")) return true;
-
-    // Check directory patterns
-    if (std.mem.indexOf(u8, path, ".ssh/") != null) return true;
-    if (std.mem.indexOf(u8, path, ".gnupg/") != null) return true;
-    if (std.mem.indexOf(u8, path, ".aws/") != null) return true;
-
-    return false;
-}
 
 fn endsWith(s: []const u8, suffix: []const u8) bool {
     if (s.len < suffix.len) return false;
