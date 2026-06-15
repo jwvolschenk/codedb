@@ -11,7 +11,8 @@
 - ✅ **Tier 3.1** — done (`fe59723`) — `src/main.zig` is now a 23-line executable shell; CLI command handlers live under `src/commands/`, shared CLI helpers under `src/cli/`
 - ✅ **Tier 3.2** — done — `src/mcp/query.zig` is now a 9-line aggregator over `mcp/query/{driver,combo_boost,shared}.zig` and `mcp/query/steps/*.zig`
 - ✅ **Tier 3.3** — done — `src/server.zig` is now a 13-line aggregator over `server/{transport,routes,http_parsing}.zig`; `handleConnection` stayed byte-for-byte structural in `server/routes.zig` for the no-behavior-change split
-- ⬜ Tier 3.4+, 4.x, cross-cutting cleanup — next: split `src/explore/parse_utils.zig`
+- ✅ **Tier 3.4** — done — `src/explore/parse_utils.zig` is now a 95-line compatibility shim over focused search/outline/identifier/parser helper modules
+- ⬜ Tier 4.x, cross-cutting cleanup — next: split `src/tests.zig`
 
 ## Goals
 
@@ -52,7 +53,7 @@ Consumers continue to write `@import("foo.zig").Thing` — no caller-side change
 | `src/main.zig` | 23 | ✅ done (Tier 3.1) | was 1,331 — executable shell over `commands/mod.zig`, with command handlers in `commands/*.zig` and shared helpers in `cli/*.zig` |
 | `src/index/trigram.zig` | 30 | ✅ done (Tier 1.2) | was 1,482 — split into heap/mmap/any variants |
 | `src/watcher.zig` | 19 | ✅ done (Tier 2.4) | aggregator over `watcher/{skip_rules,filtered_walker,initial_scan,incremental}.zig` |
-| `src/explore/parse_utils.zig` | 1,299 | ⬜ pending (Tier 3.4) | grab-bag of per-language helpers |
+| `src/explore/parse_utils.zig` | 95 | ✅ done (Tier 3.4) | compatibility shim over focused utility modules |
 | `src/snapshot.zig` | 44 | ✅ done (Tier 2.3) | aggregator over `snapshot/{format,writer,loader_validated,loader_fast,sensitive}.zig` |
 | `src/cio.zig` | 45 | ✅ done (Tier 2.5) | was 903 — aggregator over `cio/{platform,file,sync,time,process,spawn}.zig` |
 | `src/csharp_parser.zig` | 962 | — | single-concern, optional polish |
@@ -223,7 +224,7 @@ The 754-line `handleQuery` switch became focused files for the dispatcher, share
 
 **Next cleanup:** `server/routes.zig` is still 607 lines because `handleConnection` was preserved as one handler for the structural split. A later cleanup can extract per-route functions and/or call shared MCP tool implementations; that dedup is **optional** and lower priority than Tier 3.4.
 
-### 3.4 — Split `src/explore/parse_utils.zig`
+### 3.4 — Split `src/explore/parse_utils.zig` — ✅ DONE
 
 Per-language helpers fan out under `explore/parsers/` (which also receives the `parseXLine` functions from Tier 2.2):
 
@@ -236,6 +237,8 @@ Per-language helpers fan out under `explore/parsers/` (which also receives the `
 | `explore/parsers/sql.zig` | `stripSqlLineComment`, `parseSqlCreate`, `SqlSymbol` |
 | `explore/parsers/shell_css.zig` | `firstShellWord`, `parseShellAssignment`, `parseCssVariable`, `parseCssSelector` |
 | `explore/parsers/misc.zig` | `extractAtName`, `extractLlvmGlobalName`, `extractLlvmLikeName`, `stripFortranComment`, `parseFortranUse`, `parseFortranTypeName`, `extractRubyMethodName`, `extractHclQuotedName`, `extractHclBlockName`, `extractStringLiteral`, `resolveDartImport`, `extractPythonModulePath`, `phpNamespaceToPath` |
+
+**Result:** `src/explore/parse_utils.zig` is now a 95-line compatibility shim preserving every existing `parse_utils.*` public symbol. The split added `explore/{search_utils,outline_builders,ident_utils}.zig` plus `explore/parsers/{c_family,sql,shell_css,misc}.zig`. Search/path/fuzzy helpers moved to `search_utils`; outline appends and C#/F# kind mapping moved to `outline_builders`; identifier helpers moved to `ident_utils`; language-specific helper routines moved under `explore/parsers/`. Verification passed: `zig build test`.
 
 ---
 
@@ -323,8 +326,8 @@ Each phase = one PR. CI must pass `zig build test` after every PR.
 6. ✅ **Tier 3.1** (main.zig) — independent. DONE.
 7. ✅ **Tier 3.2** (mcp/query.zig) — depends on Tier 2.1. DONE.
 8. ✅ **Tier 3.3** (server.zig) — independent. DONE.
-9. **Tier 3.4** (parse_utils.zig) — depends on Tier 2.2. ← NEXT
-10. **Tier 4.1** (tests.zig) — last; only after all source files are at their final locations.
+9. ✅ **Tier 3.4** (parse_utils.zig) — depends on Tier 2.2. DONE.
+10. **Tier 4.1** (tests.zig) — last; only after all source files are at their final locations. ← NEXT
 11. **Cross-cutting dedup + docs update.**
 
 ---
@@ -356,7 +359,7 @@ After full execution:
 | `main.zig` | 1,331 | ~250 (CLI shell) | — |
 | `index/trigram.zig` | 1,482 | ~30 (aggregator) | ✅ 30 |
 | `watcher.zig` | 1,371 | ~50 (aggregator) | — |
-| `explore/parse_utils.zig` | 1,300 | ~30 (aggregator) | — |
+| `explore/parse_utils.zig` | 1,300 | ~30 (aggregator) | ✅ 95 |
 | `snapshot.zig` | 1,124 | ~30 (aggregator) | — |
 | `cio.zig` | 903 | ~30 (aggregator) | — |
 | `mcp/query.zig` | 875 | ~80 (driver) | — |

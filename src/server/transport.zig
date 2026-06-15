@@ -87,7 +87,7 @@ pub const Conn = struct {
     stream: std.Io.net.Stream,
     writer: std.Io.net.Stream.Writer,
 
-    fn init(io: std.Io, stream: std.Io.net.Stream, buf: []u8) Conn {
+    pub fn init(io: std.Io, stream: std.Io.net.Stream, buf: []u8) Conn {
         return .{
             .io = io,
             .stream = stream,
