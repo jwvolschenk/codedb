@@ -6,8 +6,9 @@
 - ✅ **Tier 2.1** — done (`9a40afc`..`44b0844`) — finished the in-progress `mcp.zig` split (now a 74-line aggregator)
 - ✅ **Tier 2.2** — done (`ac79bbd`..`6cb4c4b`) — `src/explore.zig` 5,309 → 451 lines; see `plan/tier-2.2-explore-split.md` for the member-level breakdown and the new `explore/{type_extract,tree,deps,search,lifecycle,parsers/*}.zig` files
 - ✅ **Tier 2.3** — done — `src/snapshot.zig` now follows the aggregator pattern over `snapshot/{format,writer,loader_validated,loader_fast,sensitive}.zig`
-- ⬜ **Next up: Tier 2.4** (split `src/watcher.zig`)
-- ⬜ Tier 2.5, 3.x, 4.x, cross-cutting cleanup — not started
+- ✅ **Tier 2.4** — done — `src/watcher.zig` now follows the aggregator pattern over `watcher/{skip_rules,filtered_walker,initial_scan,incremental}.zig`
+- ⬜ **Next up: Tier 2.5** (split `src/cio.zig`)
+- ⬜ Tier 3.x, 4.x, cross-cutting cleanup — not started
 
 ## Goals
 
@@ -47,7 +48,7 @@ Consumers continue to write `@import("foo.zig").Thing` — no caller-side change
 | `src/mcp.zig` | 74 | ✅ done (Tier 2.1) | was 3,711 — now a thin aggregator over `mcp/*.zig` |
 | `src/main.zig` | 1,331 | ⬜ pending (Tier 3.1) | 727-line `mainImpl` switch-on-command |
 | `src/index/trigram.zig` | 30 | ✅ done (Tier 1.2) | was 1,482 — split into heap/mmap/any variants |
-| `src/watcher.zig` | 1,371 | ⬜ pending (Tier 2.4) | skip-lists + initial scan + incremental loop |
+| `src/watcher.zig` | 19 | ✅ done (Tier 2.4) | aggregator over `watcher/{skip_rules,filtered_walker,initial_scan,incremental}.zig` |
 | `src/explore/parse_utils.zig` | 1,299 | ⬜ pending (Tier 3.4) | grab-bag of per-language helpers |
 | `src/snapshot.zig` | 44 | ✅ done (Tier 2.3) | aggregator over `snapshot/{format,writer,loader_validated,loader_fast,sensitive}.zig` |
 | `src/cio.zig` | 903 | ⬜ pending (Tier 2.5) | platform + sync + time + spawn |
@@ -137,7 +138,7 @@ The central `Explorer` struct stays in `explore.zig`, but the per-language `pars
 
 `snapshot.zig` is now the aggregator and preserves the existing public API. `cleanupStaleTmpFiles` lives in `snapshot/format.zig` with the other binary-format helpers; `snapshot/sensitive.zig` stays focused on the shared `path_safety.zig` re-export.
 
-### 2.4 — Split `src/watcher.zig`
+### 2.4 — Split `src/watcher.zig` — ✅ DONE
 
 | Target | Source | Contents |
 |---|---|---|
