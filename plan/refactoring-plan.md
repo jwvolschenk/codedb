@@ -12,7 +12,8 @@
 - ✅ **Tier 3.2** — done — `src/mcp/query.zig` is now a 9-line aggregator over `mcp/query/{driver,combo_boost,shared}.zig` and `mcp/query/steps/*.zig`
 - ✅ **Tier 3.3** — done — `src/server.zig` is now a 13-line aggregator over `server/{transport,routes,http_parsing}.zig`; `handleConnection` stayed byte-for-byte structural in `server/routes.zig` for the no-behavior-change split
 - ✅ **Tier 3.4** — done — `src/explore/parse_utils.zig` is now a 95-line compatibility shim over focused search/outline/identifier/parser helper modules
-- ⬜ Tier 4.x, cross-cutting cleanup — next: split `src/tests.zig`
+- ✅ **Tier 4.1** — done — `src/tests.zig` is now a 31-line aggregator over 28 focused `src/tests/**/*.zig` files; largest test file is `src/tests/mcp_protocol.zig` at 1,401 lines
+- ⬜ Tier 4.x, cross-cutting cleanup — next: cross-cutting dedup + docs update
 
 ## Goals
 
@@ -47,7 +48,7 @@ Consumers continue to write `@import("foo.zig").Thing` — no caller-side change
 
 | File | Lines | Status | Notes |
 |---|---:|---|---|
-| `src/tests.zig` | 13,442 | ⬜ pending (Tier 4) | worst offender — 1,684 test decls concatenated |
+| `src/tests.zig` | 31 | ✅ done (Tier 4.1) | was 13,442 — aggregator over focused `src/tests/**/*.zig` files |
 | `src/explore.zig` | 451 | ✅ done (Tier 2.2) | was 5,309 — split into `explore/{type_extract,tree,deps,search,lifecycle,parsers/*}.zig` |
 | `src/mcp.zig` | 74 | ✅ done (Tier 2.1) | was 3,711 — now a thin aggregator over `mcp/*.zig` |
 | `src/main.zig` | 23 | ✅ done (Tier 3.1) | was 1,331 — executable shell over `commands/mod.zig`, with command handlers in `commands/*.zig` and shared helpers in `cli/*.zig` |
@@ -244,7 +245,7 @@ Per-language helpers fan out under `explore/parsers/` (which also receives the `
 
 ## Tier 4 — Tests refactor (do LAST, after all code splits land)
 
-### 4.1 — Split `src/tests.zig` (13,442 lines)
+### 4.1 — Split `src/tests.zig` (13,442 lines) — ✅ DONE
 
 Tests are grouped by concern already (visible in the outline). Strategy: one file per subsystem under `tests/`, each `tests/<x>.zig` is a standalone Zig source with the same imports its tests need. `tests.zig` becomes a thin aggregator:
 
@@ -304,6 +305,8 @@ Proposed split (each file ≤ ~1,500 lines, most < 800):
 
 The remaining ~4,000 lines of issue-specific regression tests get bucketed by subsystem.
 
+**Result:** `src/tests.zig` is now a 31-line compile-time import aggregator. The extracted suite lives in 28 focused files under `src/tests/`, including parser-specific files under `src/tests/parsers/`. The largest extracted file is `src/tests/mcp_protocol.zig` at 1,401 lines; the high-volume explorer and regression buckets were split into paired files to keep each file under the Tier 4 target. Verification passed: `zig build test`.
+
 ---
 
 ## Cross-cutting cleanup PR (after all splits land)
@@ -327,8 +330,8 @@ Each phase = one PR. CI must pass `zig build test` after every PR.
 7. ✅ **Tier 3.2** (mcp/query.zig) — depends on Tier 2.1. DONE.
 8. ✅ **Tier 3.3** (server.zig) — independent. DONE.
 9. ✅ **Tier 3.4** (parse_utils.zig) — depends on Tier 2.2. DONE.
-10. **Tier 4.1** (tests.zig) — last; only after all source files are at their final locations. ← NEXT
-11. **Cross-cutting dedup + docs update.**
+10. ✅ **Tier 4.1** (tests.zig) — DONE.
+11. **Cross-cutting dedup + docs update.** ← NEXT
 
 ---
 
@@ -353,7 +356,7 @@ After full execution:
 
 | File | Before | After (max) | Actual |
 |---|---:|---:|---:|
-| `tests.zig` | 13,442 | ~50 (aggregator) | — |
+| `tests.zig` | 13,442 | ~50 (aggregator) | ✅ 31 |
 | `explore.zig` | 5,309 | ~600 (struct + lifecycle) | ✅ 451 |
 | `mcp.zig` | 3,711 | ~50 (aggregator) | ✅ 74 |
 | `main.zig` | 1,331 | ~250 (CLI shell) | — |

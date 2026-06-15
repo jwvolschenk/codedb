@@ -1,0 +1,595 @@
+const std = @import("std");
+const cio = @import("../../cio.zig");
+const testing = std.testing;
+const io = std.testing.io;
+
+const Store = @import("../../store.zig").Store;
+const ChangeEntry = @import("../../store.zig").ChangeEntry;
+const AgentRegistry = @import("../../agent.zig").AgentRegistry;
+const Explorer = @import("../../explore.zig").Explorer;
+const csharp_parser = @import("../../csharp_parser.zig");
+const tsql_parser = @import("../../tsql_parser.zig");
+const ssrs_parser = @import("../../ssrs_parser.zig");
+const SearchResult = @import("../../explore.zig").SearchResult;
+const WordIndex = @import("../../index.zig").WordIndex;
+const TrigramIndex = @import("../../index.zig").TrigramIndex;
+const SparseNgramIndex = @import("../../index.zig").SparseNgramIndex;
+const pairWeight = @import("../../index.zig").pairWeight;
+const extractSparseNgrams = @import("../../index.zig").extractSparseNgrams;
+const buildCoveringSet = @import("../../index.zig").buildCoveringSet;
+const setFrequencyTable = @import("../../index.zig").setFrequencyTable;
+const resetFrequencyTable = @import("../../index.zig").resetFrequencyTable;
+const buildFrequencyTable = @import("../../index.zig").buildFrequencyTable;
+const writeFrequencyTable = @import("../../index.zig").writeFrequencyTable;
+const readFrequencyTable = @import("../../index.zig").readFrequencyTable;
+
+const WordTokenizer = @import("../../index.zig").WordTokenizer;
+const splitIdentifier = @import("../../index.zig").splitIdentifier;
+
+const version = @import("../../version.zig");
+const watcher = @import("../../watcher.zig");
+const edit_mod = @import("../../edit.zig");
+const snapshot_json = @import("../../snapshot_json.zig");
+const explore = @import("../../explore.zig");
+const extractLines = explore.extractLines;
+const isCommentOrBlank = explore.isCommentOrBlank;
+const Language = explore.Language;
+const SymbolKind = explore.SymbolKind;
+const DependencyGraph = explore.DependencyGraph;
+const SymbolLocation = explore.SymbolLocation;
+const mcp_mod = @import("../../mcp.zig");
+const main_mod = @import("../../main.zig");
+const nuke_mod = @import("../../nuke.zig");
+const update_mod = @import("../../update.zig");
+const Config = @import("../../config.zig").Config;
+// Pull in unit tests that were extracted from implementation files into
+// dedicated `*__tests.zig` companions. Zig collects test blocks through
+// @import, so referencing them here makes the test runner discover them.
+comptime {
+    _ = @import("../../config_tests.zig");
+    _ = @import("../../hot_cache_tests.zig");
+    _ = @import("../../root_policy_tests.zig");
+    _ = @import("../../tsql_parser_tests.zig");
+}
+const snapshot_mod = @import("../../snapshot.zig");
+const telemetry_mod = @import("../../telemetry.zig");
+const release_info = @import("../../release_info.zig");
+// ── Store tests ─────────────────────────────────────────────
+
+const decomposeRegex = @import("../../index.zig").decomposeRegex;
+
+const RegexQuery = @import("../../index.zig").RegexQuery;
+
+const packTrigram = @import("../../index.zig").packTrigram;
+
+const git_mod = @import("../../git.zig");
+
+const regexMatch = explore.regexMatch;
+
+const PostingMask = @import("../../index.zig").PostingMask;
+
+const normalizeChar = @import("../../index.zig").normalizeChar;
+
+const Trigram = @import("../../index.zig").Trigram;
+
+fn buildCliForHelpTests() !void {
+    const build = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ "zig", "build" },
+        .max_output_bytes = 8192,
+    });
+    defer testing.allocator.free(build.stdout);
+    defer testing.allocator.free(build.stderr);
+
+    try testing.expect(build.term == .Exited);
+    try testing.expect(build.term.Exited == 0);
+}
+
+const MmapTrigramIndex = @import("../../index.zig").MmapTrigramIndex;
+
+const AnyTrigramIndex = @import("../../index.zig").AnyTrigramIndex;
+
+const fuzzyScore = @import("../../explore.zig").fuzzyScore;
+
+fn expectOutlineSymbol(outline: *const explore.FileOutline, name: []const u8, kind: SymbolKind) !void {
+    for (outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, name) and sym.kind == kind) return;
+    }
+    return error.TestUnexpectedResult;
+}
+
+fn expectOutlineImport(outline: *const explore.FileOutline, import_path: []const u8) !void {
+    for (outline.imports.items) |imp| {
+        if (std.mem.eql(u8, imp, import_path)) return;
+    }
+    return error.TestUnexpectedResult;
+}
+
+fn containsString(haystack: []const []const u8, needle: []const u8) bool {
+    for (haystack) |item| {
+        if (std.mem.eql(u8, item, needle)) return true;
+    }
+    return false;
+}
+
+test "csharp parser: outlines modern declarations and member shapes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    try explorer.indexFile("src/Modern.cs",
+        \\extern alias Legacy;
+        \\global using System.Net.Http;
+        \\global using JsonNode = System.Text.Json.Nodes.JsonNode;
+        \\using System;
+        \\using Text = System.Text;
+        \\using static System.Math;
+        \\
+        \\namespace Demo.Core;
+        \\
+        \\[Obsolete] public partial record class Customer<T>(T Value);
+        \\public readonly record struct Money(decimal Amount);
+        \\public interface IRepository<T> { }
+        \\public interface IQualifiedContracts
+        \\{
+        \\    System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<string>> LoadAllAsync();
+        \\    global::System.String? Format(System.Guid id);
+        \\}
+        \\public interface IExplicitWorker
+        \\{
+        \\    System.Threading.Tasks.Task ExecuteExplicitAsync();
+        \\}
+        \\public enum Status { Active }
+        \\public delegate Task Handler<T>(T input);
+        \\
+        \\public class Service : IRepository<string>, IExplicitWorker
+        \\{
+        \\    private const string Url = "https://example.test/api";
+        \\    public event EventHandler? Changed;
+        \\    public string Name { get; init; }
+        \\    public Task<Result<T>> LoadAsync<T>(string id) => Task.FromResult(default(Result<T>));
+        \\    public async Task<Result<T>> SaveAsync<T>(
+        \\        string id,
+        \\        T value,
+        \\        CancellationToken cancellationToken
+        \\    )
+        \\    {
+        \\        return await LoadAsync<T>(id);
+        \\    }
+        \\    public T Create<T>() where T : new() => new T();
+        \\    public Service(string name) { }
+        \\    public void DisposeWork() { using var temp = Open(); using (var other = Open()) { } }
+        \\    public string this[int index] { get => Name; }
+        \\    public static explicit operator int(Service service) => 0;
+        \\    System.Threading.Tasks.Task IExplicitWorker.ExecuteExplicitAsync() => LoadAsync<string>("explicit");
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("src/Modern.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    try testing.expectEqual(Language.c_sharp, outline.language);
+    try testing.expectEqual(@as(usize, 6), outline.imports.items.len);
+    try expectOutlineImport(&outline, "Legacy");
+    try expectOutlineImport(&outline, "System.Net.Http");
+    try expectOutlineImport(&outline, "System.Text.Json.Nodes.JsonNode");
+    try expectOutlineImport(&outline, "System");
+    try expectOutlineImport(&outline, "System.Text");
+    try expectOutlineImport(&outline, "System.Math");
+    try expectOutlineSymbol(&outline, "Demo.Core", .type_alias);
+    try expectOutlineSymbol(&outline, "Customer", .class_def);
+    try expectOutlineSymbol(&outline, "Money", .struct_def);
+    try expectOutlineSymbol(&outline, "IRepository", .interface_def);
+    try expectOutlineSymbol(&outline, "IQualifiedContracts", .interface_def);
+    try expectOutlineSymbol(&outline, "IExplicitWorker", .interface_def);
+    try expectOutlineSymbol(&outline, "LoadAllAsync", .method);
+    try expectOutlineSymbol(&outline, "Format", .method);
+    try expectOutlineSymbol(&outline, "Status", .enum_def);
+    try expectOutlineSymbol(&outline, "Handler", .function);
+    try expectOutlineSymbol(&outline, "Service", .class_def);
+    try expectOutlineSymbol(&outline, "Url", .constant);
+    try expectOutlineSymbol(&outline, "Changed", .variable);
+    try expectOutlineSymbol(&outline, "Name", .variable);
+    try expectOutlineSymbol(&outline, "LoadAsync", .method);
+    try expectOutlineSymbol(&outline, "SaveAsync", .method);
+    try expectOutlineSymbol(&outline, "Create", .method);
+    try expectOutlineSymbol(&outline, "Service", .method);
+    try expectOutlineSymbol(&outline, "DisposeWork", .method);
+    try expectOutlineSymbol(&outline, "ExecuteExplicitAsync", .method);
+    try expectOutlineSymbol(&outline, "operator int", .method);
+
+    for (outline.symbols.items) |sym| {
+        try testing.expect(!std.mem.eql(u8, sym.name, "index"));
+        if (sym.kind == .class_def and std.mem.eql(u8, sym.name, "Service")) {
+            try testing.expect(sym.line_end > sym.line_start);
+            return;
+        }
+    }
+    return error.TestUnexpectedResult;
+}
+
+test "csharp parser: direct line parsing handles raw strings and operator detail" {
+    var raw_quotes: usize = 0;
+    csharp_parser.updateRawStringState("private const string Raw = \"\"\"", &raw_quotes);
+    try testing.expectEqual(@as(usize, 3), raw_quotes);
+
+    csharp_parser.updateRawStringState("public class FakeInRaw {}", &raw_quotes);
+    try testing.expectEqual(@as(usize, 3), raw_quotes);
+
+    csharp_parser.updateRawStringState("\"\"\";", &raw_quotes);
+    try testing.expectEqual(@as(usize, 0), raw_quotes);
+
+    switch (csharp_parser.parseLine("public static explicit operator int(Service service) => 0;")) {
+        .symbol => |sym| {
+            try testing.expectEqual(csharp_parser.Kind.method, sym.kind);
+            try testing.expectEqualStrings("operator int", sym.name);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    switch (csharp_parser.parseLine("private const string Url = \"https://example.test/api\"; // comment")) {
+        .symbol => |sym| {
+            try testing.expectEqual(csharp_parser.Kind.constant, sym.kind);
+            try testing.expectEqualStrings("Url", sym.name);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "csharp parser: type extraction from method signatures" {
+    // Method with generic return type and params
+    switch (csharp_parser.parseLine("public async Task<IViewComponentResult> InvokeAsync(ReportRequest request)")) {
+        .symbol => |sym| {
+            try testing.expectEqual(csharp_parser.Kind.method, sym.kind);
+            try testing.expectEqualStrings("InvokeAsync", sym.name);
+            try testing.expect(sym.return_type != null);
+            if (sym.return_type) |rt| {
+                try testing.expectEqualStrings("Task<IViewComponentResult>", rt);
+            }
+            try testing.expectEqual(@as(usize, 1), sym.param_types.len);
+            if (sym.param_types.len > 0) {
+                try testing.expectEqualStrings("ReportRequest", sym.param_types.buf[0]);
+            }
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    // Simple method
+    switch (csharp_parser.parseLine("public void DoSomething(int id, string name)")) {
+        .symbol => |sym| {
+            try testing.expectEqualStrings("DoSomething", sym.name);
+            try testing.expect(sym.return_type != null);
+            if (sym.return_type) |rt| {
+                try testing.expectEqualStrings("void", rt);
+            }
+            try testing.expectEqual(@as(usize, 2), sym.param_types.len);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    // Property with generic type
+    switch (csharp_parser.parseLine("public List<string> Names { get; set; }")) {
+        .symbol => |sym| {
+            try testing.expectEqual(csharp_parser.Kind.variable, sym.kind);
+            try testing.expectEqualStrings("Names", sym.name);
+            try testing.expect(sym.return_type != null);
+            if (sym.return_type) |rt| {
+                try testing.expectEqualStrings("List<string>", rt);
+            }
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    // Field
+    switch (csharp_parser.parseLine("private readonly ILogger _logger;")) {
+        .symbol => |sym| {
+            try testing.expectEqual(csharp_parser.Kind.variable, sym.kind);
+            try testing.expectEqualStrings("_logger", sym.name);
+            try testing.expect(sym.return_type != null);
+            if (sym.return_type) |rt| {
+                try testing.expectEqualStrings("ILogger", rt);
+            }
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    // Constructor (no return type)
+    switch (csharp_parser.parseLine("public MyClass(int x)")) {
+        .symbol => |sym| {
+            // Constructor - should still be detected
+            try testing.expectEqualStrings("MyClass", sym.name);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "csharp parser: captures attributes on following symbols" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("Controllers/HomeController.cs",
+        \\public class HomeController {
+        \\    [HttpPost]
+        \\    [ValidateAntiForgeryToken]
+        \\    public IActionResult Save() { return View(); }
+        \\    [HttpGet]
+        \\    public IActionResult Index() { return View(); }
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("Controllers/HomeController.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    var found_save = false;
+    for (outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "Save")) {
+            found_save = true;
+            try testing.expectEqual(@as(usize, 2), sym.decorators.len);
+            try testing.expectEqualStrings("[HttpPost]", sym.decorators[0]);
+            try testing.expectEqualStrings("[ValidateAntiForgeryToken]", sym.decorators[1]);
+        }
+    }
+    try testing.expect(found_save);
+}
+
+test "csharp parser: ignores comments attributes and declarations inside strings" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    try explorer.indexFile("src/Comments.cs",
+        \\namespace Demo.Comments {
+        \\    // public class CommentOnly {}
+        \\    [Metadata(
+        \\        Name = "public class FakeInAttribute {}",
+        \\        Targets = new[] { typeof(object) }
+        \\    )]
+        \\    public class Real {
+        \\        private const string Json = "{ \"class FakeInString\": true } // not a comment";
+        \\        private const string Verbatim = @$"https://example.test/{nameof(Real)}";
+        \\        private const string Quoted = @"{ ""not a brace"" }";
+        \\        private const string Raw = """
+        \\public class FakeInRaw {}
+        \\{ "raw": true }
+        \\""";
+        \\        [GeneratedCode("tool", "1.0")]
+        \\        public string Path { get; set; }
+        \\        public void AfterRaw() { }
+        \\    }
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("src/Comments.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    try expectOutlineSymbol(&outline, "Demo.Comments", .type_alias);
+    try expectOutlineSymbol(&outline, "Real", .class_def);
+    try expectOutlineSymbol(&outline, "Json", .constant);
+    try expectOutlineSymbol(&outline, "Verbatim", .constant);
+    try expectOutlineSymbol(&outline, "Quoted", .constant);
+    try expectOutlineSymbol(&outline, "Raw", .constant);
+    try expectOutlineSymbol(&outline, "Path", .variable);
+    try expectOutlineSymbol(&outline, "AfterRaw", .method);
+
+    for (outline.symbols.items) |sym| {
+        try testing.expect(!std.mem.eql(u8, sym.name, "CommentOnly"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "FakeInAttribute"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "FakeInString"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "FakeInRaw"));
+    }
+}
+
+test "csharp parser: skips minimal API invocation statements" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    try explorer.indexFile("src/Program.cs",
+        \\using Microsoft.AspNetCore.Builder;
+        \\using Microsoft.Extensions.DependencyInjection;
+        \\
+        \\var builder = WebApplication.CreateBuilder(args);
+        \\builder.Services.AddControllers();
+        \\var app = builder.Build();
+        \\app.MapGet("/health", () => Health());
+        \\await SeedAsync(app.Services);
+        \\await app.RunAsync();
+        \\if (!string.Equals(app.Environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase)) { }
+        \\
+        \\static IResult Health() => Results.Ok();
+        \\
+        \\public sealed class StartupMarker
+        \\{
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("src/Program.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    try expectOutlineImport(&outline, "Microsoft.AspNetCore.Builder");
+    try expectOutlineImport(&outline, "Microsoft.Extensions.DependencyInjection");
+    try expectOutlineSymbol(&outline, "Health", .method);
+    try expectOutlineSymbol(&outline, "StartupMarker", .class_def);
+
+    for (outline.symbols.items) |sym| {
+        try testing.expect(!std.mem.eql(u8, sym.name, "CreateBuilder"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "AddControllers"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "Build"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "MapGet"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "SeedAsync"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "RunAsync"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "Equals"));
+    }
+}
+
+test "razor parser: extracts directives and @code block declarations" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    try explorer.indexFile("Pages/Index.razor",
+        \\@page "/"
+        \\@using Microsoft.AspNetCore.Components
+        \\@inject ILogger<Index> Logger
+        \\@inherits LayoutComponentBase
+        \\@implements IDisposable
+        \\@typeparam TItem
+        \\@layout MainLayout
+        \\@namespace MyApp.Pages
+        \\
+        \\<h1>Hello</h1>
+        \\
+        \\@section Scripts {
+        \\    <script src="app.js"></script>
+        \\}
+        \\
+        \\@code {
+        \\    private int _count;
+        \\    public string Name { get; set; }
+        \\
+        \\    protected override void OnInitialized()
+        \\    {
+        \\        Logger.LogInformation("init");
+        \\    }
+        \\
+        \\    public void Dispose() { }
+        \\}
+    );
+
+    const outline = explorer.outlines.get("Pages/Index.razor").?;
+    try testing.expectEqual(explore.Language.razor, outline.language);
+
+    // Collect symbol names for easy assertion
+    var sym_names: std.ArrayList([]const u8) = .empty;
+    for (outline.symbols.items) |sym| {
+        try sym_names.append(alloc, sym.name);
+    }
+
+    // Directives
+    try testing.expect(containsString(sym_names.items, "\"/\""));
+    try testing.expect(containsString(sym_names.items, "LayoutComponentBase"));
+    try testing.expect(containsString(sym_names.items, "IDisposable"));
+    try testing.expect(containsString(sym_names.items, "TItem"));
+    try testing.expect(containsString(sym_names.items, "MainLayout"));
+    try testing.expect(containsString(sym_names.items, "MyApp.Pages"));
+    try testing.expect(containsString(sym_names.items, "@code"));
+    try testing.expect(containsString(sym_names.items, "Scripts"));
+
+    // Imports
+    var import_names: std.ArrayList([]const u8) = .empty;
+    for (outline.imports.items) |imp| {
+        try import_names.append(alloc, imp);
+    }
+    try testing.expect(containsString(import_names.items, "Microsoft.AspNetCore.Components"));
+    try testing.expect(containsString(import_names.items, "ILogger<Index>"));
+
+    // C# symbols inside @code block
+    try testing.expect(containsString(sym_names.items, "_count"));
+    try testing.expect(containsString(sym_names.items, "Name"));
+    try testing.expect(containsString(sym_names.items, "OnInitialized"));
+    try testing.expect(containsString(sym_names.items, "Dispose"));
+}
+
+test "razor parser: @functions block parsed as C# declarations" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    try explorer.indexFile("Views/Home.cshtml",
+        \\@model MyApp.Models.HomeViewModel
+        \\@using MyApp.Services
+        \\@inject IWebHostEnvironment Env
+        \\
+        \\<div>Content</div>
+        \\
+        \\@functions {
+        \\    public class Helper
+        \\    {
+        \\        public string Format(int value) => value.ToString();
+        \\    }
+        \\
+        \\    private const string DefaultTitle = "Home";
+        \\}
+    );
+
+    const outline = explorer.outlines.get("Views/Home.cshtml").?;
+    try testing.expectEqual(explore.Language.razor, outline.language);
+
+    var sym_names: std.ArrayList([]const u8) = .empty;
+    for (outline.symbols.items) |sym| {
+        try sym_names.append(alloc, sym.name);
+    }
+
+    // Directives
+    try testing.expect(containsString(sym_names.items, "MyApp.Models.HomeViewModel"));
+    try testing.expect(containsString(sym_names.items, "@functions"));
+
+    // Imports
+    var import_names: std.ArrayList([]const u8) = .empty;
+    for (outline.imports.items) |imp| {
+        try import_names.append(alloc, imp);
+    }
+    try testing.expect(containsString(import_names.items, "MyApp.Services"));
+    try testing.expect(containsString(import_names.items, "IWebHostEnvironment"));
+
+    // C# inside @functions
+    try testing.expect(containsString(sym_names.items, "Helper"));
+    try testing.expect(containsString(sym_names.items, "Format"));
+    try testing.expect(containsString(sym_names.items, "DefaultTitle"));
+}
+
+test "razor parser: skips control flow and HTML event handlers" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    try explorer.indexFile("Pages/Skip.cshtml",
+        \\@page "/skip"
+        \\@model string
+        \\
+        \\@if (true) {
+        \\    <p>conditional</p>
+        \\}
+        \\
+        \\@foreach (var item in items) {
+        \\    <button @onclick="HandleClick">Click</button>
+        \\}
+        \\
+        \\@{
+        \\    var x = 1;
+        \\}
+    );
+
+    const outline = explorer.outlines.get("Pages/Skip.cshtml").?;
+    try testing.expectEqual(explore.Language.razor, outline.language);
+
+    var sym_names: std.ArrayList([]const u8) = .empty;
+    for (outline.symbols.items) |sym| {
+        try sym_names.append(alloc, sym.name);
+    }
+
+    // Should have @page route and @model
+    try testing.expect(containsString(sym_names.items, "\"/skip\""));
+    try testing.expect(containsString(sym_names.items, "string"));
+
+    // Should NOT have control flow or HTML event handler symbols
+    try testing.expect(!containsString(sym_names.items, "item"));
+    try testing.expect(!containsString(sym_names.items, "HandleClick"));
+    try testing.expect(!containsString(sym_names.items, "items"));
+}
+
+test "csharp: multi-field declaration emits a symbol per field" {
+    var buf: [csharp_parser.max_field_names][]const u8 = undefined;
+    const n = csharp_parser.extractFieldNames("private int a, b, c;", &buf);
+    try testing.expectEqual(@as(usize, 3), n);
+    try testing.expectEqualStrings("a", buf[0]);
+    try testing.expectEqualStrings("b", buf[1]);
+    try testing.expectEqualStrings("c", buf[2]);
+}
