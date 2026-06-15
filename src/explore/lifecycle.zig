@@ -694,6 +694,9 @@ pub fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []co
                         .report_item => unreachable,
                         .dataset_item => unreachable,
                         .datasource_item => unreachable,
+                        .report_metadata => .variable,
+                        .rptproj_property => .variable,
+                        .axys_macro => .constant,
                     };
                     var detail_buf: [256]u8 = undefined;
                     const structured = ssrs_parser.extractDetail(trimmed, sym.kind, &detail_buf);
@@ -722,6 +725,16 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
     // Post-process: collapse consecutive POCO properties in C# files
     if (parsed_outline.language == .c_sharp) {
         collapseConsecutiveProperties(allocator, &parsed_outline);
+    }
+
+    // Post-process: enrich SSRS outlines with multi-line constructs
+    // (Description, AXYS ConnectString, <Code> block, ReportParameter children).
+    if (parsed_outline.language == .ssrs_report or
+        parsed_outline.language == .ssrs_dataset or
+        parsed_outline.language == .ssrs_datasource or
+        parsed_outline.language == .ssrs_project)
+    {
+        ssrs_parser.enrichOutline(allocator, &parsed_outline, content);
     }
 
     return .{

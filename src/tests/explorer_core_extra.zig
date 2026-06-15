@@ -854,7 +854,8 @@ test "SSRS parser: RPTPROJ extracts datasource items as imports" {
 }
 
 test "SSRS parser: RDL ignores non-matching lines" {
-    const result = ssrs_parser.parseRdlLine("      <Author>Credo Capital Plc</Author>");
+    // <Style> is layout markup, not a semantic element — should not produce a symbol.
+    const result = ssrs_parser.parseRdlLine("      <Style><Border><Color>#000000</Color></Border></Style>");
     try testing.expect(result == .none);
 }
 
@@ -961,4 +962,480 @@ test "SSRS parser: integration — index RPTPROJ via Explorer" {
     try testing.expect(found_report);
     try testing.expect(found_dataset);
     try testing.expect(found_datasource);
+}
+
+// ── Tier 1: single-line parser additions ───────────────────────────
+
+test "SSRS parser: RDL extracts Author metadata" {
+    const result = ssrs_parser.parseRdlLine("      <Author>Credo Capital Plc</Author>");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("Author", result.symbol.name);
+    try testing.expect(result.symbol.kind == .report_metadata);
+}
+
+test "SSRS parser: RDL extracts Language metadata" {
+    const result = ssrs_parser.parseRdlLine("      <Language>en-GB</Language>");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("Language", result.symbol.name);
+    try testing.expect(result.symbol.kind == .report_metadata);
+}
+
+test "SSRS parser: RDL extracts rd:ReportID" {
+    const result = ssrs_parser.parseRdlLine("  <rd:ReportID>abc-123-def</rd:ReportID>");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("ReportID", result.symbol.name);
+    try testing.expect(result.symbol.kind == .report_metadata);
+}
+
+test "SSRS parser: RDL extracts rd:ReportServerUrl" {
+    const result = ssrs_parser.parseRdlLine("  <rd:ReportServerUrl>http://ssrs-prod/reportserver</rd:ReportServerUrl>");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("ReportServerUrl", result.symbol.name);
+    try testing.expect(result.symbol.kind == .report_metadata);
+}
+
+test "SSRS parser: RDL extracts Description (plain text)" {
+    const result = ssrs_parser.parseRdlLine("      <Description>Cash statement for a given period</Description>");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("Description", result.symbol.name);
+    try testing.expect(result.symbol.kind == .report_metadata);
+}
+
+test "SSRS parser: RDL extracts Field" {
+    const result = ssrs_parser.parseRdlLine("        <Field Name=\"ReportEntity\">");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("ReportEntity", result.symbol.name);
+    try testing.expect(result.symbol.kind == .variable);
+}
+
+test "SSRS parser: RSD extracts CommandType" {
+    const result = ssrs_parser.parseRsdLine("        <CommandType>StoredProcedure</CommandType>");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("CommandType", result.symbol.name);
+    try testing.expect(result.symbol.kind == .report_metadata);
+}
+
+test "SSRS parser: RDS extracts Extension" {
+    const result = ssrs_parser.parseRdsLine("      <Extension>SQL</Extension>");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("Extension", result.symbol.name);
+    try testing.expect(result.symbol.kind == .report_metadata);
+}
+
+test "SSRS parser: RPTPROJ extracts TargetReportFolder" {
+    const result = ssrs_parser.parseRptprojLine("    <TargetReportFolder>Pro_Portfolio</TargetReportFolder>");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("TargetReportFolder", result.symbol.name);
+    try testing.expect(result.symbol.kind == .rptproj_property);
+}
+
+test "SSRS parser: RPTPROJ extracts TargetServerURL" {
+    const result = ssrs_parser.parseRptprojLine("    <TargetServerURL>http://ssrs-prod/reportserver</TargetServerURL>");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("TargetServerURL", result.symbol.name);
+    try testing.expect(result.symbol.kind == .rptproj_property);
+}
+
+test "SSRS parser: RPTPROJ extracts TargetServerVersion" {
+    const result = ssrs_parser.parseRptprojLine("    <TargetServerVersion>SSRS2016</TargetServerVersion>");
+    try testing.expect(result == .symbol);
+    try testing.expectEqualStrings("TargetServerVersion", result.symbol.name);
+    try testing.expect(result.symbol.kind == .rptproj_property);
+}
+
+test "SSRS parser: extractDetail for Author metadata" {
+    var buf: [256]u8 = undefined;
+    const detail = ssrs_parser.extractDetail("      <Author>Credo Capital Plc</Author>", .report_metadata, &buf);
+    try testing.expectEqualStrings("Credo Capital Plc", detail);
+}
+
+test "SSRS parser: extractDetail for Description (plain text)" {
+    var buf: [256]u8 = undefined;
+    const detail = ssrs_parser.extractDetail(
+        "      <Description>Cash statement for a given period</Description>",
+        .report_metadata,
+        &buf,
+    );
+    try testing.expectEqualStrings("Cash statement for a given period", detail);
+}
+
+test "SSRS parser: extractDetail for Description (pipe-delimited)" {
+    var buf: [512]u8 = undefined;
+    const detail = ssrs_parser.extractDetail(
+        "      <Description>Section|Pro_Portfolio|Group|Report Packs|Description|Periodic report|Image|chart-line|Orientation|Portrait|</Description>",
+        .report_metadata,
+        &buf,
+    );
+    // Should contain parsed keys (lowercased) and known values.
+    try testing.expect(std.mem.indexOf(u8, detail, "section=Pro_Portfolio") != null);
+    try testing.expect(std.mem.indexOf(u8, detail, "orientation=Portrait") != null);
+    try testing.expect(std.mem.indexOf(u8, detail, "description=Periodic report") != null);
+}
+
+test "SSRS parser: extractDetail for rptproj_property" {
+    var buf: [256]u8 = undefined;
+    const detail = ssrs_parser.extractDetail(
+        "    <TargetServerVersion>SSRS2016</TargetServerVersion>",
+        .rptproj_property,
+        &buf,
+    );
+    try testing.expectEqualStrings("SSRS2016", detail);
+}
+
+// ── Tier 2: post-pass enrichment (via parseContentForIndexing) ──────
+
+test "SSRS post-pass: enriches multiline Description" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Multiline description (one of the cases the line parser can't fully handle).
+    const rdl =
+        \\<Report xmlns="http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition">
+        \\  <Description>Section|Pro_Portfolio|Group|Report Packs|Description|Periodic report for compliance|Image|chart-line|Orientation|Portrait|</Description>
+        \\</Report>
+    ;
+
+    var parsed = try Explorer.parseContentForIndexing(alloc, "Test.rdl", rdl);
+    defer parsed.deinit();
+
+    var found_description = false;
+    for (parsed.outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "Description")) {
+            found_description = true;
+            if (sym.detail) |d| {
+                try testing.expect(std.mem.indexOf(u8, d, "section=Pro_Portfolio") != null);
+                try testing.expect(std.mem.indexOf(u8, d, "orientation=Portrait") != null);
+            } else {
+                return error.MissingDetail;
+            }
+        }
+    }
+    try testing.expect(found_description);
+}
+
+test "SSRS post-pass: AXYS DataSource emits macro symbol" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const rdl =
+        \\<Report xmlns="http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition">
+        \\  <DataSources>
+        \\    <DataSource Name="dsCashStatement">
+        \\      <ConnectionProperties>
+        \\        <DataProvider>AXYS</DataProvider>
+        \\        <ConnectString>="REPRUN -m_rp_test.mac -q -u " &amp; Chr(34) &amp; Parameters!pvc_FromDate.Value &amp; Chr(34)</ConnectString>
+        \\      </ConnectionProperties>
+        \\    </DataSource>
+        \\  </DataSources>
+        \\</Report>
+    ;
+
+    var parsed = try Explorer.parseContentForIndexing(alloc, "Test.rdl", rdl);
+    defer parsed.deinit();
+
+    // The AXYS macro symbol should be emitted (named after the .mac file).
+    var found_macro = false;
+    var macro_has_flag = false;
+    for (parsed.outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "rp_test.mac")) {
+            found_macro = true;
+            try testing.expect(sym.kind == .constant);
+            if (sym.detail) |d| {
+                // Detail is the flags bag or "axys macro" fallback.
+                if (std.mem.indexOf(u8, d, "-q") != null) macro_has_flag = true;
+                if (std.mem.indexOf(u8, d, "-u") != null) macro_has_flag = true;
+            }
+        }
+    }
+    try testing.expect(found_macro);
+    try testing.expect(macro_has_flag);
+
+    // The parent DataSource symbol should have an "AXYS ->" detail.
+    var ds_detail_patched = false;
+    for (parsed.outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "dsCashStatement")) {
+            if (sym.detail) |d| {
+                if (std.mem.indexOf(u8, d, "AXYS ->") != null) ds_detail_patched = true;
+            }
+        }
+    }
+    try testing.expect(ds_detail_patched);
+}
+
+test "SSRS post-pass: <Code> block emits VB functions with body ranges" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const rdl =
+        \\<Report xmlns="http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition">
+        \\  <Code>
+        \\    Function FormatDateMMDDYY(dtDate As DateTime) As String
+        \\        Return dtDate.ToString("MMddy")
+        \\    End Function
+        \\
+        \\    Function GetTruncatedValue(Value As Decimal, DecimalPoints As Integer) As Decimal
+        \\        Return Math.Round(Value, DecimalPoints)
+        \\    End Function
+        \\  </Code>
+        \\</Report>
+    ;
+
+    var parsed = try Explorer.parseContentForIndexing(alloc, "Test.rdl", rdl);
+    defer parsed.deinit();
+
+    var found_format = false;
+    var found_trunc = false;
+    for (parsed.outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "FormatDateMMDDYY")) {
+            found_format = true;
+            try testing.expect(sym.kind == .function);
+            // line_end must be > line_start (the End Function line).
+            try testing.expect(sym.line_end > sym.line_start);
+        }
+        if (std.mem.eql(u8, sym.name, "GetTruncatedValue")) {
+            found_trunc = true;
+            try testing.expect(sym.kind == .function);
+            try testing.expect(sym.line_end > sym.line_start);
+        }
+    }
+    try testing.expect(found_format);
+    try testing.expect(found_trunc);
+}
+
+test "SSRS post-pass: VB function with Private modifier still matched" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const rdl =
+        \\<Report xmlns="http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition">
+        \\  <Code>
+        \\    Private Function IsDev(srv As String) As Boolean
+        \\        Return srv.Contains("dev")
+        \\    End Function
+        \\  </Code>
+        \\</Report>
+    ;
+
+    var parsed = try Explorer.parseContentForIndexing(alloc, "Test.rdl", rdl);
+    defer parsed.deinit();
+
+    var found = false;
+    for (parsed.outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "IsDev")) {
+            found = true;
+            try testing.expect(sym.kind == .function);
+        }
+    }
+    try testing.expect(found);
+}
+
+test "SSRS post-pass: VB Sub (not Function) matched" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const rdl =
+        \\<Report xmlns="http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition">
+        \\  <Code>
+        \\    Sub LogEvent(msg As String)
+        \\        ' side-effect only
+        \\    End Sub
+        \\  </Code>
+        \\</Report>
+    ;
+
+    var parsed = try Explorer.parseContentForIndexing(alloc, "Test.rdl", rdl);
+    defer parsed.deinit();
+
+    var found = false;
+    for (parsed.outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "LogEvent")) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "SSRS post-pass: ReportParameter enriched with DataType + Hidden" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const rdl =
+        \\<Report xmlns="http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition">
+        \\  <ReportParameters>
+        \\    <ReportParameter Name="pvc_FromDate">
+        \\      <DataType>String</DataType>
+        \\      <Hidden>true</Hidden>
+        \\      <DefaultValue>
+        \\        <Values>
+        \\          <Value>=FormatDateMMDDYY(Today())</Value>
+        \\        </Values>
+        \\      </DefaultValue>
+        \\    </ReportParameter>
+        \\  </ReportParameters>
+        \\</Report>
+    ;
+
+    var parsed = try Explorer.parseContentForIndexing(alloc, "Test.rdl", rdl);
+    defer parsed.deinit();
+
+    var found = false;
+    for (parsed.outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "pvc_FromDate")) {
+            found = true;
+            if (sym.detail) |d| {
+                try testing.expect(std.mem.indexOf(u8, d, "String") != null);
+                try testing.expect(std.mem.indexOf(u8, d, "hidden") != null);
+                try testing.expect(std.mem.indexOf(u8, d, "default=") != null);
+            } else {
+                return error.MissingDetail;
+            }
+        }
+    }
+    try testing.expect(found);
+}
+
+test "SSRS post-pass: RSD QueryParameter default enriched" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const rsd =
+        \\<DataSet Name="GetDate">
+        \\  <Query>
+        \\    <DataSourceReference>Autumn</DataSourceReference>
+        \\    <QueryParameters>
+        \\      <QueryParameter Name="@pvc_FromDate">
+        \\        <Value>=Parameters!pvc_FromDate.Value</Value>
+        \\      </QueryParameter>
+        \\    </QueryParameters>
+        \\  </Query>
+        \\</DataSet>
+    ;
+
+    var parsed = try Explorer.parseContentForIndexing(alloc, "Test.rsd", rsd);
+    defer parsed.deinit();
+
+    var found = false;
+    for (parsed.outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "@pvc_FromDate")) {
+            found = true;
+            if (sym.detail) |d| {
+                try testing.expect(std.mem.indexOf(u8, d, "default=") != null);
+            }
+        }
+    }
+    try testing.expect(found);
+}
+
+test "SSRS post-pass: RDS ConnectString enriched with server/database" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const rds =
+        \\<RptDataSource xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" Name="Autumn">
+        \\  <ConnectionProperties>
+        \\    <Extension>SQL</Extension>
+        \\    <ConnectString>Data Source=sql-dbc1;Initial Catalog=Autumn</ConnectString>
+        \\  </ConnectionProperties>
+        \\</RptDataSource>
+    ;
+
+    var parsed = try Explorer.parseContentForIndexing(alloc, "Autumn.rds", rds);
+    defer parsed.deinit();
+
+    // The ConnectString symbol should have a server=/db= detail summary.
+    var found_patched = false;
+    for (parsed.outline.symbols.items) |sym| {
+        if (sym.detail) |d| {
+            if (std.mem.indexOf(u8, d, "server=sql-dbc1") != null and
+                std.mem.indexOf(u8, d, "db=Autumn") != null)
+            {
+                found_patched = true;
+            }
+        }
+    }
+    try testing.expect(found_patched);
+}
+
+test "SSRS post-pass: shared DataSource (no inline ConnectString) leaves no AXYS symbol" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const rdl =
+        \\<Report xmlns="http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition">
+        \\  <DataSources>
+        \\    <DataSource Name="Autumn">
+        \\      <DataSourceReference>/Data Sources/Autumn</DataSourceReference>
+        \\    </DataSource>
+        \\  </DataSources>
+        \\</Report>
+    ;
+
+    var parsed = try Explorer.parseContentForIndexing(alloc, "Test.rdl", rdl);
+    defer parsed.deinit();
+
+    // No macro should be synthesized for a shared reference.
+    for (parsed.outline.symbols.items) |sym| {
+        if (sym.kind == .constant) {
+            return error.UnexpectedConstantSymbol;
+        }
+    }
+}
+
+test "SSRS post-pass: SQL ConnectString (non-AXYS) leaves no macro symbol" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const rdl =
+        \\<Report xmlns="http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition">
+        \\  <DataSources>
+        \\    <DataSource Name="SqlDS">
+        \\      <ConnectionProperties>
+        \\        <DataProvider>SQL</DataProvider>
+        \\        <ConnectString>Data Source=sql-prod;Initial Catalog=Reports</ConnectString>
+        \\      </ConnectionProperties>
+        \\    </DataSource>
+        \\  </DataSources>
+        \\</Report>
+    ;
+
+    var parsed = try Explorer.parseContentForIndexing(alloc, "Test.rdl", rdl);
+    defer parsed.deinit();
+
+    for (parsed.outline.symbols.items) |sym| {
+        if (sym.kind == .constant) {
+            return error.UnexpectedConstantSymbol;
+        }
+    }
+}
+
+test "SSRS post-pass: malformed <Code> block (no End Function) emits nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const rdl =
+        \\<Report xmlns="http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition">
+        \\  <Code>
+        \\    Function Orphaned(arg As String) As String
+        \\      ' no End Function follows
+        \\  </Code>
+        \\</Report>
+    ;
+
+    var parsed = try Explorer.parseContentForIndexing(alloc, "Test.rdl", rdl);
+    defer parsed.deinit();
+
+    for (parsed.outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "Orphaned")) {
+            return error.UnexpectedEmittedFunction;
+        }
+    }
 }
