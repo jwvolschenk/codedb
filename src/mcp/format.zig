@@ -30,25 +30,25 @@ pub fn mcpFormatDuration(buf: []u8, ns: i128) []const u8 {
     if (ns <= 0) return "";
     const uns: u64 = @intCast(@min(ns, std.math.maxInt(u64)));
     if (uns < 1_000) {
-        return std.fmt.bufPrint(buf, "  " ++ MCP_CYAN ++ MCP_ZAP ++ " {d}ns" ++ MCP_RESET, .{uns}) catch "";
+        return std.fmt.bufPrint(buf, "  " ++ MCP_CYAN ++ MCP_ZAP ++ " {d}ns " ++ MCP_RESET, .{uns}) catch "";
     } else if (uns < 1_000_000) {
         const us = uns / 1_000;
         const frac = (uns % 1_000) / 100;
-        return std.fmt.bufPrint(buf, "  " ++ MCP_CYAN ++ MCP_ZAP ++ " {d}.{d}us" ++ MCP_RESET, .{ us, frac }) catch "";
+        return std.fmt.bufPrint(buf, "  " ++ MCP_CYAN ++ MCP_ZAP ++ " {d}.{d}us " ++ MCP_RESET, .{ us, frac }) catch "";
     } else if (uns < 1_000_000_000) {
         const ms = uns / 1_000_000;
         const frac = (uns % 1_000_000) / 100_000;
         if (ms < 10) {
-            return std.fmt.bufPrint(buf, "  " ++ MCP_BRIGHT_GREEN ++ MCP_ZAP ++ " {d}.{d}ms" ++ MCP_RESET, .{ ms, frac }) catch "";
+            return std.fmt.bufPrint(buf, "  " ++ MCP_BRIGHT_GREEN ++ MCP_ZAP ++ " {d}.{d}ms " ++ MCP_RESET, .{ ms, frac }) catch "";
         } else if (ms < 100) {
-            return std.fmt.bufPrint(buf, "  " ++ MCP_GREEN ++ "{d}.{d}ms" ++ MCP_RESET, .{ ms, frac }) catch "";
+            return std.fmt.bufPrint(buf, "  " ++ MCP_GREEN ++ "{d}.{d}ms " ++ MCP_RESET, .{ ms, frac }) catch "";
         } else {
-            return std.fmt.bufPrint(buf, "  " ++ MCP_BLUE ++ "{d}.{d}ms" ++ MCP_RESET, .{ ms, frac }) catch "";
+            return std.fmt.bufPrint(buf, "  " ++ MCP_BLUE ++ "{d}.{d}ms " ++ MCP_RESET, .{ ms, frac }) catch "";
         }
     } else {
         const s = uns / 1_000_000_000;
         const frac = (uns % 1_000_000_000) / 100_000_000;
-        return std.fmt.bufPrint(buf, "  " ++ MCP_YELLOW ++ "{d}.{d}s" ++ MCP_RESET, .{ s, frac }) catch "";
+        return std.fmt.bufPrint(buf, "  " ++ MCP_YELLOW ++ "{d}.{d}s " ++ MCP_RESET, .{ s, frac }) catch "";
     }
 }
 

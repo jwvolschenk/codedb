@@ -583,6 +583,520 @@ fn appendSynthesizedSymbol(
     };
 }
 
+// ── Tablix structure enrichment ────────────────────────────────────
+//
+// Extracts the TablixRowHierarchy, TablixColumnHierarchy, and
+// TablixRows from RDL files so agents can see the full report layout
+// from the outline without reading thousands of lines of XML.
+
+/// Count occurrences of a needle in `haystack`.
+fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
+    var count: usize = 0;
+    var pos: usize = 0;
+    while (pos <= haystack.len) {
+        const found = std.mem.indexOfPos(u8, haystack, pos, needle) orelse break;
+        count += 1;
+        pos = found + needle.len;
+    }
+    return count;
+}
+
+/// Find the position of the Nth occurrence of `needle` in `haystack` (0-indexed).
+fn findNthOccurrence(haystack: []const u8, needle: []const u8, n: usize) ?usize {
+    var pos: usize = 0;
+    var i: usize = 0;
+    while (pos <= haystack.len) {
+        const found = std.mem.indexOfPos(u8, haystack, pos, needle) orelse return null;
+        if (i == n) return found;
+        i += 1;
+        pos = found + needle.len;
+    }
+    return null;
+}
+
+/// Extract column widths from <TablixColumn><Width>...</Width></TablixColumn>
+/// elements. Returns the count and writes a comma-separated summary into buf.
+fn extractColumnWidths(content: []const u8, col_hierarchy_range: struct { start: usize, end: usize }, buf: []u8) struct { count: usize, written: usize } {
+    const block = content[col_hierarchy_range.start..col_hierarchy_range.end];
+    var written: usize = 0;
+    var count: usize = 0;
+    var search_from: usize = 0;
+    while (search_from <= block.len) {
+        const col_start = std.mem.indexOfPos(u8, block, search_from, "<TablixColumn>") orelse break;
+        const col_end = std.mem.indexOfPos(u8, block, col_start, "</TablixColumn>") orelse break;
+        const col_block = block[col_start..col_end];
+        if (extractMultilineTag(col_block, "<Width>", "</Width>")) |w| {
+            const width = std.mem.trim(u8, col_block[w.start..w.end], " \t\r\n");
+            if (width.len > 0) {
+                if (count > 0 and written < buf.len) {
+                    buf[written] = ',';
+                    written += 1;
+                    if (written < buf.len) {
+                        buf[written] = ' ';
+                        written += 1;
+                    }
+                }
+                const copy = @min(width.len, buf.len - written);
+                @memcpy(buf[written .. written + copy], width[0..copy]);
+                written += copy;
+            }
+        }
+        count += 1;
+        search_from = col_end + 1;
+    }
+    return .{ .count = count, .written = written };
+}
+
+/// Walk the TablixRowHierarchy's nested <TablixMembers> and emit symbols
+/// for groups, visibility expressions, and the overall structure summary.
+fn walkHierarchyMembers(
+    allocator: std.mem.Allocator,
+    outline: *FileOutline,
+    content: []const u8,
+    line_offsets: []const usize,
+    block: []const u8,
+    block_base_offset: usize,
+    depth: usize,
+    row_index: *usize,
+    summary_buf: []u8,
+    summary_written: *usize,
+) void {
+    // Find all <TablixMember> elements in this block (not nested).
+    var search_from: usize = 0;
+    while (search_from <= block.len) {
+        const member_start = std.mem.indexOfPos(u8, block, search_from, "<TablixMember>") orelse break;
+        // Find the matching closing tag, accounting for nesting.
+        const member_end = findMatchingCloseTag(block, member_start, "<TablixMember>", "</TablixMember>") orelse break;
+        const member_block = block[member_start..member_end];
+        const member_abs_start = block_base_offset + member_start;
+
+        // Check for <Group Name="..."> inside this member.
+        // Only check the direct content before any nested <TablixMembers>,
+        // since nested children may also contain Group/Visibility elements.
+        const nested_members_pos = std.mem.indexOf(u8, member_block, "<TablixMembers>");
+        const direct_content = if (nested_members_pos) |np| member_block[0..np] else member_block;
+
+        // Handle both <Group Name="X">...</Group> and <Group Name="X" /> (self-closing).
+        const has_group_open = std.mem.indexOf(u8, direct_content, "<Group") != null;
+        const has_group_close = std.mem.indexOf(u8, direct_content, "</Group>") != null;
+        const has_group_selfclose = !has_group_close and std.mem.indexOf(u8, direct_content, "/>") != null and has_group_open;
+
+        if (has_group_open and (has_group_close or has_group_selfclose)) {
+            // Extract group name from <Group Name="...">.
+            var group_name: ?[]const u8 = null;
+            if (std.mem.indexOf(u8, direct_content, "<Group")) |gpos| {
+                if (extractXmlAttribute(direct_content[gpos..], "Name")) |name| {
+                    group_name = name;
+                }
+            }
+
+            // Check for GroupExpression (only in non-self-closing groups).
+            var group_expr: ?[]const u8 = null;
+            if (has_group_close) {
+                if (extractMultilineTag(direct_content, "<Group", "</Group>")) |g| {
+                    const group_block = direct_content[g.start..g.end];
+                    if (extractMultilineTag(group_block, "<GroupExpression>", "</GroupExpression>")) |ge| {
+                        group_expr = std.mem.trim(u8, group_block[ge.start..ge.end], " \t\r\n");
+                    }
+                }
+            }
+
+            // Check for PageBreak.
+            const has_page_break = std.mem.indexOf(u8, direct_content, "<PageBreak>") != null;
+            var break_location: ?[]const u8 = null;
+            if (has_page_break) {
+                if (extractMultilineTag(direct_content, "<BreakLocation>", "</BreakLocation>")) |bl| {
+                    break_location = std.mem.trim(u8, direct_content[bl.start..bl.end], " \t\r\n");
+                }
+            }
+
+            // Build detail and emit symbol.
+            const gname = group_name orelse "unnamed";
+            var detail_buf: [512]u8 = undefined;
+            var dw: usize = 0;
+
+            // group name
+            const prefix = "group ";
+            @memcpy(detail_buf[0..prefix.len], prefix);
+            dw += prefix.len;
+            const gn_copy = @min(gname.len, detail_buf.len - dw);
+            @memcpy(detail_buf[dw .. dw + gn_copy], gname[0..gn_copy]);
+            dw += gn_copy;
+
+            if (group_expr) |ge| {
+                if (dw + 3 < detail_buf.len) {
+                    detail_buf[dw] = ',';
+                    detail_buf[dw + 1] = ' ';
+                    dw += 2;
+                }
+                const ge_copy = @min(ge.len, detail_buf.len - dw);
+                @memcpy(detail_buf[dw .. dw + ge_copy], ge[0..ge_copy]);
+                dw += ge_copy;
+            }
+
+            if (has_page_break) {
+                const pb_text = if (break_location) |bl| blk: {
+                    break :blk bl;
+                } else "Between";
+                const pb_prefix = ", PageBreak ";
+                if (dw + pb_prefix.len < detail_buf.len) {
+                    @memcpy(detail_buf[dw .. dw + pb_prefix.len], pb_prefix);
+                    dw += pb_prefix.len;
+                    const pb_copy = @min(pb_text.len, detail_buf.len - dw);
+                    @memcpy(detail_buf[dw .. dw + pb_copy], pb_text[0..pb_copy]);
+                    dw += pb_copy;
+                }
+            }
+
+            const line = offsetToLine(line_offsets, member_abs_start);
+            appendSynthesizedSymbol(allocator, outline, gname, .variable, line, line, detail_buf[0..dw]);
+
+            // Add to summary.
+            const sep = if (summary_written.* > 0) ", " else "";
+            addSummaryText(summary_buf, summary_written, sep);
+            addSummaryText(summary_buf, summary_written, gname);
+            if (has_page_break) {
+                addSummaryText(summary_buf, summary_written, " [PB]");
+            }
+        }
+
+        // Check for <Visibility><Hidden>...</Hidden></Visibility>.
+        // Only check direct content (not nested children).
+        if (extractMultilineTag(direct_content, "<Visibility>", "</Visibility>")) |v| {
+            const vis_block = direct_content[v.start..v.end];
+            if (extractMultilineTag(vis_block, "<Hidden>", "</Hidden>")) |h| {
+                const hidden_expr = std.mem.trim(u8, vis_block[h.start..h.end], " \t\r\n");
+                if (hidden_expr.len > 0) {
+                    var vis_detail_buf: [256]u8 = undefined;
+                    const vis_prefix = "hidden when ";
+                    @memcpy(vis_detail_buf[0..vis_prefix.len], vis_prefix);
+                    const he_copy = @min(hidden_expr.len, vis_detail_buf.len - vis_prefix.len);
+                    @memcpy(vis_detail_buf[vis_prefix.len .. vis_prefix.len + he_copy], hidden_expr[0..he_copy]);
+
+                    const vis_line = offsetToLine(line_offsets, member_abs_start);
+                    appendSynthesizedSymbol(
+                        allocator,
+                        outline,
+                        "visibility",
+                        .variable,
+                        vis_line,
+                        vis_line,
+                        vis_detail_buf[0 .. vis_prefix.len + he_copy],
+                    );
+
+                    // Extract RecordType value for summary (e.g. "S", "C", "T", "F").
+                    if (std.mem.indexOf(u8, hidden_expr, "RecordType")) |rt_pos| {
+                        if (std.mem.indexOfScalarPos(u8, hidden_expr, rt_pos, '"')) |q1| {
+                            if (q1 + 2 < hidden_expr.len) {
+                                if (std.mem.indexOfScalarPos(u8, hidden_expr, q1 + 1, '"')) |q2| {
+                                    const rt_val = hidden_expr[q1 + 1 .. q2];
+                                    addSummaryText(summary_buf, summary_written, ", RT=");
+                                    addSummaryText(summary_buf, summary_written, rt_val);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check for <KeepWithGroup> to classify as header/footer.
+        if (extractMultilineTag(member_block, "<KeepWithGroup>", "</KeepWithGroup>")) |kwg| {
+            const kwg_val = std.mem.trim(u8, member_block[kwg.start..kwg.end], " \t\r\n");
+            if (std.mem.eql(u8, kwg_val, "After")) {
+                // This is a header/separator row.
+                addSummaryText(summary_buf, summary_written, if (summary_written.* > 0) ", header" else "header");
+            } else if (std.mem.eql(u8, kwg_val, "Before")) {
+                addSummaryText(summary_buf, summary_written, ", footer");
+            }
+        }
+
+        // Recurse into nested <TablixMembers> if present.
+        // Use depth-aware matching since TablixMembers can nest.
+        if (findNestedBlock(member_block, "<TablixMembers>", "</TablixMembers>")) |nested_range| {
+            const nested_block = member_block[nested_range.start..nested_range.end];
+            const nested_abs = block_base_offset + member_start + nested_range.start;
+            walkHierarchyMembers(allocator, outline, content, line_offsets, nested_block, nested_abs, depth + 1, row_index, summary_buf, summary_written);
+        } else {
+            // Leaf member — this corresponds to a TablixRow.
+            row_index.* += 1;
+        }
+
+        search_from = member_end + 1;
+    }
+}
+
+/// Find a nested block with depth-aware matching. Unlike extractMultilineTag,
+/// this handles cases where the same tag type appears nested inside itself.
+/// Returns the range of content between the FIRST open_tag and the MATCHING
+/// close_tag (accounting for nesting depth).
+fn findNestedBlock(content: []const u8, open_tag: []const u8, close_tag: []const u8) ?struct { start: usize, end: usize } {
+    const open_pos = std.mem.indexOf(u8, content, open_tag) orelse return null;
+    const inner_start = open_pos + open_tag.len;
+    var depth: usize = 1;
+    var pos = inner_start;
+    while (pos < content.len) {
+        // Find next open and next close from current position.
+        const next_open = std.mem.indexOfPos(u8, content, pos, open_tag);
+        const next_close = std.mem.indexOfPos(u8, content, pos, close_tag);
+        if (next_close == null) return null; // unmatched
+        if (next_open != null and next_open.? < next_close.?) {
+            // Found a nested open before the next close.
+            depth += 1;
+            pos = next_open.? + open_tag.len;
+        } else {
+            // Found a close.
+            depth -= 1;
+            if (depth == 0) {
+                return .{ .start = inner_start, .end = next_close.? };
+            }
+            pos = next_close.? + close_tag.len;
+        }
+    }
+    return null;
+}
+
+/// Find the matching closing tag for an opening tag, accounting for nesting.
+/// Returns the position after the closing tag.
+fn findMatchingCloseTag(content: []const u8, open_pos: usize, open_tag: []const u8, close_tag: []const u8) ?usize {
+    var depth: usize = 1;
+    var pos = open_pos + open_tag.len;
+    while (pos < content.len) {
+        // Check for nested open.
+        if (std.mem.indexOfPos(u8, content, pos, open_tag)) |next_open| {
+            // Check for close before this open.
+            var search_pos = pos;
+            while (search_pos < content.len) {
+                if (std.mem.indexOfPos(u8, content, search_pos, close_tag)) |next_close| {
+                    if (next_close < next_open) {
+                        depth -= 1;
+                        if (depth == 0) return next_close + close_tag.len;
+                        search_pos = next_close + close_tag.len;
+                        continue;
+                    }
+                    break;
+                }
+                break;
+            }
+            depth += 1;
+            pos = next_open + open_tag.len;
+        } else {
+            // No more opens — find the next close.
+            if (std.mem.indexOfPos(u8, content, pos, close_tag)) |next_close| {
+                depth -= 1;
+                if (depth == 0) return next_close + close_tag.len;
+                pos = next_close + close_tag.len;
+            } else return null;
+        }
+    }
+    return null;
+}
+
+/// Append text to the summary buffer.
+fn addSummaryText(buf: []u8, written: *usize, text: []const u8) void {
+    const copy = @min(text.len, buf.len - written.*);
+    if (copy == 0) return;
+    @memcpy(buf[written.* .. written.* + copy], text[0..copy]);
+    written.* += copy;
+}
+
+/// Extract field references from TablixRows (Fields!X.Value patterns).
+fn extractFieldRefsFromRows(content: []const u8, rows_range: struct { start: usize, end: usize }, buf: []u8) usize {
+    const block = content[rows_range.start..rows_range.end];
+    var written: usize = 0;
+    var seen: [128][]const u8 = undefined;
+    var seen_count: usize = 0;
+    var search_from: usize = 0;
+    while (search_from < block.len) {
+        const field_pos = std.mem.indexOfPos(u8, block, search_from, "Fields!") orelse break;
+        // Read until non-identifier char.
+        var end = field_pos + 7; // skip "Fields!"
+        while (end < block.len) {
+            const c = block[end];
+            if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_' or c == '.') {
+                end += 1;
+            } else break;
+        }
+        const field_ref = block[field_pos..end];
+        // Check if already seen.
+        var dup = false;
+        for (seen[0..seen_count]) |s| {
+            if (std.mem.eql(u8, s, field_ref)) {
+                dup = true;
+                break;
+            }
+        }
+        if (!dup and seen_count < seen.len) {
+            seen[seen_count] = field_ref;
+            seen_count += 1;
+            if (written > 0 and written < buf.len) {
+                buf[written] = ',';
+                written += 1;
+                if (written < buf.len) {
+                    buf[written] = ' ';
+                    written += 1;
+                }
+            }
+            // Strip "Fields!" prefix for compactness.
+            const short = if (field_ref.len > 7) field_ref[7..] else field_ref;
+            const copy = @min(short.len, buf.len - written);
+            @memcpy(buf[written .. written + copy], short[0..copy]);
+            written += copy;
+        }
+        search_from = end;
+    }
+    return written;
+}
+
+/// Main entry point: extract tablix structure from an RDL file and
+/// emit synthesized symbols for the hierarchy, columns, rows, and fields.
+fn enrichTablixStructure(
+    allocator: std.mem.Allocator,
+    outline: *FileOutline,
+    content: []const u8,
+    line_offsets: []const usize,
+) void {
+    // Find the main <Tablix> element.
+    const tablix_start = std.mem.indexOf(u8, content, "<Tablix") orelse return;
+    const tablix_end = std.mem.indexOfPos(u8, content, tablix_start, "</Tablix>") orelse return;
+    const tablix_block = content[tablix_start..tablix_end];
+
+    // ── Column hierarchy ──
+    var col_count: usize = 0;
+    if (extractMultilineTag(tablix_block, "<TablixColumnHierarchy>", "</TablixColumnHierarchy>")) |ch| {
+        const ch_block = tablix_block[ch.start..ch.end];
+        col_count = countOccurrences(ch_block, "<TablixMember");
+        // Extract column widths from TablixBody/TablixColumns.
+        if (extractMultilineTag(tablix_block, "<TablixColumns>", "</TablixColumns>")) |tc| {
+            var width_buf: [512]u8 = undefined;
+            const widths = extractColumnWidths(tablix_block, .{ .start = tc.start, .end = tc.end }, &width_buf);
+            var col_detail_buf: [640]u8 = undefined;
+            const col_prefix = "columns=";
+            @memcpy(col_detail_buf[0..col_prefix.len], col_prefix);
+            var dw: usize = col_prefix.len;
+            // Write column count.
+            var count_buf: [16]u8 = undefined;
+            const count_str = std.fmt.bufPrint(&count_buf, "{}", .{col_count}) catch "?";
+            const cs_copy = @min(count_str.len, col_detail_buf.len - dw);
+            @memcpy(col_detail_buf[dw .. dw + cs_copy], count_str[0..cs_copy]);
+            dw += cs_copy;
+            if (widths.written > 0 and dw + 2 < col_detail_buf.len) {
+                col_detail_buf[dw] = ' ';
+                dw += 1;
+                col_detail_buf[dw] = '(';
+                dw += 1;
+                const w_copy = @min(widths.written, col_detail_buf.len - dw);
+                @memcpy(col_detail_buf[dw .. dw + w_copy], width_buf[0..w_copy]);
+                dw += w_copy;
+                if (dw < col_detail_buf.len) {
+                    col_detail_buf[dw] = ')';
+                    dw += 1;
+                }
+            }
+            const col_line = offsetToLine(line_offsets, tablix_start + ch.start);
+            appendSynthesizedSymbol(allocator, outline, "TablixColumnHierarchy", .variable, col_line, col_line, col_detail_buf[0..dw]);
+        }
+    }
+
+    // ── Row hierarchy ──
+    if (extractMultilineTag(tablix_block, "<TablixRowHierarchy>", "</TablixRowHierarchy>")) |rh| {
+        const rh_block = tablix_block[rh.start..rh.end];
+        const rh_abs = tablix_start + rh.start;
+        var summary_buf: [512]u8 = undefined;
+        var summary_written: usize = 0;
+        var row_index: usize = 0;
+        walkHierarchyMembers(allocator, outline, content, line_offsets, rh_block, rh_abs, 0, &row_index, &summary_buf, &summary_written);
+        // Emit the summary symbol.
+        const rh_line = offsetToLine(line_offsets, rh_abs);
+        appendSynthesizedSymbol(allocator, outline, "TablixRowHierarchy", .variable, rh_line, rh_line, summary_buf[0..summary_written]);
+    }
+
+    // ── TablixRows — field references ──
+    if (extractMultilineTag(tablix_block, "<TablixRows>", "</TablixRows>")) |tr| {
+        var field_buf: [2048]u8 = undefined;
+        const field_written = extractFieldRefsFromRows(tablix_block, .{ .start = tr.start, .end = tr.end }, &field_buf);
+        if (field_written > 0) {
+            const tr_line = offsetToLine(line_offsets, tablix_start + tr.start);
+            appendSynthesizedSymbol(allocator, outline, "TablixFields", .variable, tr_line, tr_line, field_buf[0..field_written]);
+        }
+    }
+
+    // ── DataSetName ──
+    if (extractMultilineTag(tablix_block, "<DataSetName>", "</DataSetName>")) |dsn| {
+        const dsname = std.mem.trim(u8, tablix_block[dsn.start..dsn.end], " \t\r\n");
+        if (dsname.len > 0) {
+            var ds_detail_buf: [128]u8 = undefined;
+            const ds_prefix = "dataset=";
+            @memcpy(ds_detail_buf[0..ds_prefix.len], ds_prefix);
+            const ds_copy = @min(dsname.len, ds_detail_buf.len - ds_prefix.len);
+            @memcpy(ds_detail_buf[ds_prefix.len .. ds_prefix.len + ds_copy], dsname[0..ds_copy]);
+            const dsn_line = offsetToLine(line_offsets, tablix_start + dsn.start);
+            appendSynthesizedSymbol(allocator, outline, "TablixDataSetName", .variable, dsn_line, dsn_line, ds_detail_buf[0 .. ds_prefix.len + ds_copy]);
+        }
+    }
+}
+
+/// Extract ReportItems! references from the PageHeader and emit them
+/// as a synthesized symbol so agents can see the invisible-textbox
+/// anchoring pattern without reading the page header XML.
+fn enrichPageHeaderRefs(
+    allocator: std.mem.Allocator,
+    outline: *FileOutline,
+    content: []const u8,
+    line_offsets: []const usize,
+) void {
+    const ph_range = extractMultilineTag(content, "<PageHeader>", "</PageHeader>") orelse return;
+    const ph_block = content[ph_range.start..ph_range.end];
+    const ph_abs = ph_range.start;
+
+    var ref_buf: [512]u8 = undefined;
+    var written: usize = 0;
+    var seen: [64][]const u8 = undefined;
+    var seen_count: usize = 0;
+    var search_from: usize = 0;
+    while (search_from < ph_block.len) {
+        const ref_pos = std.mem.indexOfPos(u8, ph_block, search_from, "ReportItems!") orelse break;
+        // Read until non-identifier char.
+        var end = ref_pos + 12; // skip "ReportItems!"
+        while (end < ph_block.len) {
+            const c = ph_block[end];
+            if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_') {
+                end += 1;
+            } else break;
+        }
+        const ref = ph_block[ref_pos..end];
+        // Deduplicate.
+        var dup = false;
+        for (seen[0..seen_count]) |s| {
+            if (std.mem.eql(u8, s, ref)) {
+                dup = true;
+                break;
+            }
+        }
+        if (!dup and seen_count < seen.len) {
+            seen[seen_count] = ref;
+            seen_count += 1;
+            if (written > 0 and written < ref_buf.len) {
+                ref_buf[written] = ',';
+                written += 1;
+                if (written < ref_buf.len) {
+                    ref_buf[written] = ' ';
+                    written += 1;
+                }
+            }
+            const copy = @min(ref.len, ref_buf.len - written);
+            @memcpy(ref_buf[written .. written + copy], ref[0..copy]);
+            written += copy;
+        }
+        search_from = end;
+    }
+
+    if (written > 0) {
+        const ph_line = offsetToLine(line_offsets, ph_abs);
+        appendSynthesizedSymbol(allocator, outline, "PageHeaderRefs", .variable, ph_line, ph_line, ref_buf[0..written]);
+    }
+}
+
 // ── .rdl enrichment ────────────────────────────────────────────────
 
 fn enrichRdl(
@@ -595,6 +1109,8 @@ fn enrichRdl(
     enrichDataSourcesAxys(allocator, outline, content, line_offsets);
     enrichCodeBlock(allocator, outline, content, line_offsets);
     enrichReportParameterBlocks(allocator, outline, content);
+    enrichTablixStructure(allocator, outline, content, line_offsets);
+    enrichPageHeaderRefs(allocator, outline, content, line_offsets);
 }
 
 /// Extract <Description>…</Description> across newlines and patch the
