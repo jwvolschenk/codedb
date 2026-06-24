@@ -40,6 +40,65 @@ warn() { printf "  ${Y}!${N} %s\n" "$*"; }
 err()  { printf "  ${R}✗${N} %s\n" "$*" >&2; }
 die()  { err "$@"; exit 1; }
 
+# ── Ensure gh can access the target repo ─────────────────────────────────
+# If the active account can't see the repo, list available accounts and
+# let the user switch before we start building.
+ensure_repo_access() {
+    # Already good?
+    gh repo view "$FORK_REPO" >/dev/null 2>&1 && return 0
+
+    local active_user
+    active_user="$(gh api user --jq '.login' 2>/dev/null || echo 'unknown')"
+
+    echo ""
+    warn "Active gh account '${active_user}' cannot access ${FORK_REPO}"
+    info "This is likely a private repo owned by a different account."
+    echo ""
+
+    # List all configured accounts
+    local accounts=()
+    while IFS= read -r line; do
+        [ -n "$line" ] && accounts+=("$line")
+    done < <(gh auth status 2>&1 | grep -oE 'Logged in to github\.com account [^ ]+' | awk '{print $NF}')
+
+    if [ ${#accounts[@]} -eq 0 ]; then
+        die "No gh accounts found. Run: gh auth login"
+    fi
+
+    printf "  ${W}Available gh accounts:${N}\n"
+    printf "\n"
+    for i in "${!accounts[@]}"; do
+        local marker=""
+        [[ "${accounts[$i]}" == "$active_user" ]] && marker=" ${D}(current)${N}"
+        printf "    ${C}%d)${N} %s%b\n" "$((i+1))" "${accounts[$i]}" "$marker"
+    done
+    printf "\n"
+    printf "  ${W}Switch to which account?${N} "
+    read -r choice
+
+    [ -n "$choice" ] || die "Selection required"
+
+    local idx=$((choice - 1))
+    if [ "$idx" -lt 0 ] || [ "$idx" -ge "${#accounts[@]}" ]; then
+        die "Invalid selection"
+    fi
+
+    local chosen="${accounts[$idx]}"
+    if [ "$chosen" == "$active_user" ]; then
+        die "Already using '${chosen}' — it cannot access ${FORK_REPO}"
+    fi
+
+    info "Switching to '${chosen}'..."
+    gh auth switch --user "$chosen" >/dev/null 2>&1 || die "Failed to switch to '${chosen}'"
+    ok "Switched to '${chosen}'"
+
+    # Verify access with the new account
+    if ! gh repo view "$FORK_REPO" >/dev/null 2>&1; then
+        die "Account '${chosen}' still cannot access ${FORK_REPO}. Check repo permissions."
+    fi
+    ok "Repo accessible: ${FORK_REPO}"
+}
+
 # ── Check prerequisites ──────────────────────────────────────────────────
 check_prereqs() {
     command -v zig >/dev/null 2>&1     || die "Zig not found. Install: https://ziglang.org/download/"
@@ -47,6 +106,7 @@ check_prereqs() {
     command -v curl >/dev/null 2>&1    || die "curl not found"
     command -v gh >/dev/null 2>&1      || die "gh CLI not found. Install: https://cli.github.com/"
     gh auth status >/dev/null 2>&1     || die "gh not authenticated. Run: gh auth login"
+    ensure_repo_access
 }
 
 # ── Map Zig target to artifact name ──────────────────────────────────────
