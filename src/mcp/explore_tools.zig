@@ -19,6 +19,7 @@ const getStr = mcpj.getStr;
 const getInt = mcpj.getInt;
 const getBool = mcpj.getBool;
 const ident = @import("../explore/ident_utils.zig");
+const WordHit = @import("../index.zig").WordHit;
 
 const mcp = @import("../mcp.zig");
 const appendBundleArgKeysDiagnostic = mcp.appendBundleArgKeysDiagnostic;
@@ -93,6 +94,7 @@ pub fn handleOutline(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
     };
     const compact = getBool(args, "compact");
     const grouped = getBool(args, "grouped");
+    const json_mode = isJsonMode(args);
     var outline = explorer.getOutline(path, alloc) catch {
         out.appendSlice(alloc, "error: outline retrieval failed") catch {};
         return;
@@ -110,6 +112,10 @@ pub fn handleOutline(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
         return;
     };
     defer outline.deinit();
+    if (json_mode) {
+        writeOutlineJson(alloc, out, &outline, compact, grouped);
+        return;
+    }
     const w = cio.listWriter(out, alloc);
     w.print("{s} ({s}, {d} lines, {d} bytes)", .{
         outline.path, @tagName(outline.language), outline.line_count, outline.byte_size,
@@ -212,6 +218,7 @@ pub fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
     };
     const include_body = getBool(args, "body");
     const decorator_filter = getStr(args, "decorator_filter");
+    const json_mode = isJsonMode(args);
     const results = explorer.findAllSymbols(name, alloc) catch {
         out.appendSlice(alloc, "error: search failed") catch {};
         return;
@@ -238,9 +245,14 @@ pub fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
         visible_count += 1;
     }
 
-    if (visible_count == 0) {
+    if (visible_count == 0 and !json_mode) {
         out.appendSlice(alloc, "no results for: ") catch {};
         out.appendSlice(alloc, name) catch {};
+        return;
+    }
+
+    if (json_mode) {
+        writeSymbolJson(alloc, out, explorer, name, results, decorator_filter, include_body, visible_count);
         return;
     }
 
@@ -494,6 +506,7 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
     const scope = getBool(args, "scope");
     const compact = getBool(args, "compact");
     const is_regex = getBool(args, "regex");
+    const json_mode = isJsonMode(args);
     // Exclude generated artifacts (EF migrations, *.Designer.cs, source-generator
     // outputs) from results by default. Even when index_generated_files=true,
     // callers usually don't want these in search/word/callers output.
@@ -538,6 +551,11 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
             visible_total += 1;
         }
 
+        if (json_mode) {
+            writeSearchScopedJson(alloc, out, query, results, path_glob, compact, visible_total, false);
+            return;
+        }
+
         const w = cio.listWriter(out, alloc);
         w.print("{d} results for '{s}':\n", .{ visible_total, query }) catch {};
         var dir_set = std.StringHashMap(void).init(alloc);
@@ -549,7 +567,10 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
             var di: usize = r.path.len;
             while (di > 0) {
                 di -= 1;
-                if (r.path[di] == '/') { dir_end = di; break; }
+                if (r.path[di] == '/') {
+                    dir_end = di;
+                    break;
+                }
             }
             dir_set.put(r.path[0..dir_end], {}) catch {};
             if (r.scope_name) |sn| {
@@ -587,6 +608,11 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
             visible_total += 1;
         }
 
+        if (json_mode) {
+            writeSearchScopedJson(alloc, out, query, results, path_glob, compact, visible_total, false);
+            return;
+        }
+
         const w = cio.listWriter(out, alloc);
         w.print("{d} results for '{s}':\n", .{ visible_total, query }) catch {};
         var file_counts = std.StringHashMap(u8).init(alloc);
@@ -603,7 +629,10 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
             var di: usize = r.path.len;
             while (di > 0) {
                 di -= 1;
-                if (r.path[di] == '/') { dir_end = di; break; }
+                if (r.path[di] == '/') {
+                    dir_end = di;
+                    break;
+                }
             }
             dir_set.put(r.path[0..dir_end], {}) catch {};
             const gop = file_counts.getOrPut(r.path) catch continue;
@@ -652,6 +681,11 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
             visible_total += 1;
         }
 
+        if (json_mode) {
+            writeSearchJson(alloc, out, query, results, path_glob, compact, visible_total, false);
+            return;
+        }
+
         const w = cio.listWriter(out, alloc);
         w.print("{d} results for '{s}':\n", .{ visible_total, query }) catch {};
         var file_counts = std.StringHashMap(u8).init(alloc);
@@ -667,7 +701,10 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
             var di: usize = r.path.len;
             while (di > 0) {
                 di -= 1;
-                if (r.path[di] == '/') { dir_end = di; break; }
+                if (r.path[di] == '/') {
+                    dir_end = di;
+                    break;
+                }
             }
             dir_set.put(r.path[0..dir_end], {}) catch {};
             const gop = file_counts.getOrPut(r.path) catch continue;
@@ -710,6 +747,11 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
             visible_total += 1;
         }
 
+        if (json_mode) {
+            writeSearchJson(alloc, out, query, results, path_glob, compact, visible_total, false);
+            return;
+        }
+
         const w = cio.listWriter(out, alloc);
         w.print("{d} results for '{s}':\n", .{ visible_total, query }) catch {};
         var file_counts = std.StringHashMap(u8).init(alloc);
@@ -726,7 +768,10 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
             var di: usize = r.path.len;
             while (di > 0) {
                 di -= 1;
-                if (r.path[di] == '/') { dir_end = di; break; }
+                if (r.path[di] == '/') {
+                    dir_end = di;
+                    break;
+                }
             }
             dir_set.put(r.path[0..dir_end], {}) catch {};
             const gop = file_counts.getOrPut(r.path) catch continue;
@@ -772,6 +817,7 @@ pub fn handleWord(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
     } else null;
     const include_generated = getBool(args, "include_generated");
     const exclude_generated = !include_generated;
+    const json_mode = isJsonMode(args);
 
     explorer.mu.lockShared();
     defer explorer.mu.unlockShared();
@@ -783,6 +829,11 @@ pub fn handleWord(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
         if (path_glob) |g| if (!globMatch(g, p)) continue;
         if (exclude_generated and skip_rules.isGeneratedPath(p)) continue;
         visible_total += 1;
+    }
+
+    if (json_mode) {
+        writeWordJson(alloc, out, explorer, word, hits, path_glob, exclude_generated, visible_total);
+        return;
     }
 
     const w = cio.listWriter(out, alloc);
@@ -827,6 +878,7 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
     const include_generated = getBool(args, "include_generated");
     const exclude_generated = !include_generated;
     const match_mode = getStr(args, "match_mode") orelse "semantic";
+    const json_mode = isJsonMode(args);
 
     const defs = explorer.findAllSymbols(name, alloc) catch {
         out.appendSlice(alloc, "error: symbol lookup failed") catch {};
@@ -874,6 +926,11 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
         if (is_def) continue;
         if (!callerLineMatches(r.line_text, name, explore_mod.detectLanguage(r.path), match_mode)) continue;
         shown += 1;
+    }
+
+    if (json_mode) {
+        writeCallersJson(alloc, out, name, results, defs, match_mode, shown);
+        return;
     }
 
     const w = cio.listWriter(out, alloc);
@@ -971,8 +1028,8 @@ fn looksLikeDeclarationPrefix(prefix: []const u8) bool {
     const trimmed = std.mem.trim(u8, prefix, " \t");
     if (trimmed.len == 0) return false;
     const starters = [_][]const u8{
-        "public ", "private ", "protected ", "internal ", "static ", "async ",
-        "virtual ", "override ", "abstract ", "sealed ", "extern ", "partial ",
+        "public ",  "private ",  "protected ", "internal ", "static ", "async ",
+        "virtual ", "override ", "abstract ",  "sealed ",   "extern ", "partial ",
     };
     for (starters) |s| {
         if (std.mem.startsWith(u8, trimmed, s)) return true;
@@ -1261,7 +1318,8 @@ fn writeRelationsJson(
     w.print("\",\"definitions\":[", .{}) catch {};
     for (defs, 0..) |d, i| {
         if (i > 0) w.writeAll(",") catch {};
-        w.print("{{\"path\":\"", .{}) catch {}; writeJsonString(out, alloc, d.path);
+        w.print("{{\"path\":\"", .{}) catch {};
+        writeJsonString(out, alloc, d.path);
         w.print("\",\"line\":{d},\"kind\":\"{s}\",\"confidence\":\"high\",\"why_matched\":\"definition\",\"semantic_kind\":\"definition\"}}", .{ d.symbol.line_start, @tagName(d.symbol.kind) }) catch {};
     }
     w.print("],\"bases\":[", .{}) catch {};
@@ -1271,8 +1329,13 @@ fn writeRelationsJson(
     w.print("],\"dependency_users\":[", .{}) catch {};
     for (imported_by, 0..) |p, i| {
         if (i > 0) w.writeAll(",") catch {};
-        w.print("{{\"path\":\"", .{}) catch {}; writeJsonString(out, alloc, p);
-        w.print("\",\"confidence\":\"medium\",\"why_matched\":\"type_reference_or_import\",\"semantic_kind\":\"dependency_user\"}}", .{}) catch {};
+        w.print("{{\"path\":\"", .{}) catch {};
+        writeJsonString(out, alloc, p);
+        w.print("\",\"confidence\":\"medium\",\"why_matched\":\"type_reference_or_import\",\"semantic_kind\":\"dependency_user\"", .{}) catch {};
+        if (classifyUsagePath(p)) |usage_kind| {
+            w.print(",\"usage_kind\":\"{s}\"", .{usage_kind}) catch {};
+        }
+        w.print("}}", .{}) catch {};
     }
     w.print("],\"callers\":[", .{}) catch {};
     var first = true;
@@ -1281,22 +1344,302 @@ fn writeRelationsJson(
         if (!callerLineMatches(r.line_text, name, lang, match_mode)) continue;
         if (!first) w.writeAll(",") catch {};
         first = false;
-        w.print("{{\"path\":\"", .{}) catch {}; writeJsonString(out, alloc, r.path);
-        w.print("\",\"line\":{d},\"snippet\":\"", .{r.line_num}) catch {}; writeJsonString(out, alloc, r.line_text);
+        w.print("{{\"path\":\"", .{}) catch {};
+        writeJsonString(out, alloc, r.path);
+        w.print("\",\"line\":{d},\"snippet\":\"", .{r.line_num}) catch {};
+        writeJsonString(out, alloc, r.line_text);
         w.print("\",\"confidence\":\"high\",\"why_matched\":\"invocation\",\"semantic_kind\":\"caller\"", .{}) catch {};
+        if (classifyUsagePath(r.path)) |usage_kind| {
+            w.print(",\"usage_kind\":\"{s}\"", .{usage_kind}) catch {};
+        }
         if (r.scope_name) |sn| {
-            w.print(",\"scope_name\":\"", .{}) catch {}; writeJsonString(out, alloc, sn); w.print("\"", .{}) catch {};
+            w.print(",\"scope_name\":\"", .{}) catch {};
+            writeJsonString(out, alloc, sn);
+            w.print("\"", .{}) catch {};
         }
         w.print("}}", .{}) catch {};
     }
     w.print("]}}", .{}) catch {};
 }
 
+fn isJsonMode(args: *const std.json.ObjectMap) bool {
+    return if (getStr(args, "output_format")) |fmt| std.mem.eql(u8, fmt, "json") else false;
+}
+
+fn classifyUsagePath(path: []const u8) ?[]const u8 {
+    if (std.mem.endsWith(u8, path, "Controller.cs") or std.mem.indexOf(u8, path, "/Controllers/") != null) return "controller_usage";
+    if (std.mem.endsWith(u8, path, "Service.cs") or std.mem.indexOf(u8, path, "/Services/") != null) return "service_usage";
+    if (std.mem.endsWith(u8, path, "Repository.cs") or std.mem.indexOf(u8, path, "/Repositories/") != null) return "repository_usage";
+    return null;
+}
+
+fn writeOutlineJson(
+    alloc: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    outline: *const explore_mod.FileOutline,
+    compact: bool,
+    grouped: bool,
+) void {
+    const w = cio.listWriter(out, alloc);
+    w.print("{{\"tool\":\"codedb_outline\",\"path\":\"", .{}) catch {};
+    writeJsonString(out, alloc, outline.path);
+    w.print("\",\"language\":\"{s}\",\"line_count\":{d},\"byte_size\":{d},\"compact\":{},\"grouped\":{},\"symbols\":[", .{ @tagName(outline.language), outline.line_count, outline.byte_size, compact, grouped }) catch {};
+    for (outline.symbols.items, 0..) |sym, i| {
+        if (i > 0) w.writeAll(",") catch {};
+        writeSymbolHitJson(alloc, out, outline.path, sym, null);
+    }
+    w.print("],\"summary\":{{\"total\":{d},\"truncated\":false}}}}", .{outline.symbols.items.len}) catch {};
+}
+
+fn writeSymbolJson(
+    alloc: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    explorer: *Explorer,
+    name: []const u8,
+    results: []const explore_mod.SymbolResult,
+    decorator_filter: ?[]const u8,
+    include_body: bool,
+    visible_count: usize,
+) void {
+    const w = cio.listWriter(out, alloc);
+    w.print("{{\"tool\":\"codedb_symbol\",\"query\":\"", .{}) catch {};
+    writeJsonString(out, alloc, name);
+    w.print("\",\"hits\":[", .{}) catch {};
+    var first = true;
+    for (results) |r| {
+        if (decorator_filter) |filter| {
+            if (!decoratorsContain(r.symbol.decorators, filter)) continue;
+        }
+        if (!first) w.writeAll(",") catch {};
+        first = false;
+        var body: ?[]const u8 = null;
+        if (include_body) {
+            body = explorer.getSymbolBody(r.path, r.symbol.line_start, r.symbol.line_end, alloc) catch null;
+        }
+        writeSymbolHitJson(alloc, out, r.path, r.symbol, body);
+        if (body) |b| alloc.free(b);
+    }
+    w.print("],\"summary\":{{\"total\":{d},\"truncated\":false}}}}", .{visible_count}) catch {};
+}
+
+fn writeSymbolHitJson(
+    alloc: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    path: []const u8,
+    sym: explore_mod.Symbol,
+    body: ?[]const u8,
+) void {
+    const w = cio.listWriter(out, alloc);
+    w.print("{{\"path\":\"", .{}) catch {};
+    writeJsonString(out, alloc, path);
+    w.print("\",\"line\":{d},\"line_end\":{d},\"name\":\"", .{ sym.line_start, sym.line_end }) catch {};
+    writeJsonString(out, alloc, sym.name);
+    w.print("\",\"kind\":\"{s}\",\"confidence\":\"high\",\"why_matched\":\"definition\",\"semantic_kind\":\"definition\"", .{@tagName(sym.kind)}) catch {};
+    if (sym.return_type) |rt| {
+        w.print(",\"return_type\":\"", .{}) catch {};
+        writeJsonString(out, alloc, rt);
+        w.print("\"", .{}) catch {};
+    }
+    if (sym.param_types.len > 0) {
+        w.print(",\"param_types\":[", .{}) catch {};
+        for (sym.param_types, 0..) |pt, i| {
+            if (i > 0) w.writeAll(",") catch {};
+            w.print("\"", .{}) catch {};
+            writeJsonString(out, alloc, pt);
+            w.print("\"", .{}) catch {};
+        }
+        w.print("]", .{}) catch {};
+    }
+    if (sym.detail) |detail| {
+        w.print(",\"detail\":\"", .{}) catch {};
+        writeJsonString(out, alloc, detail);
+        w.print("\"", .{}) catch {};
+    }
+    if (sym.decorators.len > 0) {
+        w.print(",\"decorators\":[", .{}) catch {};
+        for (sym.decorators, 0..) |decorator, i| {
+            if (i > 0) w.writeAll(",") catch {};
+            w.print("\"", .{}) catch {};
+            writeJsonString(out, alloc, decorator);
+            w.print("\"", .{}) catch {};
+        }
+        w.print("]", .{}) catch {};
+    }
+    if (body) |b| {
+        w.print(",\"body\":\"", .{}) catch {};
+        writeJsonString(out, alloc, b);
+        w.print("\"", .{}) catch {};
+    }
+    w.print("}}", .{}) catch {};
+}
+
+fn writeSearchJson(
+    alloc: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    query: []const u8,
+    results: []const explore_mod.SearchResult,
+    path_glob: ?[]const u8,
+    compact: bool,
+    visible_total: usize,
+    truncated: bool,
+) void {
+    const w = cio.listWriter(out, alloc);
+    w.print("{{\"tool\":\"codedb_search\",\"query\":\"", .{}) catch {};
+    writeJsonString(out, alloc, query);
+    w.print("\",\"hits\":[", .{}) catch {};
+    var first = true;
+    for (results) |r| {
+        if (path_glob) |g| if (!globMatch(g, r.path)) continue;
+        if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+        if (!first) w.writeAll(",") catch {};
+        first = false;
+        writeSearchHitJson(alloc, out, r.path, r.line_num, r.line_text, null, null, "medium", "text_match", "text_match");
+    }
+    w.print("],\"summary\":{{\"total\":{d},\"truncated\":{}", .{ visible_total, truncated }) catch {};
+    w.writeAll("}}") catch {};
+}
+
+fn writeSearchScopedJson(
+    alloc: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    query: []const u8,
+    results: []const explore_mod.Explorer.ScopedSearchResult,
+    path_glob: ?[]const u8,
+    compact: bool,
+    visible_total: usize,
+    truncated: bool,
+) void {
+    const w = cio.listWriter(out, alloc);
+    w.print("{{\"tool\":\"codedb_search\",\"query\":\"", .{}) catch {};
+    writeJsonString(out, alloc, query);
+    w.print("\",\"hits\":[", .{}) catch {};
+    var first = true;
+    for (results) |r| {
+        if (path_glob) |g| if (!globMatch(g, r.path)) continue;
+        if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+        if (!first) w.writeAll(",") catch {};
+        first = false;
+        writeSearchHitJson(alloc, out, r.path, r.line_num, r.line_text, r.scope_name, r.scope_kind, "medium", "text_match", "text_match");
+    }
+    w.print("],\"summary\":{{\"total\":{d},\"truncated\":{}", .{ visible_total, truncated }) catch {};
+    w.writeAll("}}") catch {};
+}
+
+fn writeWordJson(
+    alloc: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    explorer: *Explorer,
+    word: []const u8,
+    hits: []const WordHit,
+    path_glob: ?[]const u8,
+    exclude_generated: bool,
+    visible_total: usize,
+) void {
+    const w = cio.listWriter(out, alloc);
+    const WORD_CAP: usize = 50;
+    w.print("{{\"tool\":\"codedb_word\",\"query\":\"", .{}) catch {};
+    writeJsonString(out, alloc, word);
+    w.print("\",\"hits\":[", .{}) catch {};
+    var shown: usize = 0;
+    var first = true;
+    for (hits) |h| {
+        const p = explorer.word_index.hitPath(h);
+        if (path_glob) |g| if (!globMatch(g, p)) continue;
+        if (exclude_generated and skip_rules.isGeneratedPath(p)) continue;
+        if (shown >= WORD_CAP) break;
+        if (!first) w.writeAll(",") catch {};
+        first = false;
+        w.print("{{\"path\":\"", .{}) catch {};
+        writeJsonString(out, alloc, p);
+        w.print("\",\"line\":{d},\"confidence\":\"medium\",\"why_matched\":\"identifier_match\",\"semantic_kind\":\"identifier\"}}", .{h.line_num}) catch {};
+        shown += 1;
+    }
+    w.print("],\"summary\":{{\"total\":{d},\"truncated\":{}", .{ visible_total, visible_total > WORD_CAP }) catch {};
+    w.writeAll("}}") catch {};
+}
+
+fn writeCallersJson(
+    alloc: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    name: []const u8,
+    results: []const explore_mod.Explorer.ScopedSearchResult,
+    defs: []const explore_mod.SymbolResult,
+    match_mode: []const u8,
+    visible_total: usize,
+) void {
+    const w = cio.listWriter(out, alloc);
+    const semantic = !std.mem.eql(u8, match_mode, "text");
+    w.print("{{\"tool\":\"codedb_callers\",\"query\":\"", .{}) catch {};
+    writeJsonString(out, alloc, name);
+    w.print("\",\"match_mode\":\"", .{}) catch {};
+    writeJsonString(out, alloc, match_mode);
+    w.print("\",\"hits\":[", .{}) catch {};
+    var first = true;
+    for (results) |r| {
+        const lang = explore_mod.detectLanguage(r.path);
+        if (!langHasCallSites(lang)) continue;
+        if (isDefinitionHit(r.path, r.line_num, defs)) continue;
+        if (!callerLineMatches(r.line_text, name, lang, match_mode)) continue;
+        if (!first) w.writeAll(",") catch {};
+        first = false;
+        writeSearchHitJson(
+            alloc,
+            out,
+            r.path,
+            r.line_num,
+            r.line_text,
+            r.scope_name,
+            r.scope_kind,
+            if (semantic) "high" else "low",
+            if (semantic) "invocation" else "text_mention",
+            if (semantic) "caller" else "caller_candidate",
+        );
+    }
+    w.print("],\"summary\":{{\"total\":{d},\"truncated\":false}}}}", .{visible_total}) catch {};
+}
+
+fn writeSearchHitJson(
+    alloc: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    path: []const u8,
+    line: u32,
+    snippet: []const u8,
+    scope_name: ?[]const u8,
+    scope_kind: ?explore_mod.SymbolKind,
+    confidence: []const u8,
+    why_matched: []const u8,
+    semantic_kind: []const u8,
+) void {
+    const w = cio.listWriter(out, alloc);
+    w.print("{{\"path\":\"", .{}) catch {};
+    writeJsonString(out, alloc, path);
+    w.print("\",\"line\":{d},\"snippet\":\"", .{line}) catch {};
+    writeJsonString(out, alloc, snippet);
+    w.print("\",\"confidence\":\"{s}\",\"why_matched\":\"{s}\",\"semantic_kind\":\"{s}\"", .{ confidence, why_matched, semantic_kind }) catch {};
+    if (scope_name) |sn| {
+        w.print(",\"scope_name\":\"", .{}) catch {};
+        writeJsonString(out, alloc, sn);
+        w.print("\"", .{}) catch {};
+    }
+    if (scope_kind) |sk| {
+        w.print(",\"scope_kind\":\"{s}\"", .{@tagName(sk)}) catch {};
+    }
+    w.print("}}", .{}) catch {};
+}
+
+fn isDefinitionHit(path: []const u8, line_num: u32, defs: []const explore_mod.SymbolResult) bool {
+    for (defs) |d| {
+        if (line_num == d.symbol.line_start and std.mem.eql(u8, path, d.path)) return true;
+    }
+    return false;
+}
+
 fn writeJsonStringArray(out: *std.ArrayList(u8), alloc: std.mem.Allocator, items: []const []const u8, why: []const u8, kind: []const u8) void {
     const w = cio.listWriter(out, alloc);
     for (items, 0..) |item, i| {
         if (i > 0) w.writeAll(",") catch {};
-        w.print("{{\"name\":\"", .{}) catch {}; writeJsonString(out, alloc, item);
+        w.print("{{\"name\":\"", .{}) catch {};
+        writeJsonString(out, alloc, item);
         w.print("\",\"confidence\":\"high\",\"why_matched\":\"{s}\",\"semantic_kind\":\"{s}\"}}", .{ why, kind }) catch {};
     }
 }

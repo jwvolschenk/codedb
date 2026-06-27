@@ -468,6 +468,50 @@ test "issue-356-p2: codedb_deps missing path surfaces received keys" {
     try testing.expect(std.mem.indexOf(u8, out.items, "received keys") != null);
 }
 
+fn expectJsonToolResponse(tool: mcp_mod.Tool, args_json: []const u8, expected_tool: []const u8, explorer: *Explorer) !void {
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, tool, &parsed.value.object, &out, &store, explorer, &agents);
+
+    const response = try std.json.parseFromSlice(std.json.Value, testing.allocator, out.items, .{});
+    defer response.deinit();
+
+    try testing.expectEqualStrings(expected_tool, response.value.object.get("tool").?.string);
+    const hits = response.value.object.get("hits") orelse response.value.object.get("symbols") orelse return error.TestUnexpectedResult;
+    try testing.expect(hits.array.items.len > 0);
+    const first = hits.array.items[0].object;
+    try testing.expect(first.get("confidence") != null);
+    try testing.expect(first.get("why_matched") != null);
+    try testing.expect(first.get("semantic_kind") != null);
+}
+
+test "read-only MCP tools support output_format json with metadata" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    try explorer.indexFile("src/foo.zig",
+        \\pub fn Probe() void {}
+        \\pub fn Caller() void { Probe(); }
+    );
+
+    try expectJsonToolResponse(.codedb_outline, "{\"path\":\"src/foo.zig\",\"output_format\":\"json\"}", "codedb_outline", &explorer);
+    try expectJsonToolResponse(.codedb_symbol, "{\"name\":\"Probe\",\"output_format\":\"json\"}", "codedb_symbol", &explorer);
+    try expectJsonToolResponse(.codedb_search, "{\"query\":\"Probe\",\"scope\":true,\"output_format\":\"json\"}", "codedb_search", &explorer);
+    try expectJsonToolResponse(.codedb_word, "{\"word\":\"Probe\",\"output_format\":\"json\"}", "codedb_word", &explorer);
+    try expectJsonToolResponse(.codedb_callers, "{\"name\":\"Probe\",\"match_mode\":\"semantic\",\"output_format\":\"json\"}", "codedb_callers", &explorer);
+}
+
 test "issue-356-p3: codedb_read appends fuzzy suggestions when path is unreadable" {
     const tmp_io = testing.io;
     var tmp = testing.tmpDir(.{});
