@@ -262,7 +262,88 @@ pub fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) 
         try deps.append(self.allocator, dep_key.key);
     }
 
+    try collectTypeUsageDeps(self, path, outline, &seen, &deps);
+
     try self.dep_graph.setDeps(path, deps);
+}
+
+fn languageHasTypeUsageDeps(lang: @import("types.zig").Language) bool {
+    return switch (lang) {
+        .c_sharp, .f_sharp, .java, .kotlin, .typescript => true,
+        else => false,
+    };
+}
+
+pub fn collectTypeUsageDeps(
+    self: *Explorer,
+    path: []const u8,
+    outline: *const FileOutline,
+    seen: *std.StringHashMap(void),
+    deps: *std.ArrayList([]const u8),
+) !void {
+    if (!languageHasTypeUsageDeps(outline.language)) return;
+
+    for (outline.symbols.items) |sym| {
+        if (sym.return_type) |rt| {
+            try collectTypeUsageDepsFromType(self, path, rt, seen, deps);
+        }
+        for (sym.param_types) |pt| {
+            try collectTypeUsageDepsFromType(self, path, pt, seen, deps);
+        }
+    }
+}
+
+fn collectTypeUsageDepsFromType(
+    self: *Explorer,
+    path: []const u8,
+    type_text: []const u8,
+    seen: *std.StringHashMap(void),
+    deps: *std.ArrayList([]const u8),
+) !void {
+    var token_start: ?usize = null;
+    for (type_text, 0..) |c, i| {
+        if (parse_utils.isIdentChar(c)) {
+            if (token_start == null) token_start = i;
+        } else if (token_start) |start| {
+            try addTypeUsageToken(self, path, type_text[start..i], seen, deps);
+            token_start = null;
+        }
+    }
+    if (token_start) |start| {
+        try addTypeUsageToken(self, path, type_text[start..], seen, deps);
+    }
+}
+
+fn addTypeUsageToken(
+    self: *Explorer,
+    path: []const u8,
+    token: []const u8,
+    seen: *std.StringHashMap(void),
+    deps: *std.ArrayList([]const u8),
+) !void {
+    if (token.len == 0 or isTypeUsageNoise(token)) return;
+    const locs = self.symbol_index.get(token) orelse return;
+    for (locs.items) |loc| {
+        if (std.mem.eql(u8, loc.path, path)) continue;
+        const gop = try seen.getOrPut(loc.path);
+        if (gop.found_existing) continue;
+        try deps.append(self.allocator, loc.path);
+    }
+}
+
+fn isTypeUsageNoise(token: []const u8) bool {
+    const keywords = [_][]const u8{
+        "void", "var", "dynamic", "object", "string", "bool", "byte", "sbyte", "char",
+        "short", "ushort", "int", "uint", "long", "ulong", "float", "double", "decimal",
+        "Task", "ValueTask", "List", "IList", "IEnumerable", "ICollection", "Dictionary",
+        "IDictionary", "HashSet", "Nullable", "Array", "ReadOnlySpan", "Span", "Option",
+        "Result", "Unit", "self", "Self", "this", "base", "where", "new", "class",
+        "struct", "interface", "enum", "record",
+    };
+    for (keywords) |kw| {
+        if (std.mem.eql(u8, token, kw)) return true;
+    }
+    return false;
 }
 
 /// Resolve a SQL import (e.g., "dbo.vwHalfCommClients") to a file path
@@ -361,8 +442,17 @@ pub fn rebuildSymbolIndexFor(self: *Explorer, path: []const u8, outline: *FileOu
 pub fn rebuildTypeIndexes(self: *Explorer) void {
     var iter = self.outlines.iterator();
     while (iter.next()) |entry| {
+        self.rebuildSymbolIndexFor(entry.key_ptr.*, entry.value_ptr);
         self.type_index.indexFileSymbols(entry.key_ptr.*, entry.value_ptr.symbols.items) catch {};
         self.buildTypeGraphForFile(entry.key_ptr.*, entry.value_ptr);
+    }
+    self.rebuildTypeUsageDeps();
+}
+
+pub fn rebuildTypeUsageDeps(self: *Explorer) void {
+    var iter = self.outlines.iterator();
+    while (iter.next()) |entry| {
+        self.rebuildDepsFor(entry.key_ptr.*, entry.value_ptr) catch {};
     }
 }
 

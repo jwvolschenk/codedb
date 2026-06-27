@@ -10,7 +10,7 @@
         },
         .nanoregex = .{
             .url = "https://github.com/justrach/nanoregex/archive/refs/heads/main.tar.gz",
-            .hash = "nanoregex-0.0.1-EdkhcdjkAgAA3KubDZWjZLnZPv19H2w8RlcHU-eneFB5",
+            .hash = "nanoregex-0.0.1-EdkhcVDrAgB3eslIGGP7RK60162q26bVDA9GH44_iKnt",
         },
     },
     .paths = .{

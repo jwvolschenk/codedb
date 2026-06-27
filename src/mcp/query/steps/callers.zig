@@ -10,6 +10,7 @@ const mcp = @import("../../../mcp.zig");
 const finishQueryWithFailure = mcp.finishQueryWithFailure;
 const combo_boost = @import("../combo_boost.zig");
 const shared = @import("../shared.zig");
+const skip_rules = @import("../../../watcher/skip_rules.zig");
 
 pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize) bool {
     const w = cio.listWriter(ctx.out, ctx.alloc);
@@ -19,6 +20,9 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
         return false;
     };
     const max: usize = if (getInt(step, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
+    const include_generated = getBool(step, "include_generated");
+    const exclude_generated = !include_generated;
+    const match_mode = getStr(step, "match_mode") orelse "semantic";
 
     // Find definitions to exclude from caller results
     const defs = ctx.explorer.findAllSymbols(name, ctx.alloc) catch {
@@ -55,13 +59,14 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
 
     // Helper: check if a result is a call site (not a definition)
     const CallSiteFilter = struct {
-        fn isCallSite(r: explore_mod.Explorer.ScopedSearchResult, definition_list: []const explore_mod.SymbolResult, nm: []const u8) bool {
-            if (!mcp.langHasCallSites(explore_mod.detectLanguage(r.path))) return false;
+        fn isCallSite(r: explore_mod.Explorer.ScopedSearchResult, definition_list: []const explore_mod.SymbolResult, nm: []const u8, mode: []const u8) bool {
+            const lang = explore_mod.detectLanguage(r.path);
+            if (!mcp.langHasCallSites(lang)) return false;
             for (definition_list) |d| {
                 if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path))
                     return false;
             }
-            return mcp.hasWholeWordMatch(r.line_text, nm);
+            return mcp.callerLineMatches(r.line_text, nm, lang, mode);
         }
     };
 
@@ -76,7 +81,8 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
 
         var shown: usize = 0;
         for (results) |r| {
-            if (!CallSiteFilter.isCallSite(r, defs, name)) continue;
+            if (!CallSiteFilter.isCallSite(r, defs, name, match_mode)) continue;
+            if (exclude_generated and skip_rules.isGeneratedPath(r.path)) continue;
             if (!path_set.contains(r.path)) continue;
             shown += 1;
             if (r.scope_name) |sn| {
@@ -105,7 +111,8 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
 
         var shown: usize = 0;
         for (results) |r| {
-            if (!CallSiteFilter.isCallSite(r, defs, name)) continue;
+            if (!CallSiteFilter.isCallSite(r, defs, name, match_mode)) continue;
+            if (exclude_generated and skip_rules.isGeneratedPath(r.path)) continue;
             shown += 1;
             if (r.scope_name) |sn| {
                 w.print("  {s}:{d}: {s}  [in {s}]\n", .{ r.path, r.line_num, r.line_text, sn }) catch {};

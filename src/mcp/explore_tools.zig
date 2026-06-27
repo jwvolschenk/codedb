@@ -30,6 +30,52 @@ const decoratorsContain = aspnet.decoratorsContain;
 const pathglob = @import("pathglob.zig");
 const globMatch = pathglob.globMatch;
 
+const skip_rules = @import("../watcher/skip_rules.zig");
+
+/// Return a slice containing only the non-generated entries of `orig`. The
+/// explorer search functions return const-element slices (in-place compaction
+/// isn't possible), so this allocates a fresh backing of kept item *copies*
+/// (shallow — the owned string fields are still owned by `orig`). The caller
+/// must free the ORIGINAL slice's items and backing, and free the returned
+/// slice's backing only when it differs from `orig` (see `results.ptr != orig.ptr`
+/// at the call sites). Falls back to `orig` unfiltered on allocation failure.
+fn filterGeneratedSearch(
+    alloc: std.mem.Allocator,
+    orig: []const explore_mod.SearchResult,
+) []const explore_mod.SearchResult {
+    var out = std.ArrayList(explore_mod.SearchResult).empty;
+    for (orig) |r| {
+        if (skip_rules.isGeneratedPath(r.path)) continue;
+        out.append(alloc, r) catch {
+            out.deinit(alloc);
+            return orig;
+        };
+    }
+    return out.toOwnedSlice(alloc) catch {
+        out.deinit(alloc);
+        return orig;
+    };
+}
+
+/// Same as filterGeneratedSearch but for scoped results.
+fn filterGeneratedScoped(
+    alloc: std.mem.Allocator,
+    orig: []const explore_mod.Explorer.ScopedSearchResult,
+) []const explore_mod.Explorer.ScopedSearchResult {
+    var out = std.ArrayList(explore_mod.Explorer.ScopedSearchResult).empty;
+    for (orig) |r| {
+        if (skip_rules.isGeneratedPath(r.path)) continue;
+        out.append(alloc, r) catch {
+            out.deinit(alloc);
+            return orig;
+        };
+    }
+    return out.toOwnedSlice(alloc) catch {
+        out.deinit(alloc);
+        return orig;
+    };
+}
+
 pub fn handleTree(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const tree = explorer.getTree(alloc, false) catch {
         out.appendSlice(alloc, "error: failed to get tree") catch {};
@@ -448,6 +494,11 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
     const scope = getBool(args, "scope");
     const compact = getBool(args, "compact");
     const is_regex = getBool(args, "regex");
+    // Exclude generated artifacts (EF migrations, *.Designer.cs, source-generator
+    // outputs) from results by default. Even when index_generated_files=true,
+    // callers usually don't want these in search/word/callers output.
+    const include_generated = getBool(args, "include_generated");
+    const exclude_generated = !include_generated;
     const path_glob_raw = getStr(args, "path_glob");
     // Auto-promote basename-only patterns ('*.zig') to '**/*.zig' so they match
     // nested files. Without this the matcher rejects 'src/main.zig' because
@@ -463,17 +514,19 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
     } else null;
 
     if (scope and is_regex) {
-        const results = explorer.searchContentRegexWithScope(query, alloc, max_results) catch {
+        const orig = explorer.searchContentRegexWithScope(query, alloc, max_results) catch {
             out.appendSlice(alloc, "error: scoped regex search failed") catch {};
             return;
         };
+        const results = if (exclude_generated) filterGeneratedScoped(alloc, orig) else orig;
         defer {
-            for (results) |r| {
+            for (orig) |r| {
                 alloc.free(r.line_text);
                 alloc.free(r.path);
                 if (r.scope_name) |n| alloc.free(n);
             }
-            alloc.free(results);
+            alloc.free(orig);
+            if (results.ptr != orig.ptr) alloc.free(results);
         }
 
         // Issue #422: count post-filter results so the header reflects what
@@ -509,17 +562,19 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
         }
         appendSearchHints(alloc, out, query, visible_total, dir_set.count());
     } else if (scope) {
-        const results = explorer.searchContentWithScope(query, alloc, max_results) catch {
+        const orig = explorer.searchContentWithScope(query, alloc, max_results) catch {
             out.appendSlice(alloc, "error: search failed") catch {};
             return;
         };
+        const results = if (exclude_generated) filterGeneratedScoped(alloc, orig) else orig;
         defer {
-            for (results) |r| {
+            for (orig) |r| {
                 alloc.free(r.line_text);
                 alloc.free(r.path);
                 if (r.scope_name) |n| alloc.free(n);
             }
-            alloc.free(results);
+            alloc.free(orig);
+            if (results.ptr != orig.ptr) alloc.free(results);
         }
 
         // Issue #422: count post-filter results so the header reflects what
@@ -574,16 +629,18 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
         }
         appendSearchHints(alloc, out, query, visible_total, dir_set.count());
     } else if (is_regex) {
-        const results = explorer.searchContentRegex(query, alloc, max_results) catch {
+        const orig = explorer.searchContentRegex(query, alloc, max_results) catch {
             out.appendSlice(alloc, "error: regex search failed") catch {};
             return;
         };
+        const results = if (exclude_generated) filterGeneratedSearch(alloc, orig) else orig;
         defer {
-            for (results) |r| {
+            for (orig) |r| {
                 alloc.free(r.line_text);
                 alloc.free(r.path);
             }
-            alloc.free(results);
+            alloc.free(orig);
+            if (results.ptr != orig.ptr) alloc.free(results);
         }
 
         // Issue #422: header reflects post-filter count; "truncated" footer
@@ -630,16 +687,18 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
         }
         appendSearchHints(alloc, out, query, visible_total, dir_set.count());
     } else {
-        const results = explorer.searchContent(query, alloc, max_results) catch {
+        const orig = explorer.searchContent(query, alloc, max_results) catch {
             out.appendSlice(alloc, "error: search failed") catch {};
             return;
         };
+        const results = if (exclude_generated) filterGeneratedSearch(alloc, orig) else orig;
         defer {
-            for (results) |r| {
+            for (orig) |r| {
                 alloc.free(r.line_text);
                 alloc.free(r.path);
             }
-            alloc.free(results);
+            alloc.free(orig);
+            if (results.ptr != orig.ptr) alloc.free(results);
         }
 
         // Issue #422: header reflects post-filter count; "truncated" footer
@@ -711,6 +770,8 @@ pub fn handleWord(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
         }
         break :blk g;
     } else null;
+    const include_generated = getBool(args, "include_generated");
+    const exclude_generated = !include_generated;
 
     explorer.mu.lockShared();
     defer explorer.mu.unlockShared();
@@ -720,6 +781,7 @@ pub fn handleWord(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
     for (hits) |h| {
         const p = explorer.word_index.hitPath(h);
         if (path_glob) |g| if (!globMatch(g, p)) continue;
+        if (exclude_generated and skip_rules.isGeneratedPath(p)) continue;
         visible_total += 1;
     }
 
@@ -734,6 +796,7 @@ pub fn handleWord(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
     for (hits) |h| {
         const p = explorer.word_index.hitPath(h);
         if (path_glob) |g| if (!globMatch(g, p)) continue;
+        if (exclude_generated and skip_rules.isGeneratedPath(p)) continue;
         if (shown >= WORD_CAP) break;
         w.print("  {s}:{d}\n", .{ p, h.line_num }) catch {};
         shown += 1;
@@ -761,6 +824,9 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
         }
     }
     const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else 50;
+    const include_generated = getBool(args, "include_generated");
+    const exclude_generated = !include_generated;
+    const match_mode = getStr(args, "match_mode") orelse "semantic";
 
     const defs = explorer.findAllSymbols(name, alloc) catch {
         out.appendSlice(alloc, "error: symbol lookup failed") catch {};
@@ -780,17 +846,19 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
         alloc.free(defs);
     }
 
-    const results = explorer.searchContentWithScope(name, alloc, max_results) catch {
+    const orig = explorer.searchContentWithScope(name, alloc, max_results) catch {
         out.appendSlice(alloc, "error: search failed") catch {};
         return;
     };
+    const results = if (exclude_generated) filterGeneratedScoped(alloc, orig) else orig;
     defer {
-        for (results) |r| {
+        for (orig) |r| {
             alloc.free(r.line_text);
             alloc.free(r.path);
             if (r.scope_name) |n2| alloc.free(n2);
         }
-        alloc.free(results);
+        alloc.free(orig);
+        if (results.ptr != orig.ptr) alloc.free(results);
     }
 
     var shown: usize = 0;
@@ -804,7 +872,7 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
             }
         }
         if (is_def) continue;
-        if (!hasWholeWordMatch(r.line_text, name)) continue;
+        if (!callerLineMatches(r.line_text, name, explore_mod.detectLanguage(r.path), match_mode)) continue;
         shown += 1;
     }
 
@@ -820,7 +888,7 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
             }
         }
         if (is_def) continue;
-        if (!hasWholeWordMatch(r.line_text, name)) continue;
+        if (!callerLineMatches(r.line_text, name, explore_mod.detectLanguage(r.path), match_mode)) continue;
         if (r.scope_name) |sn| {
             w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
                 r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
@@ -847,6 +915,102 @@ pub fn hasWholeWordMatch(haystack: []const u8, needle: []const u8) bool {
         search_from = pos + 1;
     }
     return false;
+}
+
+pub fn callerLineMatches(line: []const u8, name: []const u8, lang: explore_mod.Language, match_mode: []const u8) bool {
+    if (std.mem.eql(u8, match_mode, "text")) return hasWholeWordMatch(line, name);
+    if (std.mem.eql(u8, match_mode, "both")) return hasWholeWordMatch(line, name) or isLikelyCallSite(line, name, lang);
+    // Default/unknown: prefer high-signal invocation-looking matches.
+    return isLikelyCallSite(line, name, lang);
+}
+
+pub fn isLikelyCallSite(line: []const u8, name: []const u8, lang: explore_mod.Language) bool {
+    if (!langHasCallSites(lang)) return false;
+    if (name.len == 0 or line.len < name.len) return false;
+
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, line, search_from, name)) |pos| {
+        const before_ok = pos == 0 or !isIdentChar(line[pos - 1]);
+        const after_name = pos + name.len;
+        const after_ok = after_name >= line.len or !isIdentChar(line[after_name]);
+        if (before_ok and after_ok and
+            !isInsideStringOrComment(line, pos, lang) and
+            !looksLikeDeclarationPrefix(line[0..pos]) and
+            hasInvocationSuffix(line, after_name))
+        {
+            return true;
+        }
+        search_from = pos + 1;
+    }
+    return false;
+}
+
+fn hasInvocationSuffix(line: []const u8, start: usize) bool {
+    var i = start;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+    if (i < line.len and line[i] == '(') return true;
+    if (i < line.len and line[i] == '<') {
+        var depth: usize = 0;
+        while (i < line.len) : (i += 1) {
+            if (line[i] == '<') depth += 1;
+            if (line[i] == '>') {
+                if (depth == 0) return false;
+                depth -= 1;
+                if (depth == 0) {
+                    i += 1;
+                    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+                    return i < line.len and line[i] == '(';
+                }
+            }
+        }
+    }
+    return false;
+}
+
+fn looksLikeDeclarationPrefix(prefix: []const u8) bool {
+    const trimmed = std.mem.trim(u8, prefix, " \t");
+    if (trimmed.len == 0) return false;
+    const starters = [_][]const u8{
+        "public ", "private ", "protected ", "internal ", "static ", "async ",
+        "virtual ", "override ", "abstract ", "sealed ", "extern ", "partial ",
+    };
+    for (starters) |s| {
+        if (std.mem.startsWith(u8, trimmed, s)) return true;
+    }
+    if (std.mem.indexOf(u8, trimmed, " class ") != null) return true;
+    if (std.mem.indexOf(u8, trimmed, " interface ") != null) return true;
+    if (std.mem.indexOf(u8, trimmed, " struct ") != null) return true;
+    if (std.mem.indexOf(u8, trimmed, " enum ") != null) return true;
+    if (std.mem.indexOf(u8, trimmed, " record ") != null) return true;
+    return false;
+}
+
+fn isInsideStringOrComment(line: []const u8, pos: usize, lang: explore_mod.Language) bool {
+    var quote: u8 = 0;
+    var escape = false;
+    var i: usize = 0;
+    while (i < pos and i < line.len) : (i += 1) {
+        const c = line[i];
+        if (quote != 0) {
+            if (escape) {
+                escape = false;
+            } else if (c == '\\') {
+                escape = true;
+            } else if (c == quote) {
+                quote = 0;
+            }
+            continue;
+        }
+        if (c == '"' or c == '\'') {
+            quote = c;
+            continue;
+        }
+        if (c == '/' and i + 1 < line.len and line[i + 1] == '/') return true;
+        if (lang == .python or lang == .ruby or lang == .shell) {
+            if (c == '#') return true;
+        }
+    }
+    return quote != 0;
 }
 
 /// Languages where the concept of a "call site" is meaningful. Excludes
@@ -886,6 +1050,7 @@ pub fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
     const direction = getStr(args, "direction") orelse "imported_by";
     const transitive = getBool(args, "transitive");
     const max_depth: ?u32 = if (getInt(args, "max_depth")) |n| @intCast(@max(1, n)) else null;
+    const json_mode = if (getStr(args, "output_format")) |fmt| std.mem.eql(u8, fmt, "json") else false;
 
     const is_forward = std.mem.eql(u8, direction, "depends_on");
 
@@ -931,6 +1096,19 @@ pub fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
     }
 
     const w = cio.listWriter(out, alloc);
+    if (json_mode) {
+        w.print("{{\"tool\":\"codedb_deps\",\"path\":\"", .{}) catch {};
+        writeJsonString(out, alloc, path);
+        w.print("\",\"direction\":\"{s}\",\"transitive\":{},\"hits\":[", .{ direction, transitive }) catch {};
+        for (results, 0..) |dep, i| {
+            if (i > 0) w.writeAll(",") catch {};
+            w.print("{{\"path\":\"", .{}) catch {};
+            writeJsonString(out, alloc, dep);
+            w.print("\",\"confidence\":\"medium\",\"why_matched\":\"dependency_graph\",\"semantic_kind\":\"{s}\"}}", .{if (is_forward) "depends_on" else "imported_by"}) catch {};
+        }
+        w.print("]}}", .{}) catch {};
+        return;
+    }
     if (is_forward) {
         if (transitive) {
             w.print("{s} transitively depends on:\n", .{path}) catch {};
@@ -958,5 +1136,180 @@ pub fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
             w.print("  {s}\n", .{dep}) catch {};
         }
         w.print("({d} files)\n", .{results.len}) catch {};
+    }
+}
+
+pub fn handleRelations(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+    const name = getStr(args, "symbol") orelse getStr(args, "name") orelse {
+        out.appendSlice(alloc, "error: missing 'symbol' argument") catch {};
+        appendBundleArgKeysDiagnostic(alloc, out, args);
+        return;
+    };
+    const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
+    const json_mode = if (getStr(args, "output_format")) |fmt| std.mem.eql(u8, fmt, "json") else false;
+    const match_mode = getStr(args, "match_mode") orelse "semantic";
+
+    const defs = explorer.findAllSymbols(name, alloc) catch {
+        out.appendSlice(alloc, "error: symbol lookup failed") catch {};
+        return;
+    };
+    defer freeSymbolResults(alloc, defs);
+
+    const callers = explorer.searchContentWithScope(name, alloc, max_results) catch &.{};
+    defer {
+        for (callers) |r| {
+            alloc.free(r.line_text);
+            alloc.free(r.path);
+            if (r.scope_name) |sn| alloc.free(sn);
+        }
+        alloc.free(callers);
+    }
+
+    var imported_by: []const []const u8 = &.{};
+    if (defs.len > 0) {
+        imported_by = explorer.getImportedBy(defs[0].path, alloc) catch &.{};
+    }
+    defer {
+        for (imported_by) |p| alloc.free(p);
+        alloc.free(imported_by);
+    }
+
+    explorer.mu.lockShared();
+    const bases = explorer.type_graph.getBases(name);
+    const derived = explorer.type_graph.getDerived(name);
+    explorer.mu.unlockShared();
+    defer {
+        explorer.allocator.free(bases);
+        explorer.allocator.free(derived);
+    }
+
+    if (json_mode) {
+        writeRelationsJson(alloc, out, name, defs, imported_by, bases, derived, callers, match_mode);
+    } else {
+        writeRelationsText(alloc, out, name, defs, imported_by, bases, derived, callers, match_mode);
+    }
+}
+
+fn freeSymbolResults(alloc: std.mem.Allocator, defs: []const explore_mod.SymbolResult) void {
+    for (defs) |d| {
+        alloc.free(d.path);
+        alloc.free(d.symbol.name);
+        if (d.symbol.detail) |dd| alloc.free(dd);
+        for (d.symbol.decorators) |decorator| alloc.free(decorator);
+        if (d.symbol.decorators.len > 0) alloc.free(d.symbol.decorators);
+        if (d.symbol.return_type) |rt| alloc.free(rt);
+        for (d.symbol.param_types) |pt| alloc.free(pt);
+        if (d.symbol.param_types.len > 0) alloc.free(d.symbol.param_types);
+    }
+    alloc.free(defs);
+}
+
+fn writeRelationsText(
+    alloc: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    name: []const u8,
+    defs: []const explore_mod.SymbolResult,
+    imported_by: []const []const u8,
+    bases: []const []const u8,
+    derived: []const []const u8,
+    callers: []const explore_mod.Explorer.ScopedSearchResult,
+    match_mode: []const u8,
+) void {
+    const w = cio.listWriter(out, alloc);
+    w.print("relations for '{s}':\n", .{name}) catch {};
+    w.writeAll("definitions:\n") catch {};
+    if (defs.len == 0) w.writeAll("  (none)\n") catch {};
+    for (defs) |d| w.print("  {s}:{d} {s}\n", .{ d.path, d.symbol.line_start, @tagName(d.symbol.kind) }) catch {};
+    w.writeAll("bases:\n") catch {};
+    if (bases.len == 0) w.writeAll("  (none)\n") catch {};
+    for (bases) |b| w.print("  {s}\n", .{b}) catch {};
+    w.writeAll("derived/implementations:\n") catch {};
+    if (derived.len == 0) w.writeAll("  (none)\n") catch {};
+    for (derived) |d| w.print("  {s}\n", .{d}) catch {};
+    w.writeAll("type/dependency users:\n") catch {};
+    if (imported_by.len == 0) w.writeAll("  (none)\n") catch {};
+    for (imported_by) |p| w.print("  {s}\n", .{p}) catch {};
+    w.writeAll("callers:\n") catch {};
+    var shown: usize = 0;
+    for (callers) |r| {
+        const lang = explore_mod.detectLanguage(r.path);
+        if (!callerLineMatches(r.line_text, name, lang, match_mode)) continue;
+        shown += 1;
+        if (r.scope_name) |sn| {
+            w.print("  {s}:{d}: {s} [in {s}]\n", .{ r.path, r.line_num, r.line_text, sn }) catch {};
+        } else {
+            w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+        }
+    }
+    if (shown == 0) w.writeAll("  (none)\n") catch {};
+}
+
+fn writeRelationsJson(
+    alloc: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    name: []const u8,
+    defs: []const explore_mod.SymbolResult,
+    imported_by: []const []const u8,
+    bases: []const []const u8,
+    derived: []const []const u8,
+    callers: []const explore_mod.Explorer.ScopedSearchResult,
+    match_mode: []const u8,
+) void {
+    const w = cio.listWriter(out, alloc);
+    w.print("{{\"tool\":\"codedb_relations\",\"query\":\"", .{}) catch {};
+    writeJsonString(out, alloc, name);
+    w.print("\",\"definitions\":[", .{}) catch {};
+    for (defs, 0..) |d, i| {
+        if (i > 0) w.writeAll(",") catch {};
+        w.print("{{\"path\":\"", .{}) catch {}; writeJsonString(out, alloc, d.path);
+        w.print("\",\"line\":{d},\"kind\":\"{s}\",\"confidence\":\"high\",\"why_matched\":\"definition\",\"semantic_kind\":\"definition\"}}", .{ d.symbol.line_start, @tagName(d.symbol.kind) }) catch {};
+    }
+    w.print("],\"bases\":[", .{}) catch {};
+    writeJsonStringArray(out, alloc, bases, "inheritance", "base");
+    w.print("],\"derived\":[", .{}) catch {};
+    writeJsonStringArray(out, alloc, derived, "inheritance", "derived");
+    w.print("],\"dependency_users\":[", .{}) catch {};
+    for (imported_by, 0..) |p, i| {
+        if (i > 0) w.writeAll(",") catch {};
+        w.print("{{\"path\":\"", .{}) catch {}; writeJsonString(out, alloc, p);
+        w.print("\",\"confidence\":\"medium\",\"why_matched\":\"type_reference_or_import\",\"semantic_kind\":\"dependency_user\"}}", .{}) catch {};
+    }
+    w.print("],\"callers\":[", .{}) catch {};
+    var first = true;
+    for (callers) |r| {
+        const lang = explore_mod.detectLanguage(r.path);
+        if (!callerLineMatches(r.line_text, name, lang, match_mode)) continue;
+        if (!first) w.writeAll(",") catch {};
+        first = false;
+        w.print("{{\"path\":\"", .{}) catch {}; writeJsonString(out, alloc, r.path);
+        w.print("\",\"line\":{d},\"snippet\":\"", .{r.line_num}) catch {}; writeJsonString(out, alloc, r.line_text);
+        w.print("\",\"confidence\":\"high\",\"why_matched\":\"invocation\",\"semantic_kind\":\"caller\"", .{}) catch {};
+        if (r.scope_name) |sn| {
+            w.print(",\"scope_name\":\"", .{}) catch {}; writeJsonString(out, alloc, sn); w.print("\"", .{}) catch {};
+        }
+        w.print("}}", .{}) catch {};
+    }
+    w.print("]}}", .{}) catch {};
+}
+
+fn writeJsonStringArray(out: *std.ArrayList(u8), alloc: std.mem.Allocator, items: []const []const u8, why: []const u8, kind: []const u8) void {
+    const w = cio.listWriter(out, alloc);
+    for (items, 0..) |item, i| {
+        if (i > 0) w.writeAll(",") catch {};
+        w.print("{{\"name\":\"", .{}) catch {}; writeJsonString(out, alloc, item);
+        w.print("\",\"confidence\":\"high\",\"why_matched\":\"{s}\",\"semantic_kind\":\"{s}\"}}", .{ why, kind }) catch {};
+    }
+}
+
+fn writeJsonString(out: *std.ArrayList(u8), alloc: std.mem.Allocator, s: []const u8) void {
+    for (s) |c| {
+        switch (c) {
+            '\\' => out.appendSlice(alloc, "\\\\") catch {},
+            '"' => out.appendSlice(alloc, "\\\"") catch {},
+            '\n' => out.appendSlice(alloc, "\\n") catch {},
+            '\r' => out.appendSlice(alloc, "\\r") catch {},
+            '\t' => out.appendSlice(alloc, "\\t") catch {},
+            else => out.append(alloc, c) catch {},
+        }
     }
 }

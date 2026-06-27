@@ -21,6 +21,11 @@ pub const Config = struct {
     /// <data_dir>/rerank-traces.jsonl. v0 logger for offline rerank-tuning
     /// experiments. Off by default — opt in via .codedbrc.
     rerank_trace: bool = false,
+    /// When true, index generated code artifacts (EF migrations, *.Designer.cs,
+    /// *.g.cs, *.generated.*). Default false — generated files pollute word/symbol
+    /// indexes and rarely carry useful signal. Query-time `exclude_generated`
+    /// still filters them from results regardless of this setting.
+    index_generated_files: bool = false,
 
     pub const default: Config = .{};
 
@@ -48,6 +53,8 @@ pub const Config = struct {
                 if (cfg.max_cached == 0) return error.InvalidMaxCached;
             } else if (std.mem.eql(u8, key, "rerank_trace")) {
                 cfg.rerank_trace = parseBool(val) catch return error.InvalidRerankTrace;
+            } else if (std.mem.eql(u8, key, "index_generated_files")) {
+                cfg.index_generated_files = parseBool(val) catch return error.InvalidBool;
             }
         }
         return cfg;

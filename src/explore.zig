@@ -364,6 +364,8 @@ pub const Explorer = struct {
 
     pub const rebuildTypeIndexes = @import("explore/deps.zig").rebuildTypeIndexes;
 
+    pub const rebuildTypeUsageDeps = @import("explore/deps.zig").rebuildTypeUsageDeps;
+
     pub const buildTypeGraphForFile = @import("explore/deps.zig").buildTypeGraphForFile;
 
     pub const extractAndRecordBases = @import("explore/deps.zig").extractAndRecordBases;

@@ -57,3 +57,15 @@ test "config: rerank_trace defaults off and parses true/false" {
 
     try testing.expectError(error.InvalidRerankTrace, Config.parse("rerank_trace = maybe\n"));
 }
+
+test "config: index_generated_files defaults off and parses true/false" {
+    try testing.expect(Config.default.index_generated_files == false);
+
+    const cfg_on = try Config.parse("index_generated_files = true\n");
+    try testing.expect(cfg_on.index_generated_files == true);
+
+    const cfg_off = try Config.parse("index_generated_files = false\n");
+    try testing.expect(cfg_off.index_generated_files == false);
+
+    try testing.expectError(error.InvalidBool, Config.parse("index_generated_files = maybe\n"));
+}

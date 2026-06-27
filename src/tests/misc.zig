@@ -50,6 +50,7 @@ comptime {
     _ = @import("../hot_cache_tests.zig");
     _ = @import("../root_policy_tests.zig");
     _ = @import("../tsql_parser_tests.zig");
+    _ = @import("../watcher/skip_rules_tests.zig");
 }
 const snapshot_mod = @import("../snapshot.zig");
 const telemetry_mod = @import("../telemetry.zig");

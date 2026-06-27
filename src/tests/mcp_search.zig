@@ -28,6 +28,21 @@ const splitIdentifier = @import("../index.zig").splitIdentifier;
 
 const version = @import("../version.zig");
 const watcher = @import("../watcher.zig");
+const mcp_tools = @import("../mcp/explore_tools.zig");
+
+test "callers: semantic match keeps real invocations and drops strings/comments" {
+    try testing.expect(mcp_tools.callerLineMatches("    service.Probe(request);", "Probe", .c_sharp, "semantic"));
+    try testing.expect(mcp_tools.callerLineMatches("    Probe(request);", "Probe", .c_sharp, "semantic"));
+    try testing.expect(mcp_tools.callerLineMatches("    Probe<string>(request);", "Probe", .c_sharp, "semantic"));
+    try testing.expect(!mcp_tools.callerLineMatches("    logger.LogInformation(\"Probe(request)\");", "Probe", .c_sharp, "semantic"));
+    try testing.expect(!mcp_tools.callerLineMatches("    // Probe(request);", "Probe", .c_sharp, "semantic"));
+    try testing.expect(!mcp_tools.callerLineMatches("    var x = nameof(Probe);", "Probe", .c_sharp, "semantic"));
+}
+
+test "callers: text match mode preserves whole-word behavior" {
+    try testing.expect(mcp_tools.callerLineMatches("    logger.LogInformation(\"Probe\");", "Probe", .c_sharp, "text"));
+    try testing.expect(!mcp_tools.callerLineMatches("    ProbeRepository.Do();", "Probe", .c_sharp, "text"));
+}
 const edit_mod = @import("../edit.zig");
 const snapshot_json = @import("../snapshot_json.zig");
 const explore = @import("../explore.zig");

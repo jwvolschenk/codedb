@@ -1,5 +1,64 @@
 const std = @import("std");
 
+// ── Generated-code filtering ───────────────────────────────────────────────
+// EF migrations, WinForms/EF designers, and source-generator outputs pollute
+// the word/symbol indexes and rarely carry signal an agent wants. By default
+// these are skipped at index time (see isGeneratedPath). The behaviour is
+// toggleable process-wide via setIncludeGenerated (driven by the
+// `index_generated_files` config key) so users who need them can opt back in.
+var include_generated: std.atomic.Value(bool) = .{ .raw = false };
+
+/// Cumulative count of files filtered as generated since process start.
+/// Counts each skip event (a single file scanned twice counts twice) — use as
+/// a "filter is active" health signal, not an exact file count.
+var generated_skip_events: std.atomic.Value(u64) = .{ .raw = 0 };
+
+pub fn setIncludeGenerated(v: bool) void {
+    include_generated.store(v, .release);
+}
+
+pub fn shouldIncludeGenerated() bool {
+    return include_generated.load(.acquire);
+}
+
+pub fn generatedSkipEvents() u64 {
+    return generated_skip_events.load(.acquire);
+}
+
+/// Does `path` look like generated code? Path-based only — never reads file
+/// contents — so it stays cheap enough for the hot walk/index path.
+pub fn isGeneratedPath(path: []const u8) bool {
+    // EF / EF Core migrations live under a Migrations/ directory by convention.
+    if (containsPathSegment(path, "Migrations")) {
+        if (endsWithIgnoreCase(path, ".cs") or endsWithIgnoreCase(path, ".vb")) return true;
+    }
+    // WinForms / EF / dataset designer files.
+    if (endsWithIgnoreCase(path, ".designer.cs")) return true;
+    if (endsWithIgnoreCase(path, ".designer.vb")) return true;
+    // Source-generator and explicit auto-generated markers.
+    if (endsWithIgnoreCase(path, ".g.cs")) return true;
+    if (endsWithIgnoreCase(path, ".g.vb")) return true;
+    if (endsWithIgnoreCase(path, ".g.ts")) return true;
+    if (endsWithIgnoreCase(path, ".generated.cs")) return true;
+    if (endsWithIgnoreCase(path, ".generated.vb")) return true;
+    if (endsWithIgnoreCase(path, ".generated.ts")) return true;
+    if (endsWithIgnoreCase(path, ".generated.java")) return true;
+    return false;
+}
+
+fn containsPathSegment(path: []const u8, segment: []const u8) bool {
+    var rest = path;
+    while (true) {
+        const sep = std.mem.indexOfScalar(u8, rest, '/');
+        const seg = if (sep) |s| rest[0..s] else rest;
+        if (eqlAsciiIgnoreCase(seg, segment)) return true;
+        if (sep) |s| {
+            rest = rest[s + 1 ..];
+        } else break;
+    }
+    return false;
+}
+
 pub const skip_dirs = [_][]const u8{
     ".git",
     ".claude",
@@ -152,6 +211,10 @@ pub fn shouldSkipFile(path: []const u8) bool {
     }
     if (std.mem.endsWith(u8, path, ".DS_Store")) return true;
     if (isSensitivePath(path)) return true;
+    if (!shouldIncludeGenerated() and isGeneratedPath(path)) {
+        _ = generated_skip_events.fetchAdd(1, .monotonic);
+        return true;
+    }
     return false;
 }
 

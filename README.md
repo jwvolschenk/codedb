@@ -359,6 +359,13 @@ max_cached = 1000
 # <data_dir>/rerank-traces.jsonl for offline tuning experiments.
 # Default: false
 rerank_trace = false
+
+# ── Generated files ───────────────────────────────────────
+# Index generated code artifacts (EF Migrations/*, *.Designer.cs,
+# *.g.cs, *.generated.*). Default: false — they're skipped at index
+# time. Even when set to true, search/word/callers still filter them
+# out unless you pass include_generated=true to the call.
+index_generated_files = false
 ```
 
 </details>
@@ -370,6 +377,23 @@ rerank_trace = false
 | `max_versions` | 100 | You edit files frequently and need deep history | Disk space is tight |
 | `max_cached` | 1000 | You work on very large monorepos (1000+ files) | Memory is constrained |
 | `rerank_trace` | false | Tuning search relevance offline | Not actively experimenting |
+| `index_generated_files` | false | Investigating EF migrations / source-generated code | Default — keeps generated noise out of the index |
+
+### Agent Precision Defaults
+
+- `codedb_callers` defaults to `match_mode="semantic"`, a fast heuristic that keeps
+  invocation-looking call sites (`Probe(...)`, `service.Probe(...)`, `Probe<T>(...)`) and
+  drops strings/comments/plain mentions. Pass `match_mode="text"` for the older broad
+  whole-word behavior or `match_mode="both"` for maximum recall.
+- `codedb_deps direction="imported_by"` now includes type-usage edges for C#/F#/JVM and
+  TypeScript-style files. Return types, parameter types, fields, and properties can create
+  dependency edges, so entity files surface repository/service/controller dependents even
+  without explicit import-path links.
+- `codedb_deps output_format="json"` and `codedb_relations output_format="json"` return
+  machine-friendly grouped JSON with `confidence`, `why_matched`, and `semantic_kind`
+  metadata.
+- `codedb_relations symbol="Probe"` returns a one-shot relation map: definitions,
+  inheritance, dependency/type-usage users, and heuristic callers.
 
 ---
 

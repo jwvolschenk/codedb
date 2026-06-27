@@ -211,6 +211,11 @@ pub fn run() !void {
     store.max_versions = cfg.max_versions;
     defer store.deinit();
 
+    // Generated-code artifacts (EF migrations, *.Designer.cs, source-generator
+    // outputs) are skipped at index time by default. `index_generated_files`
+    // lets a user opt back in via .codedbrc.
+    watcher.setIncludeGenerated(cfg.index_generated_files);
+
     const data_log_path = try std.fmt.allocPrint(allocator, "{s}/data.log", .{data_dir});
     defer allocator.free(data_log_path);
     store.openDataLog(io, data_log_path) catch |err| {
@@ -304,6 +309,11 @@ pub fn run() !void {
             } else {
                 try watcher.initialScan(io, &store, &explorer, root, allocator, true);
             }
+            // Type-usage dependency edges need a complete symbol_index. The
+            // per-file pass runs during indexing for incremental freshness;
+            // this post-scan pass fixes initial-scan ordering (A can reference
+            // B before B was indexed).
+            explorer.rebuildTypeUsageDeps();
             const scan_elapsed = cio.nanoTimestamp() - t_scan;
             var dur_buf: [64]u8 = undefined;
             out.p("{s}\xe2\x9c\x93{s} {s}indexed{s}  {s}{s}{s}\n", .{

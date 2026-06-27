@@ -93,6 +93,7 @@ codedb_search query="UserService" project=/home/user/monorepo/services/api
 |------|---------|-------------|
 | `codedb_callers` | Every call site of a symbol | Impact analysis — who calls this? |
 | `codedb_deps` | Dependency graph (imported_by / depends_on) | What does this file import? What imports it? |
+| `codedb_relations` | Definitions + inheritance + deps + callers | One-shot high-signal symbol impact map |
 | `codedb_deps transitive=true` | Full transitive closure | Blast radius analysis |
 | `codedb_types` | Find functions by return type or param type | `types return_type="Task<UserDto>"` |
 | `codedb_hierarchy` | Class/interface inheritance tree | What extends this class? |
@@ -155,9 +156,53 @@ Always set `max_results` or `limit` to avoid context bloat:
 
 - `codedb_search`: defaults to 50 — set `max_results: 10` for broad queries
 - `codedb_word`: capped at 50 — use `path_glob` to scope common identifiers
-- `codedb_callers`: defaults to 50 — reduce for focused investigation
+- `codedb_callers`: defaults to 50 and `match_mode="semantic"` — use `match_mode="text"` for broad mention search
 - `codedb_types`: defaults to 50 — reduce if you only need a few examples
 - `codedb_read`: use `line_start`/`line_end` after `codedb_outline` — never read entire large files
+
+## Generated-Code Filtering
+
+Generated artifacts (EF `Migrations/*`, `*.Designer.cs`, `*.g.cs`, `*.generated.*`) are
+excluded from `codedb_search`, `codedb_word`, and `codedb_callers` by default — they
+flood results with low-signal matches. This is almost always what you want.
+
+- Pass `include_generated=true` to a search/word/callers call to surface generated-file
+  matches (e.g. when investigating a migration or a source-generated file specifically).
+- Generated files are also skipped at index time (see `index_generated_files` in
+  `.codedbrc`). `codedb_status` reports `generated_filter` and `generated_skip_events`
+  so you can confirm the filter is active and how many files it removed.
+
+## Call-Site Precision
+
+`codedb_callers` defaults to `match_mode="semantic"`. This is heuristic, not a full
+language-server resolver: it keeps invocation-looking matches such as `Probe(...)`,
+`service.Probe(...)`, and `Probe<T>(...)`, and drops strings/comments/whole-word mentions.
+
+- Use `match_mode="text"` when you want the old broad whole-word behavior.
+- Use `match_mode="both"` when recall matters more than precision.
+
+## Type-Usage Dependencies
+
+`codedb_deps direction="imported_by"` includes C#/F#/JVM/TypeScript type references from
+return types, parameter types, fields, and properties. This means a file defining `Probe`
+can now surface `ProbeRepository.cs` even when the repository only references `Probe` as a
+field/parameter/return type and has no explicit import edge to `Probe.cs`.
+
+Use `output_format="json"` on `codedb_deps` when composing with other tool outputs; JSON
+hits include `confidence`, `why_matched`, and `semantic_kind`.
+
+## Relation Query
+
+Use `codedb_relations symbol="Probe"` when you need the compact map an LSP-style workflow
+usually requires multiple calls for. It groups:
+
+- definitions
+- bases and derived/implementing types
+- dependency/type-usage users
+- heuristic callers
+
+Pass `output_format="json"` for grouped machine-readable output with confidence/reason
+metadata per hit.
 
 ## Common Workflows
 

@@ -504,6 +504,38 @@ test "dep-graph: Explorer integration — getImportedBy uses reverse index" {
     try testing.expectEqual(@as(usize, 2), deps.len);
 }
 
+test "dep-graph: C# type usage creates reverse dependency edges" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("Probe.cs",
+        \\namespace App;
+        \\public class Probe {
+        \\}
+    );
+    try explorer.indexFile("ProbeRepository.cs",
+        \\namespace App;
+        \\public class ProbeRepository {
+        \\    private Probe _probe;
+        \\    public Probe GetProbe() { return _probe; }
+        \\    public void Save(Probe probe) { }
+        \\}
+    );
+
+    // Initial indexing builds each file in isolation; this post-scan pass resolves
+    // type names against the now-complete symbol index.
+    explorer.rebuildTypeUsageDeps();
+
+    const deps = try explorer.getImportedBy("Probe.cs", testing.allocator);
+    defer {
+        for (deps) |d| testing.allocator.free(d);
+        testing.allocator.free(deps);
+    }
+    try testing.expectEqual(@as(usize, 1), deps.len);
+    try testing.expectEqualStrings("ProbeRepository.cs", deps[0]);
+}
+
 test "dep-graph: Explorer transitive dependents" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

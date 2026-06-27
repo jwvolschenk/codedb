@@ -296,6 +296,57 @@ pub fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *S
     for (watcher.skip_dirs) |dir| {
         w.print("    {s}\n", .{dir}) catch {};
     }
+
+    // Generated-code filter state (#6).
+    w.print("  generated_filter: {s}\n", .{if (watcher.shouldIncludeGenerated()) "disabled" else "enabled"}) catch {};
+    w.print("  generated_skip_events: {d}\n", .{watcher.generatedSkipEvents()}) catch {};
+
+    // Language coverage — files per language across indexed outlines.
+    var lang_counts = std.StringHashMap(usize).init(alloc);
+    defer lang_counts.deinit();
+    explorer.mu.lockShared();
+    {
+        var oit = explorer.outlines.iterator();
+        while (oit.next()) |entry| {
+            const lang_name = @tagName(entry.value_ptr.language);
+            const gop = lang_counts.getOrPut(lang_name) catch continue;
+            if (!gop.found_existing) gop.value_ptr.* = 0;
+            gop.value_ptr.* += 1;
+        }
+    }
+    explorer.mu.unlockShared();
+    w.print("  language_coverage: {d} languages\n", .{lang_counts.count()}) catch {};
+    var lang_it = lang_counts.iterator();
+    while (lang_it.next()) |entry| {
+        w.print("    {s}: {d}\n", .{ entry.key_ptr.*, entry.value_ptr.* }) catch {};
+    }
+
+    // Stale files — tracked in the store but missing from the index.
+    // Snapshot store keys (duped) under the store lock, then check outlines
+    // under the explorer lock to avoid nested lock ordering.
+    var stale_candidates = std.ArrayList([]const u8).empty;
+    defer {
+        for (stale_candidates.items) |k| alloc.free(k);
+        stale_candidates.deinit(alloc);
+    }
+    store.mu.lock();
+    {
+        var sit = store.files.iterator();
+        while (sit.next()) |entry| {
+            const dup = alloc.dupe(u8, entry.key_ptr.*) catch continue;
+            stale_candidates.append(alloc, dup) catch {
+                alloc.free(dup);
+            };
+        }
+    }
+    store.mu.unlock();
+    var stale: usize = 0;
+    explorer.mu.lockShared();
+    for (stale_candidates.items) |k| {
+        if (!explorer.outlines.contains(k)) stale += 1;
+    }
+    explorer.mu.unlockShared();
+    w.print("  stale_files: {d} (tracked in store, not indexed)\n", .{stale}) catch {};
 }
 
 pub fn handleSnapshot(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *Explorer, store: *Store, cache: *SnapshotCache) void {

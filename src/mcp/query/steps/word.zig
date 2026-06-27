@@ -10,6 +10,7 @@ const mcp = @import("../../../mcp.zig");
 const finishQueryWithFailure = mcp.finishQueryWithFailure;
 const combo_boost = @import("../combo_boost.zig");
 const shared = @import("../shared.zig");
+const skip_rules = @import("../../../watcher/skip_rules.zig");
 
 pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize) bool {
     const w = cio.listWriter(ctx.out, ctx.alloc);
@@ -18,6 +19,8 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
         finishQueryWithFailure(ctx.alloc, ctx.out, step_i, "word needs 'word'", step);
         return false;
     };
+    const include_generated = getBool(step, "include_generated");
+    const exclude_generated = !include_generated;
     const hits = ctx.explorer.searchWord(word, ctx.alloc) catch {
         w.print("error: word search failed\n", .{}) catch {};
         return false;
@@ -34,6 +37,7 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
         defer ctx.explorer.mu.unlockShared();
         for (hits) |h| {
             const hp = ctx.explorer.word_index.hitPath(h);
+            if (exclude_generated and skip_rules.isGeneratedPath(hp)) continue;
             if (path_set.contains(hp)) {
                 w.print("  {s}:{d}\n", .{ hp, h.line_num }) catch {};
                 hit_set.put(hp, {}) catch {};
@@ -57,6 +61,7 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
         ctx.file_set.clearRetainingCapacity();
         for (hits) |h| {
             const hp = ctx.explorer.word_index.hitPath(h);
+            if (exclude_generated and skip_rules.isGeneratedPath(hp)) continue;
             w.print("  {s}:{d}\n", .{ hp, h.line_num }) catch {};
             shared.recordHitLine(ctx.hit_lines, ctx.alloc, hp, h.line_num);
             if (!seen.contains(hp)) {
