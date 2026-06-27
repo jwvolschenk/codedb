@@ -722,10 +722,12 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
     var parsed_outline = try parseOutlineWithParser(&parser, path, content);
     defer parsed_outline.deinit();
 
-    // Post-process: collapse consecutive POCO properties in C# files
-    if (parsed_outline.language == .c_sharp) {
-        collapseConsecutiveProperties(allocator, &parsed_outline);
-    }
+    // NOTE: consecutive-property collapsing previously ran here, but it
+    // mutated the stored outline — discarding every collapsed property's
+    // name/type and corrupting symbol lookup, type indexing, type-usage
+    // dependency edges, and scope attribution. Collapsing is now a
+    // display-only transform (see mcp/explore_tools.zig), so the indexed
+    // data stays complete while `codedb_outline` stays compact.
 
     // Post-process: enrich SSRS outlines with multi-line constructs
     // (Description, AXYS ConnectString, <Code> block, ReportParameter children).
@@ -741,56 +743,6 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         .content = content,
         .outline = try cloneOutline(&parsed_outline, allocator),
     };
-}
-
-/// Collapse consecutive `variable` symbols (POCO properties) into grouped entries.
-/// When 5+ consecutive variables appear between type boundaries, merge them into
-/// a single entry whose detail lists all property names — reducing outline token
-/// waste for T4-generated files like ViewModels.cs.
-pub fn collapseConsecutiveProperties(allocator: std.mem.Allocator, outline: *FileOutline) void {
-    const MIN_GROUP_SIZE: usize = 5;
-    var result: std.ArrayList(Symbol) = .empty;
-    var i: usize = 0;
-    while (i < outline.symbols.items.len) {
-        const sym = outline.symbols.items[i];
-        if (sym.kind != .variable) {
-            result.append(allocator, sym) catch {};
-            i += 1;
-            continue;
-        }
-        // Count consecutive variables
-        const run_start = i;
-        while (i < outline.symbols.items.len and outline.symbols.items[i].kind == .variable) {
-            i += 1;
-        }
-        const run_len = i - run_start;
-        if (run_len < MIN_GROUP_SIZE) {
-            // Small group — keep individual entries
-            for (run_start..i) |j| {
-                result.append(allocator, outline.symbols.items[j]) catch {};
-            }
-        } else {
-            // Large group — collapse into single entry with property list detail
-            var detail_buf: std.ArrayList(u8) = .empty;
-            defer detail_buf.deinit(allocator);
-            detail_buf.appendSlice(allocator, "props: ") catch {};
-            for (run_start..i) |j| {
-                if (j > run_start) detail_buf.appendSlice(allocator, ", ") catch {};
-                detail_buf.appendSlice(allocator, outline.symbols.items[j].name) catch {};
-            }
-            const owned_detail = detail_buf.toOwnedSlice(allocator) catch null;
-            result.append(allocator, .{
-                .name = outline.symbols.items[run_start].name,
-                .kind = .variable,
-                .line_start = outline.symbols.items[run_start].line_start,
-                .line_end = outline.symbols.items[i - 1].line_end,
-                .detail = owned_detail,
-            }) catch {};
-        }
-    }
-    // Replace the old symbols list with the collapsed one
-    outline.symbols.deinit(allocator);
-    outline.symbols = result;
 }
 
 pub fn collectCSharpDecorators(allocator: std.mem.Allocator, line: []const u8, pending: *std.ArrayList([]const u8)) !void {

@@ -1,1 +1,1 @@
-pub const semver = "1.1.3";
+pub const semver = "1.2.0";

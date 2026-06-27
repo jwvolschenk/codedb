@@ -85,6 +85,10 @@ pub fn run(ctx: *Context) !void {
         } else {
             const startup_time_ms: u64 = @intCast(@max(cio.milliTimestamp() - startup_t0, 0));
             disk_cache.loadTrigramFromDiskIfPresent(ctx.io, ctx.explorer, ctx.data_dir, ctx.allocator);
+            // Rebuild TypeIndex/TypeGraph/type-usage deps from the loaded
+            // outlines (the snapshot doesn't preserve them completely).
+            // Matches the project= load path and triggerScanFromRoots.
+            ctx.explorer.rebuildTypeIndexes();
             telem.recordCodebaseStats(ctx.explorer, startup_time_ms);
             disk_cache.compactMcpReadyMemory(ctx.io, ctx.explorer, ctx.data_dir, git_head, ctx.allocator);
             mcp_server.setScanState(.ready);

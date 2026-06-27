@@ -129,24 +129,81 @@ pub fn handleOutline(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
         writeGroupedOutline(alloc, out, &outline, compact);
         return;
     }
-    for (outline.symbols.items) |sym| {
-        if (compact) {
-            w.print("  L{d}: {s} {s}\n", .{ sym.line_start, @tagName(sym.kind), sym.name }) catch {};
-        } else {
-            w.print("  L{d}: {s} {s}", .{ sym.line_start, @tagName(sym.kind), sym.name }) catch {};
-            if (sym.return_type) |rt| w.print(" -> {s}", .{rt}) catch {};
-            if (sym.param_types.len > 0) {
-                w.writeAll(" (") catch {};
-                for (sym.param_types, 0..) |pt, i| {
-                    if (i > 0) w.writeAll(", ") catch {};
-                    w.print("{s}", .{pt}) catch {};
-                }
-                w.writeAll(")") catch {};
-            }
-            if (sym.detail) |d| w.print("  // {s}", .{d}) catch {};
-            writeDecoratorsInline(w, sym.decorators);
-            w.writeAll("\n") catch {};
+    writeOutlineSymbolsText(alloc, out, &outline, compact);
+}
+
+/// Minimum consecutive-variable run that triggers display-time collapse.
+/// Matches the legacy (pre-fix) data-layer threshold so default
+/// `codedb_outline` output is unchanged in shape — only the underlying
+/// indexed data now stays complete (every property keeps its name/type).
+const OUTLINE_COLLAPSE_MIN_GROUP: usize = 5;
+
+/// Render one outline symbol line (compact or full). Factored out so the
+/// collapse-aware loop can reuse it for non-collapsed symbols and small runs.
+fn writeOutlineSymbolLine(w: anytype, sym: explore_mod.Symbol, compact: bool) void {
+    if (compact) {
+        w.print("  L{d}: {s} {s}\n", .{ sym.line_start, @tagName(sym.kind), sym.name }) catch {};
+        return;
+    }
+    w.print("  L{d}: {s} {s}", .{ sym.line_start, @tagName(sym.kind), sym.name }) catch {};
+    if (sym.return_type) |rt| w.print(" -> {s}", .{rt}) catch {};
+    if (sym.param_types.len > 0) {
+        w.writeAll(" (") catch {};
+        for (sym.param_types, 0..) |pt, i| {
+            if (i > 0) w.writeAll(", ") catch {};
+            w.print("{s}", .{pt}) catch {};
         }
+        w.writeAll(")") catch {};
+    }
+    if (sym.detail) |d| w.print("  // {s}", .{d}) catch {};
+    writeDecoratorsInline(w, sym.decorators);
+    w.writeAll("\n") catch {};
+}
+
+/// Render outline symbols to text, collapsing long consecutive runs of C#
+/// POCO properties (`.variable`) into a single summary line. This is a
+/// DISPLAY-ONLY transform: the outline passed in retains every symbol with
+/// its type, so symbol lookup, the type index, type-usage dependency edges,
+/// and scope attribution all see the complete data. Non-C# files and runs
+/// shorter than `OUTLINE_COLLAPSE_MIN_GROUP` render each symbol verbatim.
+fn writeOutlineSymbolsText(
+    alloc: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    outline: *const explore_mod.FileOutline,
+    compact: bool,
+) void {
+    const w = cio.listWriter(out, alloc);
+    const collapse_enabled = outline.language == .c_sharp;
+    var i: usize = 0;
+    while (i < outline.symbols.items.len) {
+        const sym = outline.symbols.items[i];
+        if (collapse_enabled and sym.kind == .variable) {
+            const run_start = i;
+            while (i < outline.symbols.items.len and outline.symbols.items[i].kind == .variable) : (i += 1) {}
+            const run_len = i - run_start;
+            if (run_len >= OUTLINE_COLLAPSE_MIN_GROUP) {
+                const first = outline.symbols.items[run_start];
+                if (compact) {
+                    // Matches the legacy compact+collapsed shape: first
+                    // property only, no prop-list detail.
+                    w.print("  L{d}: variable {s}\n", .{ first.line_start, first.name }) catch {};
+                } else {
+                    w.print("  L{d}: variable {s}  // props: ", .{ first.line_start, first.name }) catch {};
+                    for (run_start..i) |j| {
+                        if (j > run_start) w.writeAll(", ") catch {};
+                        w.writeAll(outline.symbols.items[j].name) catch {};
+                    }
+                    w.writeAll("\n") catch {};
+                }
+                continue;
+            }
+            for (run_start..i) |j| {
+                writeOutlineSymbolLine(w, outline.symbols.items[j], compact);
+            }
+            continue;
+        }
+        writeOutlineSymbolLine(w, sym, compact);
+        i += 1;
     }
 }
 
@@ -210,6 +267,37 @@ fn writeGroupedOutline(alloc: std.mem.Allocator, out: *std.ArrayList(u8), outlin
     }
 }
 
+/// Parse a SymbolKind name (e.g. "class_def") passed via the `kind` filter.
+/// Returns null for an unknown value.
+fn parseSymbolKind(s: []const u8) ?explore_mod.SymbolKind {
+    inline for (@typeInfo(explore_mod.SymbolKind).@"enum".fields) |f| {
+        if (std.mem.eql(u8, s, f.name)) return @field(explore_mod.SymbolKind, f.name);
+    }
+    return null;
+}
+
+/// Salience rank for `codedb_symbol` results: type definitions first (the
+/// canonical match an agent usually wants), then callables, then data
+/// members, then everything else, with imports last. Lower sorts earlier.
+fn symbolKindRank(kind: explore_mod.SymbolKind) u8 {
+    return switch (kind) {
+        .class_def, .interface_def, .struct_def, .enum_def, .union_def, .trait_def, .type_alias => 0,
+        .function, .method => 1,
+        .constant, .variable => 2,
+        .macro_def, .impl_block, .test_decl, .comment_block => 3,
+        .import => 4,
+    };
+}
+
+fn symbolResultLess(_: void, a: explore_mod.SymbolResult, b: explore_mod.SymbolResult) bool {
+    const ra = symbolKindRank(a.symbol.kind);
+    const rb = symbolKindRank(b.symbol.kind);
+    if (ra != rb) return ra < rb;
+    const pc = std.mem.order(u8, a.path, b.path);
+    if (pc != .eq) return pc == .lt;
+    return a.symbol.line_start < b.symbol.line_start;
+}
+
 pub fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const name = getStr(args, "name") orelse {
         out.appendSlice(alloc, "error: missing 'name' argument") catch {};
@@ -219,6 +307,20 @@ pub fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
     const include_body = getBool(args, "body");
     const decorator_filter = getStr(args, "decorator_filter");
     const json_mode = isJsonMode(args);
+
+    // Optional `kind` filter (e.g. "class_def") so an agent can disambiguate
+    // a real type definition from same-named constants/imports/strings.
+    const kind_str = getStr(args, "kind");
+    const kind_filter: ?explore_mod.SymbolKind = if (kind_str) |k| parseSymbolKind(k) else null;
+    if (kind_str != null and kind_filter == null) {
+        const w_err = cio.listWriter(out, alloc);
+        w_err.print("error: unknown 'kind' value '{s}'. Valid kinds: ", .{kind_str.?}) catch {};
+        inline for (@typeInfo(explore_mod.SymbolKind).@"enum".fields) |f| {
+            w_err.print("{s} ", .{f.name}) catch {};
+        }
+        return;
+    }
+
     const results = explorer.findAllSymbols(name, alloc) catch {
         out.appendSlice(alloc, "error: search failed") catch {};
         return;
@@ -237,31 +339,43 @@ pub fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
         alloc.free(results);
     }
 
-    var visible_count: usize = 0;
+    // Build a filtered + ranked working list (shallow copies; the owned
+    // strings stay with `results`). Type definitions are ranked first so the
+    // canonical definition isn't buried under constants/imports that share
+    // the name (e.g. a "Probe" cache-tag string vs the Probe entity class).
+    var work: std.ArrayList(explore_mod.SymbolResult) = .empty;
+    defer work.deinit(alloc);
     for (results) |r| {
+        if (kind_filter) |k| {
+            if (r.symbol.kind != k) continue;
+        }
         if (decorator_filter) |filter| {
             if (!decoratorsContain(r.symbol.decorators, filter)) continue;
         }
-        visible_count += 1;
+        work.append(alloc, r) catch continue;
     }
+    std.mem.sort(explore_mod.SymbolResult, work.items, {}, symbolResultLess);
 
+    const visible_count = work.items.len;
     if (visible_count == 0 and !json_mode) {
         out.appendSlice(alloc, "no results for: ") catch {};
         out.appendSlice(alloc, name) catch {};
+        if (kind_filter) |k| {
+            const w2 = cio.listWriter(out, alloc);
+            w2.print(" (kind={s})", .{@tagName(k)}) catch {};
+        }
         return;
     }
 
     if (json_mode) {
-        writeSymbolJson(alloc, out, explorer, name, results, decorator_filter, include_body, visible_count);
+        // `work` is already kind+decorator filtered, so don't re-filter.
+        writeSymbolJson(alloc, out, explorer, name, work.items, null, include_body, visible_count);
         return;
     }
 
     const w = cio.listWriter(out, alloc);
     w.print("{d} results for '{s}':\n", .{ visible_count, name }) catch {};
-    for (results) |r| {
-        if (decorator_filter) |filter| {
-            if (!decoratorsContain(r.symbol.decorators, filter)) continue;
-        }
+    for (work.items) |r| {
         w.print("  {s}:{d} ({s})", .{ r.path, r.symbol.line_start, @tagName(r.symbol.kind) }) catch {};
         if (r.symbol.return_type) |rt| w.print(" -> {s}", .{rt}) catch {};
         if (r.symbol.param_types.len > 0) {
@@ -877,7 +991,7 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
     const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else 50;
     const include_generated = getBool(args, "include_generated");
     const exclude_generated = !include_generated;
-    const match_mode = getStr(args, "match_mode") orelse "semantic";
+    const requested_mode = getStr(args, "match_mode");
     const json_mode = isJsonMode(args);
 
     const defs = explorer.findAllSymbols(name, alloc) catch {
@@ -897,8 +1011,18 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
         }
         alloc.free(defs);
     }
+    // Auto-broaden to whole-word references when the resolved symbol is a
+    // type definition (class/interface/struct/enum/...) and no explicit
+    // mode was requested — types are referenced, not "called".
+    const match_mode = effectiveMatchMode(requested_mode, defs);
 
-    const orig = explorer.searchContentWithScope(name, alloc, max_results) catch {
+    // In references mode, merge ranked content-search hits with the complete
+    // structural type-reference set so recall isn't capped by content-search
+    // ranking for common type names (e.g. an entity referenced in 600+ lines).
+    const orig = (if (std.mem.eql(u8, match_mode, "references"))
+        explorer.searchReferencesWithScope(name, alloc, max_results)
+    else
+        explorer.searchContentWithScope(name, alloc, max_results)) catch {
         out.appendSlice(alloc, "error: search failed") catch {};
         return;
     };
@@ -934,7 +1058,13 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
     }
 
     const w = cio.listWriter(out, alloc);
-    w.print("{d} call sites for '{s}':\n", .{ shown, name }) catch {};
+    const noun: []const u8 = if (std.mem.eql(u8, match_mode, "references"))
+        "references"
+    else if (std.mem.eql(u8, match_mode, "text"))
+        "mentions"
+    else
+        "call sites";
+    w.print("{d} {s} for '{s}':\n", .{ shown, noun, name }) catch {};
     for (results) |r| {
         if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
         var is_def = false;
@@ -976,9 +1106,33 @@ pub fn hasWholeWordMatch(haystack: []const u8, needle: []const u8) bool {
 
 pub fn callerLineMatches(line: []const u8, name: []const u8, lang: explore_mod.Language, match_mode: []const u8) bool {
     if (std.mem.eql(u8, match_mode, "text")) return hasWholeWordMatch(line, name);
+    if (std.mem.eql(u8, match_mode, "references")) return isLikelyTypeReference(line, name, lang);
     if (std.mem.eql(u8, match_mode, "both")) return hasWholeWordMatch(line, name) or isLikelyCallSite(line, name, lang);
     // Default/unknown: prefer high-signal invocation-looking matches.
     return isLikelyCallSite(line, name, lang);
+}
+
+/// Type-definition symbol kinds. For these, a "caller" is really a
+/// "reference" (a type usage), since types are referenced rather than
+/// invoked. Used to auto-broaden caller matching for class-like symbols.
+pub fn isTypeDefinitionKind(kind: explore_mod.SymbolKind) bool {
+    return switch (kind) {
+        .class_def, .interface_def, .struct_def, .enum_def, .union_def, .trait_def, .type_alias => true,
+        else => false,
+    };
+}
+
+/// Decide the effective match mode for caller/reference lookup.
+/// When the caller did not explicitly request a mode (`requested == null`)
+/// and the resolved definitions include a type definition, broaden from
+/// invocation-only "semantic" to whole-word "references" — mirroring LSP
+/// findReferences for types. An explicit mode is always respected.
+pub fn effectiveMatchMode(requested: ?[]const u8, defs: []const explore_mod.SymbolResult) []const u8 {
+    if (requested) |m| return m;
+    for (defs) |d| {
+        if (isTypeDefinitionKind(d.symbol.kind)) return "references";
+    }
+    return "semantic";
 }
 
 pub fn isLikelyCallSite(line: []const u8, name: []const u8, lang: explore_mod.Language) bool {
@@ -995,6 +1149,29 @@ pub fn isLikelyCallSite(line: []const u8, name: []const u8, lang: explore_mod.La
             !looksLikeDeclarationPrefix(line[0..pos]) and
             hasInvocationSuffix(line, after_name))
         {
+            return true;
+        }
+        search_from = pos + 1;
+    }
+    return false;
+}
+
+/// Whole-word reference match for type names: finds identifier-boundary
+/// occurrences that are not inside strings or comments. Unlike
+/// `isLikelyCallSite`, it does NOT require an invocation suffix (`(`), so
+/// it catches type usages such as `List<Probe>`, `Probe? GetProbe()`,
+/// `EfRepo<Probe>`, and `new Probe()`. The declaration line itself is
+/// excluded separately by the caller (via the definitions list).
+pub fn isLikelyTypeReference(line: []const u8, name: []const u8, lang: explore_mod.Language) bool {
+    if (!langHasCallSites(lang)) return false;
+    if (name.len == 0 or line.len < name.len) return false;
+
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, line, search_from, name)) |pos| {
+        const before_ok = pos == 0 or !isIdentChar(line[pos - 1]);
+        const after_idx = pos + name.len;
+        const after_ok = after_idx >= line.len or !isIdentChar(line[after_idx]);
+        if (before_ok and after_ok and !isInsideStringOrComment(line, pos, lang)) {
             return true;
         }
         search_from = pos + 1;
@@ -1204,15 +1381,21 @@ pub fn handleRelations(alloc: std.mem.Allocator, args: *const std.json.ObjectMap
     };
     const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
     const json_mode = if (getStr(args, "output_format")) |fmt| std.mem.eql(u8, fmt, "json") else false;
-    const match_mode = getStr(args, "match_mode") orelse "semantic";
+    const requested_mode = getStr(args, "match_mode");
 
     const defs = explorer.findAllSymbols(name, alloc) catch {
         out.appendSlice(alloc, "error: symbol lookup failed") catch {};
         return;
     };
     defer freeSymbolResults(alloc, defs);
+    // Auto-broaden caller matching to whole-word references for type
+    // definitions (class/interface/struct/enum/...).
+    const match_mode = effectiveMatchMode(requested_mode, defs);
 
-    const callers = explorer.searchContentWithScope(name, alloc, max_results) catch &.{};
+    const callers = (if (std.mem.eql(u8, match_mode, "references"))
+        explorer.searchReferencesWithScope(name, alloc, max_results)
+    else
+        explorer.searchContentWithScope(name, alloc, max_results)) catch &.{};
     defer {
         for (callers) |r| {
             alloc.free(r.line_text);
@@ -1274,31 +1457,63 @@ fn writeRelationsText(
 ) void {
     const w = cio.listWriter(out, alloc);
     w.print("relations for '{s}':\n", .{name}) catch {};
-    w.writeAll("definitions:\n") catch {};
-    if (defs.len == 0) w.writeAll("  (none)\n") catch {};
-    for (defs) |d| w.print("  {s}:{d} {s}\n", .{ d.path, d.symbol.line_start, @tagName(d.symbol.kind) }) catch {};
-    w.writeAll("bases:\n") catch {};
-    if (bases.len == 0) w.writeAll("  (none)\n") catch {};
-    for (bases) |b| w.print("  {s}\n", .{b}) catch {};
-    w.writeAll("derived/implementations:\n") catch {};
-    if (derived.len == 0) w.writeAll("  (none)\n") catch {};
-    for (derived) |d| w.print("  {s}\n", .{d}) catch {};
-    w.writeAll("type/dependency users:\n") catch {};
-    if (imported_by.len == 0) w.writeAll("  (none)\n") catch {};
-    for (imported_by) |p| w.print("  {s}\n", .{p}) catch {};
-    w.writeAll("callers:\n") catch {};
+    var emitted: usize = 0;
+
+    // Omit empty sections rather than printing "(none)" — keeps the response
+    // focused on relationships that actually exist (token savings + less
+    // noise for leaf types with no bases/derived/users).
+    if (defs.len > 0) {
+        w.writeAll("definitions:\n") catch {};
+        for (defs) |d| w.print("  {s}:{d} {s}\n", .{ d.path, d.symbol.line_start, @tagName(d.symbol.kind) }) catch {};
+        emitted += 1;
+    }
+    if (bases.len > 0) {
+        w.writeAll("bases:\n") catch {};
+        for (bases) |b| w.print("  {s}\n", .{b}) catch {};
+        emitted += 1;
+    }
+    if (derived.len > 0) {
+        w.writeAll("derived/implementations:\n") catch {};
+        for (derived) |d| w.print("  {s}\n", .{d}) catch {};
+        emitted += 1;
+    }
+    if (imported_by.len > 0) {
+        w.writeAll("type/dependency users:\n") catch {};
+        for (imported_by) |p| w.print("  {s}\n", .{p}) catch {};
+        emitted += 1;
+    }
+
+    // Callers/references: the visible count depends on the def-exclusion +
+    // match filter, so count matches first to decide whether to emit.
     var shown: usize = 0;
     for (callers) |r| {
         const lang = explore_mod.detectLanguage(r.path);
+        if (isDefinitionHit(r.path, r.line_num, defs)) continue;
         if (!callerLineMatches(r.line_text, name, lang, match_mode)) continue;
         shown += 1;
-        if (r.scope_name) |sn| {
-            w.print("  {s}:{d}: {s} [in {s}]\n", .{ r.path, r.line_num, r.line_text, sn }) catch {};
-        } else {
-            w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-        }
     }
-    if (shown == 0) w.writeAll("  (none)\n") catch {};
+    if (shown > 0) {
+        const callers_noun: []const u8 = if (std.mem.eql(u8, match_mode, "references"))
+            "references"
+        else if (std.mem.eql(u8, match_mode, "text"))
+            "mentions"
+        else
+            "callers";
+        w.print("{s}:\n", .{callers_noun}) catch {};
+        for (callers) |r| {
+            const lang = explore_mod.detectLanguage(r.path);
+            if (isDefinitionHit(r.path, r.line_num, defs)) continue;
+            if (!callerLineMatches(r.line_text, name, lang, match_mode)) continue;
+            if (r.scope_name) |sn| {
+                w.print("  {s}:{d}: {s} [in {s}]\n", .{ r.path, r.line_num, r.line_text, sn }) catch {};
+            } else {
+                w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+            }
+        }
+        emitted += 1;
+    }
+
+    if (emitted == 0) w.writeAll("  (no relations found)\n") catch {};
 }
 
 fn writeRelationsJson(
@@ -1338,9 +1553,25 @@ fn writeRelationsJson(
         w.print("}}", .{}) catch {};
     }
     w.print("],\"callers\":[", .{}) catch {};
+    const rel_is_text = std.mem.eql(u8, match_mode, "text");
+    const rel_is_reference = std.mem.eql(u8, match_mode, "references");
+    const rel_confidence: []const u8 = if (rel_is_text) "low" else "high";
+    const rel_why: []const u8 = if (rel_is_text)
+        "text_mention"
+    else if (rel_is_reference)
+        "type_reference"
+    else
+        "invocation";
+    const rel_kind: []const u8 = if (rel_is_text)
+        "caller_candidate"
+    else if (rel_is_reference)
+        "reference"
+    else
+        "caller";
     var first = true;
     for (callers) |r| {
         const lang = explore_mod.detectLanguage(r.path);
+        if (isDefinitionHit(r.path, r.line_num, defs)) continue;
         if (!callerLineMatches(r.line_text, name, lang, match_mode)) continue;
         if (!first) w.writeAll(",") catch {};
         first = false;
@@ -1348,7 +1579,7 @@ fn writeRelationsJson(
         writeJsonString(out, alloc, r.path);
         w.print("\",\"line\":{d},\"snippet\":\"", .{r.line_num}) catch {};
         writeJsonString(out, alloc, r.line_text);
-        w.print("\",\"confidence\":\"high\",\"why_matched\":\"invocation\",\"semantic_kind\":\"caller\"", .{}) catch {};
+        w.print("\",\"confidence\":\"{s}\",\"why_matched\":\"{s}\",\"semantic_kind\":\"{s}\"", .{ rel_confidence, rel_why, rel_kind }) catch {};
         if (classifyUsagePath(r.path)) |usage_kind| {
             w.print(",\"usage_kind\":\"{s}\"", .{usage_kind}) catch {};
         }
@@ -1568,7 +1799,21 @@ fn writeCallersJson(
     visible_total: usize,
 ) void {
     const w = cio.listWriter(out, alloc);
-    const semantic = !std.mem.eql(u8, match_mode, "text");
+    const is_text = std.mem.eql(u8, match_mode, "text");
+    const is_reference = std.mem.eql(u8, match_mode, "references");
+    const confidence: []const u8 = if (is_text) "low" else "high";
+    const why_matched: []const u8 = if (is_text)
+        "text_mention"
+    else if (is_reference)
+        "type_reference"
+    else
+        "invocation";
+    const semantic_kind: []const u8 = if (is_text)
+        "caller_candidate"
+    else if (is_reference)
+        "reference"
+    else
+        "caller";
     w.print("{{\"tool\":\"codedb_callers\",\"query\":\"", .{}) catch {};
     writeJsonString(out, alloc, name);
     w.print("\",\"match_mode\":\"", .{}) catch {};
@@ -1590,9 +1835,9 @@ fn writeCallersJson(
             r.line_text,
             r.scope_name,
             r.scope_kind,
-            if (semantic) "high" else "low",
-            if (semantic) "invocation" else "text_mention",
-            if (semantic) "caller" else "caller_candidate",
+            confidence,
+            why_matched,
+            semantic_kind,
         );
     }
     w.print("],\"summary\":{{\"total\":{d},\"truncated\":false}}}}", .{visible_total}) catch {};

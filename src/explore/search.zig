@@ -2,6 +2,7 @@ const std = @import("std");
 const Explorer = @import("../explore.zig").Explorer;
 const SearchResult = @import("../explore.zig").SearchResult;
 const SymbolKind = @import("../explore.zig").SymbolKind;
+const Symbol = @import("../explore.zig").Symbol;
 const isDocLanguage = @import("../explore.zig").isDocLanguage;
 const detectLanguage = @import("../explore.zig").detectLanguage;
 const ContentCache = @import("../hot_cache.zig").ContentCache;
@@ -9,6 +10,7 @@ const nanoregex = @import("nanoregex");
 const cio = @import("../cio.zig");
 const idx = @import("../index.zig");
 const parse_utils = @import("parse_utils.zig");
+const isIdentChar = parse_utils.isIdentChar;
 const searchInContent = parse_utils.searchInContent;
 const searchInContentRegex = parse_utils.searchInContentRegex;
 const extractLineByNumber = parse_utils.extractLineByNumber;
@@ -792,6 +794,175 @@ pub fn searchContentWithScope(self: *Explorer, query: []const u8, allocator: std
     }
 
     return result_list.toOwnedSlice(allocator);
+}
+
+/// Whole-word match of `name` inside a type string (e.g. "Probe" inside
+/// "List<Probe>" or "Probe?"). Identifier boundaries prevent matching
+/// "Probe" inside "ProbeRepository" or "BaseEntityProperties".
+fn typeMentionsName(type_text: []const u8, name: []const u8) bool {
+    if (name.len == 0 or type_text.len < name.len) return false;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, type_text, i, name)) |pos| {
+        const before_ok = pos == 0 or !isIdentChar(type_text[pos - 1]);
+        const after = pos + name.len;
+        const after_ok = after >= type_text.len or !isIdentChar(type_text[after]);
+        if (before_ok and after_ok) return true;
+        i = pos + 1;
+    }
+    return false;
+}
+
+/// True if `sym`'s type signature references `name` (whole-word): via its
+/// return type, a parameter type, or — for type declarations — a base clause
+/// (`class Foo : Bar<Name>`). This is the precise, structural signal that a
+/// type is referenced, independent of content-search ranking.
+fn symbolReferencesType(sym: Symbol, name: []const u8) bool {
+    if (sym.return_type) |rt| {
+        if (typeMentionsName(rt, name)) return true;
+    }
+    for (sym.param_types) |pt| {
+        if (typeMentionsName(pt, name)) return true;
+    }
+    switch (sym.kind) {
+        .class_def, .interface_def, .struct_def, .trait_def => {
+            const detail = sym.detail orelse return false;
+            // `findBasePortion` extracts the text after ':' / 'extends' /
+            // 'implements' (or the parenthesised base list for Python).
+            if (Explorer.findBasePortion(detail, sym.name)) |bases| {
+                if (typeMentionsName(bases, name)) return true;
+            }
+            return false;
+        },
+        else => return false,
+    }
+}
+
+/// Find every structural reference to a type `name` by walking outlines:
+/// properties/fields whose declared type mentions it, methods that return
+/// or accept it, and types whose base clause mentions it. Returns
+/// line-level hits with enclosing-scope annotation, the same shape as
+/// `searchContentWithScope` so the two can be merged.
+///
+/// Unlike content search, this is complete and deterministic — it is not
+/// capped or re-ranked — so it guarantees that structural type references
+/// surface even for very common identifiers (e.g. an entity name appearing
+/// in 600+ content lines).
+pub fn findTypeReferences(self: *Explorer, name: []const u8, allocator: std.mem.Allocator) ![]const ScopedSearchResult {
+    var result_list: std.ArrayList(ScopedSearchResult) = .empty;
+    errdefer {
+        for (result_list.items) |r| {
+            allocator.free(r.line_text);
+            allocator.free(r.path);
+            if (r.scope_name) |n| allocator.free(n);
+        }
+        result_list.deinit(allocator);
+    }
+
+    self.mu.lockShared();
+    defer self.mu.unlockShared();
+
+    var iter = self.outlines.iterator();
+    while (iter.next()) |entry| {
+        const path = entry.key_ptr.*;
+        const outline = entry.value_ptr.*;
+        for (outline.symbols.items) |sym| {
+            if (!symbolReferencesType(sym, name)) continue;
+            // For code files the detail is the raw source line; without it we
+            // can't render a useful hit, so skip.
+            const detail = sym.detail orelse continue;
+            const line_text = try allocator.dupe(u8, detail);
+            errdefer allocator.free(line_text);
+            const path_copy = try allocator.dupe(u8, path);
+            errdefer allocator.free(path_copy);
+            const scope = self.findEnclosingSymbolLocked(path, sym.line_start);
+            const scope_name = if (scope) |s| try allocator.dupe(u8, s.name) else null;
+            errdefer if (scope_name) |n| allocator.free(n);
+            try result_list.append(allocator, .{
+                .path = path_copy,
+                .line_num = sym.line_start,
+                .line_text = line_text,
+                .scope_name = scope_name,
+                .scope_kind = if (scope) |s| s.kind else null,
+                .scope_start = if (scope) |s| s.line_start else 0,
+                .scope_end = if (scope) |s| s.line_end else 0,
+            });
+        }
+    }
+    return result_list.toOwnedSlice(allocator);
+}
+
+fn freeScopedSliceItems(allocator: std.mem.Allocator, slice: []const ScopedSearchResult) void {
+    for (slice) |r| {
+        allocator.free(r.line_text);
+        allocator.free(r.path);
+        if (r.scope_name) |n| allocator.free(n);
+    }
+    allocator.free(slice);
+}
+
+/// References-mode search: merge ranked content-search hits with the
+/// complete structural type-reference set, deduping by (path, line). This
+/// gives high recall for type names — structural references (properties,
+/// params, return types, base clauses) always surface even when the token
+/// is too common for content search to fully enumerate within its cap.
+/// Content hits win on dedup (preserving their ranking/scope). The returned
+/// slice owns copies of every kept item's strings; both source slices are
+/// fully freed here on all paths.
+pub fn searchReferencesWithScope(self: *Explorer, name: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const ScopedSearchResult {
+    const content = try self.searchContentWithScope(name, allocator, max_results);
+    defer freeScopedSliceItems(allocator, content);
+
+    const structural = try self.findTypeReferences(name, allocator);
+    defer freeScopedSliceItems(allocator, structural);
+
+    var seen = std.StringHashMap(void).init(allocator);
+    defer {
+        var it = seen.keyIterator();
+        while (it.next()) |k| allocator.free(k.*);
+        seen.deinit();
+    }
+
+    var merged: std.ArrayList(ScopedSearchResult) = .empty;
+    errdefer {
+        for (merged.items) |r| {
+            allocator.free(r.line_text);
+            allocator.free(r.path);
+            if (r.scope_name) |n| allocator.free(n);
+        }
+        merged.deinit(allocator);
+    }
+
+    // Append a copy of `r` if (path, line) hasn't been seen yet.
+    const append_copy = struct {
+        fn run(list: *std.ArrayList(ScopedSearchResult), a: std.mem.Allocator, seen_set: *std.StringHashMap(void), r: ScopedSearchResult) !void {
+            var buf: [std.fs.max_path_bytes + 16]u8 = undefined;
+            const key = std.fmt.bufPrint(&buf, "{s}:{d}", .{ r.path, r.line_num }) catch return;
+            if (seen_set.contains(key)) return; // duplicate — skip; strings freed by the caller's defer
+            const key_dup = try a.dupe(u8, key);
+            errdefer a.free(key_dup);
+            try seen_set.put(key_dup, {});
+            const line_text = try a.dupe(u8, r.line_text);
+            errdefer a.free(line_text);
+            const path_copy = try a.dupe(u8, r.path);
+            errdefer a.free(path_copy);
+            const scope_name = if (r.scope_name) |n| try a.dupe(u8, n) else null;
+            errdefer if (scope_name) |n| a.free(n);
+            try list.append(a, .{
+                .path = path_copy,
+                .line_num = r.line_num,
+                .line_text = line_text,
+                .scope_name = scope_name,
+                .scope_kind = r.scope_kind,
+                .scope_start = r.scope_start,
+                .scope_end = r.scope_end,
+            });
+        }
+    }.run;
+
+    for (content) |r| try append_copy(&merged, allocator, &seen, r);
+    for (structural) |r| try append_copy(&merged, allocator, &seen, r);
+
+    return merged.toOwnedSlice(allocator);
 }
 
 /// Scoped regex search: same as searchContentWithScope but uses regex matching

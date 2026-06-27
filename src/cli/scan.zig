@@ -161,6 +161,11 @@ pub fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8)
     } else {
         const startup_time_ms: u64 = @intCast(@max(cio.milliTimestamp() - ctx.startup_t0, 0));
         disk_cache.loadTrigramFromDiskIfPresent(ctx.io, ctx.explorer, data_dir, ctx.allocator);
+        // The snapshot stores outlines but not a faithfully complete
+        // TypeIndex/TypeGraph/type-usage dep graph. Rebuild them from the
+        // loaded outlines so codedb_deps / codedb_types / codedb_hierarchy
+        // serve correct data — mirrors the project= load path (server.zig).
+        ctx.explorer.rebuildTypeIndexes();
         ctx.telem.recordCodebaseStats(ctx.explorer, startup_time_ms);
         disk_cache.compactMcpReadyMemory(ctx.io, ctx.explorer, data_dir, git_head, ctx.allocator);
         mcp_server.setScanState(.ready);

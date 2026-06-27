@@ -304,6 +304,44 @@ test "csharp parser: type extraction from method signatures" {
     }
 }
 
+test "csharp parser: object instantiation is not misclassified as a method" {
+    // `var p = new Probe();` must NOT produce a method symbol named "Probe".
+    // Pre-fix, `hasDeclarationPrefix` saw " new" in the prefix "var p = new"
+    // and treated it as the C# `new` modifier, so every `new Foo()` call site
+    // became a false definition — which then got excluded from codedb_callers
+    // and polluted codedb_symbol results.
+    switch (csharp_parser.parseLine("        var p = new Probe();")) {
+        .none => {},
+        .symbol, .import => return error.TestUnexpectedResult,
+    }
+    // Other instantiation shapes also rejected.
+    switch (csharp_parser.parseLine("    var u = new System.Uri(builder);")) {
+        .none => {},
+        .symbol, .import => return error.TestUnexpectedResult,
+    }
+    switch (csharp_parser.parseLine("    return new Probe(serial);")) {
+        .none => {},
+        .symbol, .import => return error.TestUnexpectedResult,
+    }
+    // The C# `new` modifier (hides a base member) must STILL parse as a method:
+    // `public new void Name(` has a return type between `new` and the name.
+    switch (csharp_parser.parseLine("public new void Hidden()")) {
+        .symbol => |sym| {
+            try testing.expectEqualStrings("Hidden", sym.name);
+            try testing.expectEqual(csharp_parser.Kind.method, sym.kind);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    // Sanity: a normal method still parses.
+    switch (csharp_parser.parseLine("public Task<Probe> GetProbeAsync(int id)")) {
+        .symbol => |sym| {
+            try testing.expectEqualStrings("GetProbeAsync", sym.name);
+            try testing.expectEqual(csharp_parser.Kind.method, sym.kind);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "csharp parser: captures attributes on following symbols" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

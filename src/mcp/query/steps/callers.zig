@@ -22,7 +22,7 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
     const max: usize = if (getInt(step, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
     const include_generated = getBool(step, "include_generated");
     const exclude_generated = !include_generated;
-    const match_mode = getStr(step, "match_mode") orelse "semantic";
+    const requested_mode = getStr(step, "match_mode");
 
     // Find definitions to exclude from caller results
     const defs = ctx.explorer.findAllSymbols(name, ctx.alloc) catch {
@@ -42,9 +42,16 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
         }
         ctx.alloc.free(defs);
     }
+    // Auto-broaden to whole-word references when the resolved symbol is a
+    // type definition — types are referenced, not "called".
+    const match_mode = mcp.effectiveMatchMode(requested_mode, defs);
 
-    // Search for all occurrences with scope info
-    const results = ctx.explorer.searchContentWithScope(name, ctx.alloc, max) catch {
+    // Search for all occurrences with scope info. In references mode, merge
+    // structural type references so recall isn't capped by content ranking.
+    const results = (if (std.mem.eql(u8, match_mode, "references"))
+        ctx.explorer.searchReferencesWithScope(name, ctx.alloc, max)
+    else
+        ctx.explorer.searchContentWithScope(name, ctx.alloc, max)) catch {
         w.print("error: callers search failed\n", .{}) catch {};
         return false;
     };
@@ -102,7 +109,8 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
             }
         }
         ctx.file_set.items.len = wr;
-        w.print("{d} callers for '{s}' (within {d} candidate files)\n", .{ shown, name, path_set.count() }) catch {};
+        const noun: []const u8 = if (std.mem.eql(u8, match_mode, "references")) "references" else "callers";
+        w.print("{d} {s} for '{s}' (within {d} candidate files)\n", .{ shown, noun, name, path_set.count() }) catch {};
     } else {
         // Seed: set ctx.file_set to caller files
         var seen = std.StringHashMap(void).init(ctx.alloc);
@@ -133,7 +141,8 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
             }
         }
         ctx.have_set.* = true;
-        w.print("{d} callers for '{s}' across {d} files:\n", .{ shown, name, ctx.file_set.items.len }) catch {};
+        const noun: []const u8 = if (std.mem.eql(u8, match_mode, "references")) "references" else "callers";
+        w.print("{d} {s} for '{s}' across {d} files:\n", .{ shown, noun, name, ctx.file_set.items.len }) catch {};
     }
     return true;
 }

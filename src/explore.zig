@@ -184,7 +184,6 @@ pub const Explorer = struct {
     pub const countIndent = @import("explore/lifecycle.zig").countIndent;
     pub const parseOutlineWithParser = @import("explore/lifecycle.zig").parseOutlineWithParser;
     pub const parseContentForIndexing = @import("explore/lifecycle.zig").parseContentForIndexing;
-    pub const collapseConsecutiveProperties = @import("explore/lifecycle.zig").collapseConsecutiveProperties;
     pub const collectCSharpDecorators = @import("explore/lifecycle.zig").collectCSharpDecorators;
     pub const findCSharpDecoratorClose = @import("explore/lifecycle.zig").findCSharpDecoratorClose;
     pub const attachDecoratorsToSymbols = @import("explore/lifecycle.zig").attachDecoratorsToSymbols;
@@ -385,6 +384,10 @@ pub const Explorer = struct {
     pub const ScopedSearchResult = @import("explore/search.zig").ScopedSearchResult;
 
     pub const searchContentWithScope = @import("explore/search.zig").searchContentWithScope;
+
+    pub const findTypeReferences = @import("explore/search.zig").findTypeReferences;
+
+    pub const searchReferencesWithScope = @import("explore/search.zig").searchReferencesWithScope;
 
     pub const searchContentRegexWithScope = @import("explore/search.zig").searchContentRegexWithScope;
 

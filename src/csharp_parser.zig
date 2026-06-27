@@ -654,6 +654,14 @@ fn hasDeclarationPrefix(before_open_paren: []const u8, name: []const u8) bool {
     if (prefix.len == 0) return false;
     if (std.mem.endsWith(u8, prefix, ".") or std.mem.endsWith(u8, prefix, "->") or std.mem.endsWith(u8, prefix, "=")) return false;
     if (isStatementPrefix(prefix)) return false;
+    // Object instantiation: `... new Name(` has `new` as the token immediately
+    // preceding the callable name. Distinguish from the C# `new` modifier
+    // (`public new void Name`), where a return type sits between `new` and the
+    // name — so the modifier's prefix does NOT end with the `new` token.
+    // Without this guard, `var p = new Probe();` is misclassified as a method
+    // declaration named "Probe" (the `containsAny(prefix, " new")` check below
+    // matches the `new` in the instantiation expression).
+    if (lastTokenIs(prefix, "new")) return false;
     if (containsAny(prefix, &.{ " public", " private", " protected", " internal", " static", " virtual", " override", " abstract", " async", " extern", " partial", " sealed", " new", " unsafe" })) return true;
     if (startsWithAny(prefix, &.{ "public ", "private ", "protected ", "internal ", "static ", "virtual ", "override ", "abstract ", "async ", "extern ", "partial ", "sealed ", "new ", "unsafe " })) return true;
     return looksLikeReturnTypePrefix(prefix);
@@ -682,6 +690,23 @@ fn isStatementPrefix(prefix: []const u8) bool {
         if (std.mem.eql(u8, trimmed, kw)) return true;
     }
     return false;
+}
+
+/// True if the last whitespace-delimited token of `prefix` equals `keyword`.
+/// Used to detect object instantiation (`... new Name(`) where `new` is the
+/// token directly before the callable name. `prefix` is assumed trimmed of
+/// leading/trailing whitespace by the caller.
+fn lastTokenIs(prefix: []const u8, keyword: []const u8) bool {
+    var start: usize = 0;
+    var i: usize = prefix.len;
+    while (i > 0) {
+        i -= 1;
+        if (prefix[i] == ' ' or prefix[i] == '\t') {
+            start = i + 1;
+            break;
+        }
+    }
+    return std.mem.eql(u8, prefix[start..], keyword);
 }
 
 fn looksLikeReturnTypePrefix(prefix: []const u8) bool {

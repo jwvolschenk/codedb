@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # publish-codedb.sh — Build codedb from local source and publish as a GitHub Release
+# Interactive version prompt — suggests the next semver based on the latest tag,
+# then creates/pushes the tag, builds cross-platform binaries, and uploads to
+# GitHub Releases.
+#
 # Builds from the repo's own source tree (includes custom C#/F# parsers).
 #
 # Builds for ALL supported platforms:
@@ -8,8 +12,8 @@
 #   - windows-x86_64, windows-aarch64
 #
 # Usage:
-#   bash scripts/publish-codedb.sh              # uses latest git tag
-#   bash scripts/publish-codedb.sh v0.2.6000    # explicit tag
+#   bash scripts/publish-codedb.sh              # interactive version prompt
+#   bash scripts/publish-codedb.sh v0.2.6000    # explicit tag (skips prompt)
 #   PLATFORMS="linux-x86_64 darwin-aarch64" bash scripts/publish-codedb.sh  # subset
 set -euo pipefail
 
@@ -40,19 +44,21 @@ warn() { printf "  ${Y}!${N} %s\n" "$*"; }
 err()  { printf "  ${R}✗${N} %s\n" "$*" >&2; }
 die()  { err "$@"; exit 1; }
 
-# ── Ensure gh can access the target repo ─────────────────────────────────
-# If the active account can't see the repo, list available accounts and
+# ── Ensure gh can push to the target repo ─────────────────────────────────
+# If the active account can't push to the repo, list available accounts and
 # let the user switch before we start building.
 ensure_repo_access() {
     # Already good?
-    gh repo view "$FORK_REPO" >/dev/null 2>&1 && return 0
+    if [[ "$(gh api "repos/${FORK_REPO}" --jq '.permissions.push' 2>/dev/null || echo false)" == "true" ]]; then
+        return 0
+    fi
 
     local active_user
     active_user="$(gh api user --jq '.login' 2>/dev/null || echo 'unknown')"
 
     echo ""
-    warn "Active gh account '${active_user}' cannot access ${FORK_REPO}"
-    info "This is likely a private repo owned by a different account."
+    warn "Active gh account '${active_user}' cannot push to ${FORK_REPO}"
+    info "Switch to an account with release/tag push permissions before publishing."
     echo ""
 
     # List all configured accounts
@@ -85,18 +91,18 @@ ensure_repo_access() {
 
     local chosen="${accounts[$idx]}"
     if [ "$chosen" == "$active_user" ]; then
-        die "Already using '${chosen}' — it cannot access ${FORK_REPO}"
+        die "Already using '${chosen}' — it cannot push to ${FORK_REPO}"
     fi
 
     info "Switching to '${chosen}'..."
     gh auth switch --user "$chosen" >/dev/null 2>&1 || die "Failed to switch to '${chosen}'"
     ok "Switched to '${chosen}'"
 
-    # Verify access with the new account
-    if ! gh repo view "$FORK_REPO" >/dev/null 2>&1; then
-        die "Account '${chosen}' still cannot access ${FORK_REPO}. Check repo permissions."
+    # Verify push access with the new account
+    if [[ "$(gh api "repos/${FORK_REPO}" --jq '.permissions.push' 2>/dev/null || echo false)" != "true" ]]; then
+        die "Account '${chosen}' still cannot push to ${FORK_REPO}. Check repo permissions."
     fi
-    ok "Repo accessible: ${FORK_REPO}"
+    ok "Repo push access confirmed: ${FORK_REPO}"
 }
 
 # ── Check prerequisites ──────────────────────────────────────────────────
@@ -174,17 +180,73 @@ package() {
     ok "Packaged: ${artifact_name} ($(du -h "${RELEASE_DIR}/${artifact_name}" | cut -f1))"
 }
 
-# ── Determine version tag ────────────────────────────────────────────────
-get_version_tag() {
-    # Use explicit arg if provided, otherwise use git describe
-    local tag="${1:-}"
-    if [ -z "$tag" ]; then
-        tag="$(cd "$REPO_DIR" && git describe --tags --abbrev=7 2>/dev/null || true)"
+# ── Bump semver ──────────────────────────────────────────────────────────
+# Given v1.2.3, suggests: patch=v1.2.4, minor=v1.3.0, major=v2.0.0
+bump_version() {
+    local current="$1"
+    local part="$2"
+    # Strip v prefix and any prerelease/build metadata before arithmetic.
+    local v="${current#v}"
+    v="${v%%[-+]*}"
+    local major minor patch
+    IFS='.' read -r major minor patch <<< "$v"
+    case "$part" in
+        patch) printf "v%s.%s.%s" "$major" "$minor" "$((patch + 1))" ;;
+        minor) printf "v%s.%s.0" "$major" "$((minor + 1))" ;;
+        major) printf "v%s.0.0" "$((major + 1))" ;;
+    esac
+}
+
+# ── Interactive version prompt ───────────────────────────────────────────
+# NOTE: prompts go to >&2 so that command substitution $() only captures
+# the final version string on stdout.
+prompt_version() {
+    local latest_tag="$1"
+
+    if [ -z "$latest_tag" ]; then
+        printf "  ${W}No existing tags found.${N}\n" >&2
+        printf "  Enter version tag (e.g. ${C}v1.0.0${N}): " >&2
+        read -r tag
+        [ -n "$tag" ] || die "Version tag required"
+        echo "$tag"
+        return
     fi
-    if [ -z "$tag" ]; then
-        tag="v$(cd "$REPO_DIR" && git rev-parse --short HEAD)"
-    fi
-    echo "$tag"
+
+    local patch minor major
+    patch="$(bump_version "$latest_tag" patch)"
+    minor="$(bump_version "$latest_tag" minor)"
+    major="$(bump_version "$latest_tag" major)"
+
+    printf "\n" >&2
+    printf "  ${W}Current version:${N} ${latest_tag}\n" >&2
+    printf "\n" >&2
+    printf "  ${W}Select next version:${N}\n" >&2
+    printf "    ${C}1)${N} ${patch}  ${D}(patch)${N}\n" >&2
+    printf "    ${C}2)${N} ${minor}  ${D}(minor)${N}\n" >&2
+    printf "    ${C}3)${N} ${major}  ${D}(major)${N}\n" >&2
+    printf "    ${C}4)${N} custom\n" >&2
+    printf "\n" >&2
+    printf "  Choice [1]: " >&2
+    read -r choice
+    choice="${choice:-1}"
+
+    case "$choice" in
+        1) echo "$patch" ;;
+        2) echo "$minor" ;;
+        3) echo "$major" ;;
+        4)
+            printf "  Enter version tag (e.g. ${C}v2.0.0-rc1${N}): " >&2
+            read -r tag
+            [ -n "$tag" ] || die "Version tag required"
+            echo "$tag"
+            ;;
+        *) echo "$patch" ;;
+    esac
+}
+
+# ── Get latest git tag ───────────────────────────────────────────────────
+get_latest_tag() {
+    cd "$REPO_DIR" && git describe --tags --abbrev=0 2>/dev/null || true
 }
 
 # ── Inject version into release_info.zig ─────────────────────────────────
@@ -264,18 +326,50 @@ main() {
 
     check_prereqs
 
-    local tag
-    tag="$(get_version_tag "${1:-}")"
+    # 1. Determine version tag
+    local tag="${1:-}"
+    if [ -z "$tag" ]; then
+        local latest_tag
+        latest_tag="$(get_latest_tag)"
+        tag="$(prompt_version "$latest_tag")"
+    fi
     info "Version tag: ${tag}"
 
-    # Inject version into source before building
+    # 2. Confirm before proceeding
+    echo ""
+    printf "  ${W}This will:${N}\n"
+    printf "    ${D}1.${N} Create and push git tag ${C}${tag}${N}\n"
+    printf "    ${D}2.${N} Build binaries for ${#ALL_TARGETS[@]} platforms\n"
+    printf "    ${D}3.${N} Upload to https://github.com/${FORK_REPO}/releases\n"
+    echo ""
+    printf "  Continue? [y/N] "
+    read -r confirm
+    [[ "$confirm" =~ ^[Yy]$ ]] || { printf "\n  ${D}Aborted.${N}\n\n"; exit 0; }
+
+    # 3. Create and push tag
+    echo ""
+    info "Creating tag ${tag}..."
+    cd "$REPO_DIR"
+    git tag -a "$tag" -m "Release ${tag}" 2>/dev/null || {
+        warn "Tag ${tag} already exists locally"
+    }
+    git push origin "$tag" 2>/dev/null || {
+        if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            warn "Tag ${tag} already exists on remote"
+        else
+            die "Failed to push tag ${tag} to origin"
+        fi
+    }
+    ok "Tag ${tag} pushed"
+
+    # 4. Inject version into source before building
     inject_version "$tag"
 
-    # Clean release dir for fresh build
+    # 5. Clean release dir for fresh build
     rm -rf "$RELEASE_DIR"
     mkdir -p "$RELEASE_DIR"
 
-    # Resolve target list
+    # 6. Resolve target list
     local targets_str
     targets_str="$(resolve_targets)"
     read -ra targets <<< "$targets_str"
@@ -287,7 +381,7 @@ main() {
     done
     echo ""
 
-    # Build and package each target
+    # 7. Build and package each target
     local built=0 failed=0
     for target in "${targets[@]}"; do
         printf "\n  ${W}[${built}+${failed}/${#targets[@]}]${N} Building ${target}...\n"

@@ -1,6 +1,46 @@
 # Changelog
 
 
+## Unreleased
+
+### MCP — `codedb_relations` text output omits empty sections ([P3])
+
+- **`codedb_relations` (text mode) no longer prints `(none)` placeholders for empty sections.** Previously every query emitted all five section headers (`definitions`, `bases`, `derived/implementations`, `type/dependency users`, `callers`) each followed by `(none)` when empty — noisy for leaf types. Now only populated sections print; if nothing matches at all, a single `(no relations found)` line appears. JSON output is unchanged (empty `[]` arrays are kept — they're the correct, predictable shape for machine consumers).
+
+### MCP — `codedb_symbol` ranking + `kind` filter ([P2])
+
+- **`codedb_symbol` results are now ranked by salience**: type definitions (class/interface/struct/enum/trait/type_alias) first, then functions/methods, then constants/variables, then imports. Previously a same-named constant or `using` import could bury the canonical type definition — e.g. `codedb_symbol "Probe"` on `lm-asp-net` returned 33 results with the actual `Probe` entity class not first. Now `Probe.cs:11 (class_def)` is result #1.
+- **New `kind` filter** restricts results to one `SymbolKind` so an agent can disambiguate precisely. On `lm-asp-net`: `codedb_symbol "Probe" kind=class_def` → 2 classes; `kind=constant` → 11 noise constants (cache tags like `"probe"`, boolean `true`s). Unknown kind values error with the list of valid kinds.
+
+### MCP — `codedb_callers` references mode is no longer capped by content-search ranking
+
+- **For common type names, `codedb_callers` (references mode) returned a rank-dependent subset** because it sourced hits solely from `searchContentWithScope`, which is capped at `max_results` and re-ranked. An entity name like `Probe` (683 content hits) could surface razor/migration lines while hiding high-value structural references like `class EfProbeRepository : EfBaseEntityRepository<Probe>`.
+- **References mode now merges ranked content hits with a complete structural type-reference walk** (`Explorer.findTypeReferences`): every property/field whose declared type mentions the name, every method that returns or accepts it, and every type whose base clause mentions it. Structural refs are deterministic and not capped, so they always surface; content search still adds runtime usages (`new Probe()`, local accesses). Deduped by (path, line), content hits win on collision.
+- Verified end-to-end on `lm-asp-net`: `codedb_callers "Probe"` went from a rank-dependent 4–8 to a stable **15 references**, now reliably including the base clauses (`EfBaseEntityRepository<Probe>`, `IBaseEntityRepository<Probe>`), properties (`List<Probe>`, `DbSet<Probe>`), and method signatures (`Task<Probe?>`, `UpdateProbe(Probe?)`) that are the core of entity-relationship analysis. For complete file-level type relationships, `codedb_deps` remains the deterministic source (16 files).
+
+### MCP — default-root serve path rebuilds type indexes on snapshot load
+
+- **`codedb_deps`, `codedb_types`, and `codedb_hierarchy` returned empty/incomplete results when served from the default root** (`codedb <project> mcp`), while the `project=` param path worked. The default-root snapshot-load paths (`triggerScanFromRoots` and the non-deferred startup in `commands/mcp.zig`) loaded outlines but never rebuilt the TypeIndex / TypeGraph / type-usage dep graph, so C# type-usage edges (the primary dependency source for C#, since `using` imports rarely resolve to project files) were missing. Both paths now call `rebuildTypeIndexes()` after load, matching the `getProjectCtx` (`project=`) path. Verified end-to-end: `codedb_deps imported_by Probe.cs` via the default root went from `(none)` → **16 files**.
+
+### C# parser — object instantiation no longer misclassified as a method
+
+- **`var p = new Probe();` was parsed as a method symbol named `Probe`.** `hasDeclarationPrefix` treated the `new` in the instantiation expression as the C# `new` modifier (it matched `containsAny(prefix, " new")`), so every `new Foo()` call site became a false definition. That polluted `codedb_symbol` results and — worse — excluded those lines from `codedb_callers` (they were treated as the symbol's own definition). Added a `lastTokenIs(prefix, "new")` guard that rejects instantiation (`new` directly precedes the name) while still accepting the real `new` modifier (`public new void Name`, where a return type sits between `new` and the name). Verified: the false `DataAppService.cs:798 (method) // new Probe(...)` entry is gone from `codedb_symbol Probe`.
+
+### Explore — C# property collapse no longer corrupts indexed data ([P0])
+
+- **`collapseConsecutiveProperties` previously ran at parse time**, mutating the *stored* outline for any run of 5+ consecutive `.variable` symbols (POCO properties). It kept only the first property's name and dropped every property's `return_type`, which silently broke four downstream systems: symbol lookup (`codedb_symbol "Probes"` found 0 C# properties), the type index, type-usage dependency edges, and scope attribution (a hit on line 19 reported `[in SiteId (variable, L14-L30)]`).
+- **Collapsing is now a display-only transform.** `parseContentForIndexing` returns the complete outline (every property keeps its name + type); the default `codedb_outline` text path collapses long runs to a `// props: ...` summary purely for rendering, so token-bounding on generated ViewModels is preserved. JSON/grouped output and all indexed data are now complete.
+- **Verified end-to-end against `lm-asp-net`** (after re-index): `codedb_symbol "Probes"` now finds `Concentrator.cs:19 -> List<Probe>` and `LMAppDbContext.cs:81 -> DbSet<Probe>` (previously invisible); scope attribution resolves to the enclosing class (`[in Concentrator (class_def, L10-L52)]`); and `codedb_deps imported_by Probe.cs` grows from **5 → 16 files** — recovering entity-relationship edges (`Concentrator.cs`, `Reading.cs`, `Site.cs`, ...) that the collapsed property types had suppressed.
+
+### MCP — type-aware caller/reference matching
+
+- **`codedb_callers` and `codedb_relations` now auto-broaden to whole-word references for type definitions.** When the resolved symbol is a class/interface/struct/enum/trait/type_alias and no explicit `match_mode` is passed, matching switches from invocation-only (`semantic`) to whole-word type usages (`references`) — mirroring LSP `findReferences`. This closes the gap where querying a class returned `0 call sites` because type usages (`List<Probe>`, `EfRepo<Probe>`, `Probe? GetProbe()`) lack a `(` invocation suffix. Verified end-to-end against `lm-asp-net`: `codedb_callers "Probe"` went from **0 → 8 references** (incl. `List<Probe>` in `Concentrator.cs`, `DbSet<Probe>` in `LMAppDbContext.cs`, `EfBaseEntityRepository<Probe>`).
+- **New `references` match mode** added alongside `semantic`/`text`/`both`: whole-word identifier matches that exclude strings and comments (unlike `text`, which is raw). Selectable explicitly on `codedb_callers`, `codedb_relations`, and the `codedb_query` `callers` step.
+- **Definition-line exclusion** added to the `codedb_relations` caller section (text + JSON) so the queried symbol's own declaration no longer appears among its callers/references; previously only `codedb_callers` excluded it.
+- **Adaptive output labels:** the summary noun and JSON `why_matched`/`semantic_kind` now reflect the effective mode (`references` → `"type_reference"`/`"reference"`; `text` → `"text_mention"`/`"caller_candidate"`), so consumers can distinguish a high-signal type reference from a raw text mention.
+- Explicit `match_mode` is always respected — passing `semantic` on a type still returns invocation-only sites, preserving backwards-compatible behaviour for callers that relied on it.
+
+
 ## 0.2.5813 - 2026-05-12
 
 `0.2.5813` ships three structural improvements: a Tier 0 search-quality rewrite, a 4-6x faster regex matcher, and a bounded-memory content cache.
