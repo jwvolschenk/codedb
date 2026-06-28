@@ -760,6 +760,8 @@ pub fn getScanState() ScanState {
 
 pub var scan_wait_timeout_ms: u64 = 2000;
 
+pub var slow_dispatch_log_ms: u64 = 100;
+
 fn waitForScanReady(timeout_ms: u64) void {
     if (getScanState() == .ready) return;
     const deadline = cio.milliTimestamp() + @as(i64, @intCast(timeout_ms));
@@ -1151,11 +1153,24 @@ pub fn dispatch(
     deferred_scan: ?*DeferredScan,
 ) void {
     const project_path = getStr(args, "project");
+    var total_timer: ?cio.Timer = cio.Timer.start() catch null;
+    var load_timer: ?cio.Timer = cio.Timer.start() catch null;
     const ctx = cache.get(io, project_path, default_explorer, default_store) catch |err| {
         out.appendSlice(alloc, "error: failed to load project: ") catch {};
         out.appendSlice(alloc, @errorName(err)) catch {};
+        std.log.info("codedb dispatch: {s} project-load failed {s} (project={s})", .{
+            @tagName(tool), @errorName(err), project_path orelse "default",
+        });
         return;
     };
+    if (load_timer) |*t| {
+        const elapsed_ms = @divTrunc(t.read(), 1_000_000);
+        if (slow_dispatch_log_ms != 0 and elapsed_ms >= slow_dispatch_log_ms) {
+            std.log.info("codedb dispatch: {s} project-load {d}ms (project={s})", .{
+                @tagName(tool), elapsed_ms, project_path orelse "default",
+            });
+        }
+    }
 
     if (toolDependsOnScannedIndex(tool) and project_path == null) {
         waitForScanReady(scan_wait_timeout_ms);
@@ -1163,7 +1178,16 @@ pub fn dispatch(
 
     if (tool == .codedb_word or (tool == .codedb_search and shouldLoadWordIndexForSearch(args))) {
         const effective_project = project_path orelse cache.default_path;
+        var wi_timer: ?cio.Timer = cio.Timer.start() catch null;
         loadProjectWordIndexFromDiskIfPresent(io, ctx.explorer, effective_project, alloc);
+        if (wi_timer) |*wt| {
+            const elapsed_ms = @divTrunc(wt.read(), 1_000_000);
+            if (slow_dispatch_log_ms != 0 and elapsed_ms >= slow_dispatch_log_ms) {
+                std.log.info("codedb dispatch: {s} word-index-load {d}ms (project={s})", .{
+                    @tagName(tool), elapsed_ms, effective_project,
+                });
+            }
+        }
     }
 
     switch (tool) {
@@ -1193,6 +1217,14 @@ pub fn dispatch(
         .codedb_query => handleQuery(alloc, args, out, ctx.explorer, ctx.store),
         .codedb_glob => handleGlob(alloc, args, out, ctx.explorer),
         .codedb_ls => handleLs(alloc, args, out, ctx.explorer),
+    }
+    if (total_timer) |*t| {
+        const elapsed_ms = @divTrunc(t.read(), 1_000_000);
+        if (slow_dispatch_log_ms != 0 and elapsed_ms >= slow_dispatch_log_ms) {
+            std.log.info("codedb dispatch: {s} total {d}ms (project={s})", .{
+                @tagName(tool), elapsed_ms, project_path orelse "default",
+            });
+        }
     }
     appendScanProgressHint(alloc, out, tool);
 }
