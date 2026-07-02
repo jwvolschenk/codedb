@@ -366,6 +366,13 @@ rerank_trace = false
 # time. Even when set to true, search/word/callers still filter them
 # out unless you pass include_generated=true to the call.
 index_generated_files = false
+
+# ── MCP auto-index ────────────────────────────────────────
+# When true, the MCP server auto-indexes CWD on startup when no
+# explicit root is provided. Default: false (lazy mode) — the server
+# stays idle until the agent explicitly calls codedb_index. Set to
+# true to restore legacy auto-index behavior.
+mcp_auto_index = false
 ```
 
 </details>
@@ -378,6 +385,7 @@ index_generated_files = false
 | `max_cached` | 1000 | You work on very large monorepos (1000+ files) | Memory is constrained |
 | `rerank_trace` | false | Tuning search relevance offline | Not actively experimenting |
 | `index_generated_files` | false | Investigating EF migrations / source-generated code | Default — keeps generated noise out of the index |
+| `mcp_auto_index` | false | You want the MCP server to index CWD on startup like a CLI tool | Default — prevents OOM on large directories |
 
 ### Agent Precision Defaults
 
@@ -394,6 +402,57 @@ index_generated_files = false
   metadata.
 - `codedb_relations symbol="Probe"` returns a one-shot relation map: definitions,
   inheritance, dependency/type-usage users, and heuristic callers.
+
+---
+
+## MCP Server: Lazy Mode (Default)
+
+When an AI agent starts `codedb mcp`, the server runs in **lazy mode** by
+default. This means:
+
+- **No auto-indexing on startup.** The server stays idle regardless of CWD.
+- **Indexing is explicit.** The agent must call `codedb_index` to index a
+  specific project before querying.
+- **Prevents OOM.** Without lazy mode, spawning `codedb mcp` from a large
+  directory (e.g. `~/repos/` with 20+ projects and 100K+ files) causes the
+  server to walk and index everything, consuming all available RAM and
+  triggering the Linux OOM killer — freezing the entire desktop.
+
+### How agents use it
+
+```
+1. Agent starts codedb mcp (lazy mode — server is idle, 0 files indexed)
+2. Agent needs code intelligence for /path/to/project
+3. Agent calls: codedb_index /path/to/project  (indexes just that project)
+4. Agent queries: codedb_search, codedb_symbol, codedb_callers, etc.
+```
+
+### Opting into auto-index
+
+If you want the MCP server to auto-index CWD on startup (legacy behavior),
+set in `.codedbrc`:
+
+```
+mcp_auto_index = true
+```
+
+Or via environment variable (overrides config):
+
+```bash
+CODEDB_LAZY=0 codedb mcp
+```
+
+### Scan states
+
+The MCP status tool reports the current scan state:
+
+| State | Meaning |
+|-------|---------|
+| `lazy` | No project indexed yet — call `codedb_index` first |
+| `loading_snapshot` | Loading a cached snapshot |
+| `walking` | Walking the file tree |
+| `indexing` | Building trigram/word indexes |
+| `ready` | Index complete, queries work |
 
 ---
 

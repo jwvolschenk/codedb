@@ -19,4 +19,5 @@ pub const Context = struct {
     data_dir: []const u8,
     use_color: bool,
     mcp_deferred_root: bool,
+    mcp_auto_index: bool,
 };

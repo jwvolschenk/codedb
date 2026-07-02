@@ -25,6 +25,17 @@ pub fn run(ctx: *Context) !void {
 
     const root_from_cwd = ctx.mcp_deferred_root;
 
+    // When mcp_auto_index is false (from .codedbrc config), set the lazy flag
+    // so triggerDeferredScanWithFallback won't auto-index CWD on startup.
+    // The server stays idle until the agent explicitly calls codedb_index.
+    // CODEDB_LAZY=1 env var overrides config for quick testing.
+    mcp_server.setLazyStart(blk: {
+        if (cio.posixGetenv("CODEDB_LAZY")) |v| {
+            break :blk std.mem.eql(u8, v, "1") or std.mem.eql(u8, v, "true");
+        }
+        break :blk !ctx.mcp_auto_index;
+    });
+
     disk_cache.saveProjectInfo(ctx.io, ctx.allocator, ctx.data_dir, ctx.abs_root) catch {};
 
     // Set up query tracking WAL

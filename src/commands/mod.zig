@@ -417,6 +417,7 @@ pub fn run() !void {
         .data_dir = data_dir,
         .use_color = use_color,
         .mcp_deferred_root = mcp_deferred_root,
+        .mcp_auto_index = cfg.mcp_auto_index,
     };
 
     if (std.mem.eql(u8, cmd, "tree")) {

@@ -121,6 +121,14 @@ pub fn triggerDeferredScanWithFallback(
         path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
     }
     if (path.len == 0 and fallback_cwd.len > 0 and root_policy.isIndexableRoot(fallback_cwd)) {
+        // In lazy mode, do not auto-index CWD. The server stays idle until
+        // the agent explicitly calls codedb_index. This prevents OOM when
+        // an MCP host spawns codedb in a large directory (e.g. ~/repos/).
+        if (lazy_start) {
+            std.log.info("codedb mcp: lazy mode — skipping auto-index of {s}", .{fallback_cwd});
+            setScanState(.lazy);
+            return false;
+        }
         path = fallback_cwd;
     }
     if (path.len == 0) return false;
@@ -737,6 +745,7 @@ pub const ScanState = enum(u8) {
     walking = 1,
     indexing = 2,
     ready = 3,
+    lazy = 4,
 
     pub fn name(self: ScanState) []const u8 {
         return switch (self) {
@@ -744,6 +753,7 @@ pub const ScanState = enum(u8) {
             .walking => "walking",
             .indexing => "indexing",
             .ready => "ready",
+            .lazy => "lazy",
         };
     }
 };
@@ -762,10 +772,20 @@ pub var scan_wait_timeout_ms: u64 = 2000;
 
 pub var slow_dispatch_log_ms: u64 = 100;
 
+/// When true, the MCP server will not auto-index CWD on startup. Indexing
+/// only happens via explicit `codedb_index` tool calls. Set by mcp.zig
+/// run() based on the `mcp_auto_index` config option.
+pub var lazy_start: bool = false;
+
+pub fn setLazyStart(v: bool) void {
+    lazy_start = v;
+}
+
 fn waitForScanReady(timeout_ms: u64) void {
-    if (getScanState() == .ready) return;
+    const state = getScanState();
+    if (state == .ready or state == .lazy) return;
     const deadline = cio.milliTimestamp() + @as(i64, @intCast(timeout_ms));
-    while (getScanState() != .ready) {
+    while (getScanState() != .ready and getScanState() != .lazy) {
         if (cio.milliTimestamp() >= deadline) return;
         cio.sleepMs(25);
     }
@@ -1243,6 +1263,10 @@ fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), too
         std.mem.indexOf(u8, out.items, "no results for: ") != null;
     const looks_unindexed = std.mem.indexOf(u8, out.items, "file not indexed") != null;
     if (!(looks_empty or looks_unindexed)) return;
+    if (state == .lazy) {
+        out.appendSlice(alloc, "\nnote: no project indexed — use codedb_index to index a specific project first") catch return;
+        return;
+    }
     out.appendSlice(alloc, "\nnote: scan still in progress (state=") catch return;
     out.appendSlice(alloc, state.name()) catch return;
     out.appendSlice(alloc, "); results may be incomplete — retry shortly") catch return;

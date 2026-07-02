@@ -26,6 +26,11 @@ pub const Config = struct {
     /// indexes and rarely carry useful signal. Query-time `exclude_generated`
     /// still filters them from results regardless of this setting.
     index_generated_files: bool = false,
+    /// When true, the MCP server auto-indexes CWD on startup when no
+    /// explicit root is provided. Default false — the server stays idle until
+    /// the agent explicitly calls codedb_index. Set to true in .codedbrc to
+    /// restore legacy auto-index behavior.
+    mcp_auto_index: bool = false,
 
     pub const default: Config = .{};
 
@@ -55,6 +60,8 @@ pub const Config = struct {
                 cfg.rerank_trace = parseBool(val) catch return error.InvalidRerankTrace;
             } else if (std.mem.eql(u8, key, "index_generated_files")) {
                 cfg.index_generated_files = parseBool(val) catch return error.InvalidBool;
+            } else if (std.mem.eql(u8, key, "mcp_auto_index")) {
+                cfg.mcp_auto_index = parseBool(val) catch return error.InvalidBool;
             }
         }
         return cfg;

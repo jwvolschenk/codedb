@@ -474,7 +474,7 @@ pub fn handleIndex(
     cache.invalidate(abs_path);
     if (std.mem.eql(u8, abs_path, cache.default_path) and
         default_store.currentSeq() == 0 and
-        getScanState() == .loading_snapshot)
+        (getScanState() == .loading_snapshot or getScanState() == .lazy))
     {
         default_explorer.setRoot(io, abs_path);
         if (snapshot_mod.loadSnapshot(io, snapshot_path, default_explorer, default_store, alloc)) {
