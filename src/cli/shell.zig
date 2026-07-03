@@ -14,7 +14,7 @@ pub const Out = struct {
 };
 
 pub fn isCommand(arg: []const u8) bool {
-    const commands = [_][]const u8{ "tree", "outline", "find", "search", "word", "hot", "snapshot", "serve", "mcp", "update", "nuke" };
+    const commands = [_][]const u8{ "tree", "outline", "find", "search", "word", "hot", "snapshot", "serve", "mcp", "update", "nuke", "index" };
     for (commands) |c| {
         if (std.mem.eql(u8, arg, c)) return true;
     }

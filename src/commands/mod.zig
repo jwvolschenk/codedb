@@ -438,6 +438,17 @@ pub fn run() !void {
         try serve_cmd.run(&context);
     } else if (std.mem.eql(u8, cmd, "mcp")) {
         try mcp_cmd.run(&context);
+    } else if (std.mem.eql(u8, cmd, "index")) {
+        // #633: `index` is a first-class command. The cold scan + persist path
+        // above already built the on-disk index for this cmd (the project-cache
+        // snapshot is written unless cmd == "snapshot"); confirm and exit 0.
+        // It used to fall through to "unknown command: index" + exit 1 even
+        // though the index had been built.
+        const file_count = explorer.outlines.count();
+        out.p("{s}\xe2\x9c\x93{s} {s}index ready{s}  {s}{d} files{s}\n", .{
+            s.green, s.reset, s.bold, s.reset, s.dim, file_count, s.reset,
+        });
+        std.process.exit(0);
     } else {
         out.p("{s}\xe2\x9c\x97{s} unknown command: {s}{s}{s}\n", .{
             s.red, s.reset, s.bold, cmd, s.reset,
