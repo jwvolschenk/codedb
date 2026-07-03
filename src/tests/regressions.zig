@@ -479,6 +479,29 @@ test "issue-93: isSensitivePath blocks .env and credentials" {
     try testing.expect(!watcher.isSensitivePath("package.json"));
 }
 
+test "issue-589/7d0a083: isSensitivePath blocks FIDO keys, .env suffixes, .git-credentials" {
+    // All six ssh-keygen default private-key basenames (#589).
+    try testing.expect(watcher.isSensitivePath("id_rsa"));
+    try testing.expect(watcher.isSensitivePath("id_ed25519"));
+    try testing.expect(watcher.isSensitivePath("id_ecdsa"));
+    try testing.expect(watcher.isSensitivePath("id_dsa"));
+    try testing.expect(watcher.isSensitivePath("id_ecdsa_sk"));
+    try testing.expect(watcher.isSensitivePath("id_ed25519_sk"));
+    // *.env-suffix files such as production.env / staging.env (7d0a083).
+    try testing.expect(watcher.isSensitivePath("production.env"));
+    try testing.expect(watcher.isSensitivePath("staging.env"));
+    try testing.expect(watcher.isSensitivePath("config/prod.env"));
+    // .git-credentials exact name (7d0a083).
+    try testing.expect(watcher.isSensitivePath(".git-credentials"));
+    // .env with - or _ separators (7d0a083 widened from only '.').
+    try testing.expect(watcher.isSensitivePath(".env-local"));
+    try testing.expect(watcher.isSensitivePath(".env_local"));
+    // Must NOT over-match .envoy / .envrc / .environment.
+    try testing.expect(!watcher.isSensitivePath(".envoy.config"));
+    try testing.expect(!watcher.isSensitivePath(".envrc"));
+    try testing.expect(!watcher.isSensitivePath(".environment.json"));
+}
+
 test "issue-93: isPathSafe blocks traversal" {
     const MCP = @import("../mcp.zig");
     try testing.expect(!MCP.isPathSafe("../../../etc/passwd"));

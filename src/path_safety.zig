@@ -68,7 +68,8 @@ pub fn isSensitivePath(path: []const u8) bool {
     // (the first letters of `.env`, `credentials`, `secrets`, `id_rsa`).
     if (first != '.' and first != 'c' and first != 's' and first != 'i') {
         // Still need to check extensions and directory patterns.
-        if (std.mem.endsWith(u8, basename, ".pem") or
+        if (std.mem.endsWith(u8, basename, ".env") or
+            std.mem.endsWith(u8, basename, ".pem") or
             std.mem.endsWith(u8, basename, ".key") or
             std.mem.endsWith(u8, basename, ".p12") or
             std.mem.endsWith(u8, basename, ".pfx") or
@@ -80,18 +81,21 @@ pub fn isSensitivePath(path: []const u8) bool {
     }
     // .env, .env.<token>; do NOT match .envoy, .envrc, .environment, etc.
     if (basename.len >= 4 and std.mem.eql(u8, basename[0..4], ".env") and
-        (basename.len == 4 or basename[4] == '.')) return true;
+        (basename.len == 4 or basename[4] == '.' or basename[4] == '-' or basename[4] == '_')) return true;
     // Exact matches
     const sensitive_names = [_][]const u8{
         ".env.local",       ".env.production",      ".env.development", ".env.staging",
         ".env.test",        ".dev.vars",            ".npmrc",           ".pypirc",
         ".netrc",           "credentials.json",     "service-account.json", "secrets.json",
         "secrets.yaml",     "secrets.yml",          "id_rsa",           "id_ed25519",
+        ".git-credentials", "id_ecdsa",             "id_dsa",           "id_ecdsa_sk",
+        "id_ed25519_sk",
     };
     for (sensitive_names) |name| {
         if (std.mem.eql(u8, basename, name)) return true;
     }
-    if (std.mem.endsWith(u8, basename, ".pem") or
+    if (std.mem.endsWith(u8, basename, ".env") or
+        std.mem.endsWith(u8, basename, ".pem") or
         std.mem.endsWith(u8, basename, ".key") or
         std.mem.endsWith(u8, basename, ".p12") or
         std.mem.endsWith(u8, basename, ".pfx") or

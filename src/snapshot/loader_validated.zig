@@ -210,7 +210,10 @@ pub fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std
 
         const import_count = try readSectionInt(u32, bytes, &cursor);
         for (0..import_count) |_| {
-            const imp = try readSectionString(bytes, &cursor, allocator, 4096);
+            // The writer caps import strings at maxInt(u16) (see writer.zig), so the
+            // read cap must match — a 4096 cap silently disabled the borrow-path
+            // fast-restore for any import between 4096 and 65535 bytes (#7d0a083).
+            const imp = try readSectionString(bytes, &cursor, allocator, std.math.maxInt(u16));
             errdefer allocator.free(imp);
             try outline.imports.append(allocator, imp);
         }
