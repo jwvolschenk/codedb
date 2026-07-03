@@ -93,6 +93,9 @@ pub fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Ob
     const line_start_raw = getInt(args, "line_start");
     const line_end_raw = getInt(args, "line_end");
     const compact = getBool(args, "compact");
+    // #632: byte-exact ranged read — no line-number prefixes, no hash header — so
+    // the output can feed an exact-string editor instead of forcing a native read.
+    const raw = getBool(args, "raw");
     const has_range = line_start_raw != null or line_end_raw != null;
 
     // Bug 6: validate line range explicitly. Pre-fix: invalid ranges silently
@@ -118,15 +121,18 @@ pub fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Ob
         }
     }
 
-    // Always prepend hash
-    const w = cio.listWriter(out, alloc);
-    w.print("hash:{s}\n", .{hash_str}) catch {};
+    // Prepend a content-hash ETag header — but NOT in raw mode (#632), where the
+    // caller wants byte-exact bytes it can feed to an exact-string edit.
+    if (!raw) {
+        const w = cio.listWriter(out, alloc);
+        w.print("hash:{s}\n", .{hash_str}) catch {};
+    }
 
     if (has_range or compact) {
         const start: u32 = if (line_start_raw) |n| @intCast(@min(@max(1, n), std.math.maxInt(u32))) else 1;
         const end: u32 = if (line_end_raw) |n| @intCast(@min(@max(1, n), std.math.maxInt(u32))) else std.math.maxInt(u32);
         const lang = explore_mod.detectLanguage(path);
-        const extracted = explore_mod.extractLines(content, start, end, true, compact, lang, alloc) catch {
+        const extracted = explore_mod.extractLines(content, start, end, !raw, compact, lang, alloc) catch {
             out.appendSlice(alloc, "error: line extraction failed") catch {};
             return;
         };
