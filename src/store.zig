@@ -80,6 +80,11 @@ pub const Store = struct {
 
         const entry = try self.files.getOrPut(path);
         if (!entry.found_existing) {
+            // #603: if the path dupe fails below, remove the half-initialized
+            // files entry so a retry doesn't find a poisoned entry (key still
+            // aliasing the caller's path, value uninitialized) — which led to
+            // an invalid free / UB on the next appendVersion for this path.
+            errdefer self.files.removeByPtr(entry.key_ptr);
             const duped = try self.allocator.dupe(u8, path);
             entry.key_ptr.* = duped;
             entry.value_ptr.* = FileVersions.init(self.allocator, duped);

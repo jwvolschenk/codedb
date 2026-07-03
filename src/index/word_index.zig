@@ -21,6 +21,8 @@ pub const WordIndex = struct {
     enabled: bool = true,
     path_to_id: std.StringHashMap(u32),
     id_to_path: std.ArrayList([]const u8),
+    /// freed doc_id slots available for reuse by getOrCreateDocId (#606)
+    free_ids: std.ArrayList(u32) = .empty,
     /// doc_id → number of tokens indexed for that doc (BM25 length normalization).
     doc_lengths: std.AutoHashMap(u32, u32),
     /// Sum of all values in doc_lengths.
@@ -33,9 +35,22 @@ pub const WordIndex = struct {
 
     fn getOrCreateDocId(self: *WordIndex, path: []const u8) !u32 {
         if (self.path_to_id.get(path)) |id| return id;
+        // #606: reuse a freed doc_id slot if one is available. put first so a
+        // failed put leaves the free list and the slot untouched (no dangling
+        // id_to_path entry pointing at a path that isn't in path_to_id).
+        if (self.free_ids.items.len > 0) {
+            const freed = self.free_ids.items[self.free_ids.items.len - 1];
+            try self.path_to_id.put(path, freed);
+            _ = self.free_ids.pop();
+            self.id_to_path.items[@as(usize, freed)] = path;
+            return freed;
+        }
         const id: u32 = @intCast(self.id_to_path.items.len);
         try self.id_to_path.append(self.allocator, path);
-        try self.path_to_id.put(path, id);
+        self.path_to_id.put(path, id) catch |err| {
+            _ = self.id_to_path.pop();
+            return err;
+        };
         return id;
     }
 
@@ -76,6 +91,7 @@ pub const WordIndex = struct {
 
         self.path_to_id.deinit();
         self.id_to_path.deinit(self.allocator);
+        self.free_ids.deinit(self.allocator);
         self.doc_lengths.deinit();
     }
 
@@ -93,6 +109,10 @@ pub const WordIndex = struct {
         _ = self.path_to_id.remove(stable_path);
         if (doc_id < self.id_to_path.items.len) {
             self.id_to_path.items[doc_id] = "";
+            // #606: recycle the slot so getOrCreateDocId can reuse it, keeping
+            // id_to_path bounded in long-lived daemons instead of growing on
+            // every re-index.
+            self.free_ids.append(self.allocator, doc_id) catch {};
         }
         if (self.doc_lengths.fetchRemove(doc_id)) |kv| {
             self.total_tokens -= kv.value;
