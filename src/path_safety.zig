@@ -12,6 +12,7 @@
 // (see AGENTS.md security-sensitive areas).
 
 const std = @import("std");
+const root_policy = @import("root_policy.zig");
 
 pub fn isPathSafe(path: []const u8) bool {
     if (path.len == 0) return false;
@@ -26,6 +27,30 @@ pub fn isPathSafe(path: []const u8) bool {
         if (std.mem.eql(u8, component, "..")) return false;
     }
     return true;
+}
+
+/// Map a read/edit `path` argument to a project-relative path that is safe to
+/// resolve, given the project's absolute `root`. A safe relative path passes
+/// through unchanged; an absolute path is accepted only when it lives inside
+/// `root` and is rewritten to its relative form. Everything else (out-of-root
+/// absolutes, `..` traversal, null bytes, backslashes) returns null.
+///
+/// Without this, isPathSafe rejects every absolute path as traversal, so agents
+/// that pass absolute paths get "path traversal not allowed" and abandon codedb
+/// for bash (issue #629).
+pub fn projectRelPath(path: []const u8, root: []const u8) ?[]const u8 {
+    // Already a safe relative path — pass through.
+    if (isPathSafe(path)) return path;
+    // Only absolute paths get the in-root rescue; anything else stays rejected.
+    if (path.len == 0 or path[0] != '/') return null;
+    if (root.len == 0) return null;
+    if (!root_policy.isExactOrChild(path, root)) return null;
+    var rel = path[root.len..];
+    while (rel.len > 0 and rel[0] == '/') rel = rel[1..];
+    if (rel.len == 0) return null; // the root directory itself, not a file
+    // Re-validate the stripped remainder (blocks `/root/../escape`, nulls, etc).
+    if (!isPathSafe(rel)) return null;
+    return rel;
 }
 
 /// Returns true if a file path looks like it may contain secrets.

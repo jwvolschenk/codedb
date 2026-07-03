@@ -354,6 +354,34 @@ test "isPathSafe: accepts valid relative paths" {
     try testing.expect(mcp.isPathSafe("a/b/c/d.txt"));
 }
 
+test "issue-629: projectRelPath accepts absolute paths inside the project root" {
+    const mcp = @import("../mcp.zig");
+    const root = "/home/user/myproject";
+
+    // Safe relative paths pass through unchanged.
+    try testing.expectEqualStrings("src/main.zig", mcp.projectRelPath("src/main.zig", root).?);
+
+    // Absolute paths inside the root are rewritten to relative form.
+    try testing.expectEqualStrings("src/main.zig", mcp.projectRelPath("/home/user/myproject/src/main.zig", root).?);
+    // The root itself is not a file — rejected.
+    try testing.expect(mcp.projectRelPath("/home/user/myproject", root) == null);
+    try testing.expect(mcp.projectRelPath("/home/user/myproject/", root) == null);
+
+    // Out-of-root absolutes, traversal, nulls, and backslashes stay rejected.
+    try testing.expect(mcp.projectRelPath("/etc/passwd", root) == null);
+    try testing.expect(mcp.projectRelPath("/home/user/other/x.zig", root) == null);
+    try testing.expect(mcp.projectRelPath("../escape", root) == null);
+    try testing.expect(mcp.projectRelPath("/home/user/myproject/../escape", root) == null);
+    try testing.expect(mcp.projectRelPath("/home/user/myproject\x00evil", root) == null);
+    try testing.expect(mcp.projectRelPath("/home/user/myproject/\\evil", root) == null);
+
+    // Empty path rejected; empty root rejects absolutes (a safe relative path
+    // needs no root and passes through, which is correct — projectRelPath only
+    // uses root to rescue in-root absolutes).
+    try testing.expect(mcp.projectRelPath("", root) == null);
+    try testing.expect(mcp.projectRelPath("/etc/passwd", "") == null);
+}
+
 test "content hash: Wyhash produces consistent hash" {
     const content = "pub fn main() void {}";
     const hash1 = std.hash.Wyhash.hash(0, content);

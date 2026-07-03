@@ -71,6 +71,7 @@ const mcp_lib = @import("mcp");
 pub const setQueryLogPath = wal.setQueryLogPath;
 pub const globMatch = pathglob.globMatch;
 pub const isPathSafe = pathglob.isPathSafe;
+pub const projectRelPath = pathglob.projectRelPath;
 pub const appendId = jsonio.appendId;
 pub const getBool = mcp_lib.json.getBool;
 pub const mcpGenerateSummary = format.mcpGenerateSummary;

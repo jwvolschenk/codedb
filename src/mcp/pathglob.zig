@@ -9,3 +9,4 @@ pub fn globMatch(pattern: []const u8, path: []const u8) bool {
 }
 
 pub const isPathSafe = path_safety.isPathSafe;
+pub const projectRelPath = path_safety.projectRelPath;
