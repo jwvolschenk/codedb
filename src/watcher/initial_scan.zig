@@ -69,8 +69,8 @@ fn parseInitialScanEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, 
     const dir = try std.Io.Dir.cwd().openDir(io, root, .{});
     defer dir.close(io);
     const stat = try dir.statFile(io, entry.path, .{});
-    if (stat.size > 2 * 1024 * 1024) return null;
-    const content = try dir.readFileAlloc(io, entry.path, arena_alloc, .limited(2 * 1024 * 1024));
+    if (stat.size > skip_rules.max_indexed_file_bytes) return null;
+    const content = try dir.readFileAlloc(io, entry.path, arena_alloc, .limited(skip_rules.max_indexed_file_bytes));
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {
         if (c == 0) return null;
@@ -157,8 +157,8 @@ fn readFileEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, arena_al
     const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch return null;
     defer dir.close(io);
     const stat = dir.statFile(io, entry.path, .{}) catch return null;
-    if (stat.size > 512 * 1024) return null;
-    const c = dir.readFileAlloc(io, entry.path, arena_alloc, .limited(512 * 1024)) catch return null;
+    if (stat.size > skip_rules.max_indexed_file_bytes) return null;
+    const c = dir.readFileAlloc(io, entry.path, arena_alloc, .limited(skip_rules.max_indexed_file_bytes)) catch return null;
     const check_len = @min(c.len, 512);
     for (c[0..check_len]) |ch| {
         if (ch == 0) return null;
@@ -472,8 +472,8 @@ pub fn initialScan(io: std.Io, store: *Store, explorer: *Explorer, root: []const
 pub fn indexFileOutline(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator) !void {
     if (skip_rules.shouldSkipFile(path)) return;
     const stat = try dir.statFile(io, path, .{});
-    if (stat.size > 512 * 1024) return;
-    const content = try dir.readFileAlloc(io, path, allocator, .limited(512 * 1024));
+    if (stat.size > skip_rules.max_indexed_file_bytes) return;
+    const content = try dir.readFileAlloc(io, path, allocator, .limited(skip_rules.max_indexed_file_bytes));
     defer allocator.free(content);
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {

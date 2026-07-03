@@ -193,7 +193,7 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
 
 fn hashFile(io: std.Io, dir: std.Io.Dir, path: []const u8, size: u64) !u64 {
     if (skip_rules.shouldSkipFile(path)) return 0;
-    if (size > 512 * 1024) return 0;
+    if (size > skip_rules.max_indexed_file_bytes) return 0;
     const file = dir.openFile(io, path, .{}) catch return std.math.maxInt(u64);
     defer file.close(io);
 
@@ -286,10 +286,10 @@ fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []co
     _ = allocator;
     if (skip_rules.shouldSkipFile(path)) return;
     const stat = try dir.statFile(io, path, .{});
-    if (stat.size > 512 * 1024) return;
+    if (stat.size > skip_rules.max_indexed_file_bytes) return;
     var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer content_arena.deinit();
-    const content = try dir.readFileAlloc(io, path, content_arena.allocator(), .limited(512 * 1024));
+    const content = try dir.readFileAlloc(io, path, content_arena.allocator(), .limited(skip_rules.max_indexed_file_bytes));
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {
         if (c == 0) return;
