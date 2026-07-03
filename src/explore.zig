@@ -105,6 +105,8 @@ pub const Explorer = struct {
 
         var sym_iter = self.symbol_index.iterator();
         while (sym_iter.next()) |entry| {
+            // #586: the map owns its keys (duped on insert), so free them here.
+            self.allocator.free(entry.key_ptr.*);
             entry.value_ptr.deinit(self.allocator);
         }
         self.symbol_index.deinit();

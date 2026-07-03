@@ -50,8 +50,13 @@ pub fn indexFileSkipTrigram(self: *Explorer, path: []const u8, content: []const 
 
 pub fn commitParsedFileOwnedOutline(self: *Explorer, path: []const u8, content: []const u8, outline: FileOutline, full_index: bool, skip_trigram: bool) !void {
     var owned_outline = outline;
-    errdefer owned_outline.deinit();
-    var persistent_outline = try cloneOutline(&owned_outline, self.allocator);
+    // #594: one deinit only. Stacking an errdefer here with the defer below
+    // would double-free the parsed outline (every symbol name) on any post-
+    // clone error. Clean up owned_outline by hand on the clone-failure path.
+    var persistent_outline = cloneOutline(&owned_outline, self.allocator) catch |err| {
+        owned_outline.deinit();
+        return err;
+    };
     defer owned_outline.deinit();
     errdefer persistent_outline.deinit();
     if (persistent_outline.owns_path) {
@@ -967,6 +972,10 @@ pub fn removeFile(self: *Explorer, path: []const u8) void {
     }
     self.dep_graph.remove(path);
     self.removeSymbolIndexFor(path);
+    // #587: the skip_trigram_files key aliases the outlines key being freed
+    // below; remove it so the tier-3 scan no longer iterates a dangling path.
+    // Removal only, no free: the outlines loop owns that allocation.
+    _ = self.skip_trigram_files.remove(path);
     self.contents.remove(path);
     self.word_index.removeFile(path);
     self.trigram_index.removeFile(path);

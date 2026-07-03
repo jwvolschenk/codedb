@@ -398,6 +398,14 @@ pub fn rebuildSymbolIndexFor(self: *Explorer, path: []const u8, outline: *FileOu
     for (outline.symbols.items) |sym| {
         const gop = self.symbol_index.getOrPut(sym.name) catch continue;
         if (!gop.found_existing) {
+            // #586: the map owns its keys: sym.name belongs to the outline and
+            // dies with it on re-index, while shared-name entries survive. Dupe
+            // so the key stays valid for as long as the entry lives.
+            const owned = self.allocator.dupe(u8, sym.name) catch {
+                _ = self.symbol_index.remove(sym.name);
+                continue;
+            };
+            gop.key_ptr.* = owned;
             gop.value_ptr.* = std.ArrayList(SymbolLocation).empty;
         }
         gop.value_ptr.append(self.allocator, .{
@@ -414,6 +422,12 @@ pub fn rebuildSymbolIndexFor(self: *Explorer, path: []const u8, outline: *FileOu
             if (bare.len > 0 and !std.mem.eql(u8, bare, sym.name)) {
                 const alias_gop = self.symbol_index.getOrPut(bare) catch continue;
                 if (!alias_gop.found_existing) {
+                    // #586: same key-ownership invariant as the primary name above.
+                    const alias_owned = self.allocator.dupe(u8, bare) catch {
+                        _ = self.symbol_index.remove(bare);
+                        continue;
+                    };
+                    alias_gop.key_ptr.* = alias_owned;
                     alias_gop.value_ptr.* = std.ArrayList(SymbolLocation).empty;
                 }
                 // Check if this path is already registered for the alias
@@ -546,12 +560,23 @@ pub fn removeSymbolIndexFor(self: *Explorer, path: []const u8) void {
             }
         }
         if (list.items.len == 0) {
-            list.deinit(self.allocator);
+            // #594: do NOT deinit the in-map value here. If the to_remove
+            // append below failed, the map would keep an entry whose value we
+            // already deinit'd (poisoned), crashing the next deinit/iteration.
+            // Deinit happens below only at actual fetchRemove time.
             to_remove.append(self.allocator, entry.key_ptr.*) catch {};
         }
     }
     for (to_remove.items) |key| {
-        _ = self.symbol_index.remove(key);
+        if (self.symbol_index.fetchRemove(key)) |kv| {
+            // #586: keys are owned (duped on insert), so free on removal, then
+            // deinit the value now that the entry is truly gone from the map.
+            // fetchRemove returns a const KV; move the value into a mutable
+            // local so deinit (which takes *Self) can run.
+            var value = kv.value;
+            value.deinit(self.allocator);
+            self.allocator.free(kv.key);
+        }
     }
 }
 
