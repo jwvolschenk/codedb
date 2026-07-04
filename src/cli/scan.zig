@@ -51,10 +51,7 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
         const current_count = @as(u32, @intCast(explorer.outlines.count()));
         if (disk_hdr != null and current_count == disk_hdr.?.file_count) {
             if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
-                explorer.mu.lock();
-                explorer.trigram_index.deinit();
-                explorer.trigram_index = .{ .mmap = loaded };
-                explorer.mu.unlock();
+                explorer.adoptTrigramIndex(.{ .mmap = loaded });
                 scan_done.store(true, .release);
                 mcp_server.setScanState(.ready);
                 if (shutdown.load(.acquire)) return;
@@ -73,10 +70,7 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
                 return;
             }
             if (TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
-                explorer.mu.lock();
-                explorer.trigram_index.deinit();
-                explorer.trigram_index = .{ .heap = loaded };
-                explorer.mu.unlock();
+                explorer.adoptTrigramIndex(.{ .heap = loaded });
                 scan_done.store(true, .release);
                 mcp_server.setScanState(.ready);
                 if (shutdown.load(.acquire)) return;
@@ -115,15 +109,9 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
 
     // Compact: swap heap index for mmap — zero RSS, data lives in OS page cache.
     if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
-        explorer.mu.lock();
-        explorer.trigram_index.deinit();
-        explorer.trigram_index = .{ .mmap = loaded };
-        explorer.mu.unlock();
+        explorer.adoptTrigramIndex(.{ .mmap = loaded });
     } else if (TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
-        explorer.mu.lock();
-        explorer.trigram_index.deinit();
-        explorer.trigram_index = .{ .heap = loaded };
-        explorer.mu.unlock();
+        explorer.adoptTrigramIndex(.{ .heap = loaded });
     }
 
     scan_done.store(true, .release);

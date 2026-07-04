@@ -307,10 +307,7 @@ pub fn run() !void {
                     tri.deinit();
                     std.heap.c_allocator.destroy(tri);
                     if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
-                        explorer.mu.lock();
-                        explorer.trigram_index.deinit();
-                        explorer.trigram_index = .{ .mmap = loaded };
-                        explorer.mu.unlock();
+                        explorer.adoptTrigramIndex(.{ .mmap = loaded });
                     }
                 }
             } else {
@@ -336,15 +333,9 @@ pub fn run() !void {
                 const current_count = @as(u32, @intCast(explorer.outlines.count()));
                 if (disk_hdr != null and current_count == disk_hdr.?.file_count) {
                     if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
-                        explorer.mu.lock();
-                        explorer.trigram_index.deinit();
-                        explorer.trigram_index = .{ .mmap = loaded };
-                        explorer.mu.unlock();
+                        explorer.adoptTrigramIndex(.{ .mmap = loaded });
                     } else if (TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
-                        explorer.mu.lock();
-                        explorer.trigram_index.deinit();
-                        explorer.trigram_index = .{ .heap = loaded };
-                        explorer.mu.unlock();
+                        explorer.adoptTrigramIndex(.{ .heap = loaded });
                     } else {
                         explorer.rebuildTrigrams() catch {};
                         explorer.trigram_index.writeToDisk(io, data_dir, git_head) catch |err| {
@@ -380,10 +371,7 @@ pub fn run() !void {
                 // Load trigrams as mmap (zero heap cost); then we can safely
                 // release file contents since mmap serves future searches.
                 if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
-                    explorer.mu.lock();
-                    explorer.trigram_index.deinit();
-                    explorer.trigram_index = .{ .mmap = loaded };
-                    explorer.mu.unlock();
+                    explorer.adoptTrigramIndex(.{ .mmap = loaded });
                 }
                 release_contents_after_cache = true;
             }

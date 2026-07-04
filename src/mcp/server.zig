@@ -221,23 +221,23 @@ pub fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8)
 
 pub fn loadProjectTrigramFromDiskIfPresent(io: std.Io, explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
     explorer.mu.lockShared();
-    const already_loaded = explorer.trigram_index.fileCount() > 0;
+    const disk_backed = explorer.trigram_index != .heap;
+    const heap_files = explorer.trigram_index.fileCount();
+    const total_files = explorer.outlines.count();
     explorer.mu.unlockShared();
-    if (already_loaded) return;
+    // Mirror loadTrigramFromDiskIfPresent: a PARTIAL heap index (freshness
+    // reindex of changed files) must not block the disk load. (#615)
+    if (disk_backed or (heap_files > 0 and heap_files >= total_files)) return;
 
     const data_dir = getProjectDataDir(allocator, project_path) orelse return;
     defer allocator.free(data_dir);
 
     if (idx.MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
-        explorer.mu.lock();
-        defer explorer.mu.unlock();
-        explorer.trigram_index.deinit();
-        explorer.trigram_index = .{ .mmap = loaded };
-    } else if (idx.TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
-        explorer.mu.lock();
-        defer explorer.mu.unlock();
-        explorer.trigram_index.deinit();
-        explorer.trigram_index = .{ .heap = loaded };
+        explorer.adoptTrigramBase(loaded);
+    } else if (heap_files == 0) {
+        if (idx.TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
+            explorer.adoptTrigramIndex(.{ .heap = loaded });
+        }
     }
 }
 

@@ -21,10 +21,36 @@ pub const AnyTrigramIndex = union(enum) {
     pub const MmapOverlay = struct {
         base: MmapTrigramIndex,
         overlay: TrigramIndex,
+        /// Base paths superseded by the overlay (re-indexed or removed). Keys
+        /// are owned (duped on insert, freed in deinit). #593: without this,
+        /// a deleted file's base trigrams still answer candidates() — ghost
+        /// matches from deleted files. Phase 4 wires the 6 function arms to
+        /// consult it; Phase 2's adoptTrigramBase populates it. Construction
+        /// sites pass an explicit init (the field has no usable default since
+        /// Zig can't bind allocator from a sibling field).
+        masked: std.StringHashMap(void),
+        masked_in_base: u32 = 0,
 
         pub fn deinit(self: *MmapOverlay) void {
             self.base.deinit();
             self.overlay.deinit();
+            // Free owned mask keys.
+            var it = self.masked.iterator();
+            while (it.next()) |entry| self.overlay.allocator.free(entry.key_ptr.*);
+            self.masked.deinit();
+        }
+
+        /// Mark a base path as superseded by the overlay. Idempotent. The map
+        /// owns its keys (freed in deinit). Used by adoptTrigramBase (Phase 2)
+        /// and removeFile/indexFile (Phase 4).
+        pub fn mask(self: *MmapOverlay, path: []const u8) void {
+            if (self.masked.contains(path)) return;
+            const key = self.overlay.allocator.dupe(u8, path) catch return;
+            self.masked.put(key, {}) catch {
+                self.overlay.allocator.free(key);
+                return;
+            };
+            self.masked_in_base += 1;
         }
     };
 
@@ -121,14 +147,18 @@ pub const AnyTrigramIndex = union(enum) {
         switch (self.*) {
             .heap => |*h| try h.indexFile(path, content),
             .mmap => |*m| {
-                // Promote to mmap_overlay: keep mmap base, add heap overlay
+                // Promote to mmap_overlay: keep mmap base, add heap overlay.
+                // The newly-indexed file supersedes its base entry — mask it
+                // (#593) so candidates() stops returning the stale base copy.
                 const alloc = m.allocator;
                 const base = self.mmap;
                 self.* = .{ .mmap_overlay = .{
                     .base = base,
                     .overlay = TrigramIndex.init(alloc),
+                    .masked = std.StringHashMap(void).init(alloc),
                 } };
                 try self.mmap_overlay.overlay.indexFile(path, content);
+                self.mmap_overlay.mask(path);
             },
             .mmap_overlay => |*mo| try mo.overlay.indexFile(path, content),
         }

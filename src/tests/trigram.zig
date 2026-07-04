@@ -768,6 +768,33 @@ test "issue-263: skip_trigram_files searched before max_results exhausted" {
     try testing.expect(found_large);
 }
 
+test "issue-615: adoptTrigramIndex prunes skip_trigram_files the index covers" {
+    // Snapshot restore parks every file in skip_trigram_files (it can't know
+    // what a disk trigram index covers). Without reconciliation, tier 3
+    // content-scans the ENTIRE project on each fall-through query even though
+    // the loaded index already answers for those files. adoptTrigramIndex must
+    // prune every skip-set entry the new index covers.
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    // Two files land in skip_trigram_files via the skip path.
+    try explorer.indexFileSkipTrigram("a.zig", "fn searchable_token_alpha() void {}");
+    try explorer.indexFileSkipTrigram("b.zig", "fn searchable_token_beta() void {}");
+    try testing.expect(explorer.skip_trigram_files.contains("a.zig"));
+    try testing.expect(explorer.skip_trigram_files.contains("b.zig"));
+
+    // Build a heap index that covers "a.zig" only. adoptTrigramIndex takes
+    // ownership, so do NOT defer-deinit it here.
+    var covered = TrigramIndex.init(testing.allocator);
+    try covered.indexFile("a.zig", "fn searchable_token_alpha() void {}");
+    explorer.adoptTrigramIndex(.{ .heap = covered });
+
+    // "a.zig" is covered -> pruned. "b.zig" is not -> retained.
+    try testing.expect(!explorer.skip_trigram_files.contains("a.zig"));
+    try testing.expect(explorer.skip_trigram_files.contains("b.zig"));
+    try testing.expect(explorer.trigram_index.containsFile("a.zig"));
+}
+
 test "issue-388: TrigramIndex.removeFile frees owned path on tombstone" {
     // owns_paths=true means getOrCreateDocId duped the path so callers can
     // free their copy. removeFile must release that dup before tombstoning

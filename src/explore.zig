@@ -61,6 +61,10 @@ pub const Explorer = struct {
     word_index_can_load_from_disk: bool = false,
     word_index_generation: u64 = 0,
     word_index_persisted_generation: u64 = 0,
+    /// Incremented (under mu) whenever the trigram index is structurally
+    /// replaced (adopt*) or rebuilt, so cached search results can invalidate.
+    /// Mirrors the word_index_generation pattern. Phase 2 (#615).
+    search_gen: u32 = 0,
     mu: cio.RwLock = .{},
     root_dir: ?std.Io.Dir = null,
     io: ?std.Io = null,
@@ -180,6 +184,8 @@ pub const Explorer = struct {
     pub const indexFileSkipTrigram = @import("explore/lifecycle.zig").indexFileSkipTrigram;
     pub const commitParsedFileOwnedOutline = @import("explore/lifecycle.zig").commitParsedFileOwnedOutline;
     pub const computeSymbolEnds = @import("explore/lifecycle.zig").computeSymbolEnds;
+    pub const adoptTrigramIndex = @import("explore/lifecycle.zig").adoptTrigramIndex;
+    pub const adoptTrigramBase = @import("explore/lifecycle.zig").adoptTrigramBase;
     pub const findBraceEnd = @import("explore/lifecycle.zig").findBraceEnd;
     pub const findPythonEnd = @import("explore/lifecycle.zig").findPythonEnd;
     pub const findRubyEnd = @import("explore/lifecycle.zig").findRubyEnd;
