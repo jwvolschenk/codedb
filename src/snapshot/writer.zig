@@ -349,7 +349,13 @@ pub fn ensureGitIgnoresSnapshot(io: std.Io, root_path: []const u8, allocator: st
     defer info_dir.close(io);
 
     const needle = "codedb.snapshot";
-    const existing: ?[]u8 = info_dir.readFileAlloc(io, "exclude", allocator, .limited(1024 * 1024)) catch null;
+    const existing: ?[]u8 = info_dir.readFileAlloc(io, "exclude", allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => null,
+        // Any other failure (permissions, oversized file) means an exclude
+        // file may exist that we couldn't read — rewriting it now would
+        // clobber the user's rules.
+        else => return,
+    };
     defer if (existing) |e| allocator.free(e);
 
     if (existing) |content| {

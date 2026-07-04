@@ -88,6 +88,9 @@ pub const AnyTrigramIndex = union(enum) {
     ) ?[]const []const u8 {
         if (base == null and over == null) return null;
         if (base == null) return over;
+        // No overlay hits and nothing masked — base already is the answer;
+        // skip rehashing every base candidate.
+        if (over == null and mo.masked.count() == 0) return base;
         var merged = std.StringHashMap(void).init(allocator);
         defer merged.deinit();
         var failed = false;

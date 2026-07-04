@@ -16,6 +16,7 @@ const t4_parser = @import("../t4_parser.zig");
 const tsql_parser = @import("../tsql_parser.zig");
 const ssrs_parser = @import("../ssrs_parser.zig");
 const parse_utils = @import("parse_utils.zig");
+const skip_rules = @import("../watcher/skip_rules.zig");
 const startsWith = parse_utils.startsWith;
 const appendOutlineSymbol = parse_utils.appendOutlineSymbol;
 const appendImportSymbol = parse_utils.appendImportSymbol;
@@ -1088,7 +1089,7 @@ pub fn readContentForSearch(self: *Explorer, path: []const u8, allocator: std.me
     }
     const io = self.io orelse return null;
     const dir = self.root_dir orelse std.Io.Dir.cwd();
-    const data = dir.readFileAlloc(io, path, allocator, .limited(512 * 1024)) catch return null;
+    const data = dir.readFileAlloc(io, path, allocator, .limited(skip_rules.max_indexed_file_bytes)) catch return null;
     return .{ .data = data, .owned = true, .allocator = allocator };
 }
 

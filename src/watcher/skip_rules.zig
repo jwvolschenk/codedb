@@ -60,9 +60,10 @@ fn containsPathSegment(path: []const u8, segment: []const u8) bool {
 }
 
 /// #635: max file size codedb will read + index (outline/symbol/word). Files up
-/// to 1MB also get trigram coverage; 1MB..this cap get outline+word but skip
-/// trigram (see effective_skip_trigram); past this cap the file is skipped.
-/// Was 512KB, which silently dropped 512KB-1MB source files entirely.
+/// to 64KB also get trigram coverage; 64KB..this cap get outline+word but skip
+/// trigram (see effective_skip_trigram in incremental.zig/initial_scan.zig);
+/// past this cap the file is skipped.
+/// Was 512KB, which silently dropped 512KB-2MB source files entirely.
 pub const max_indexed_file_bytes = 2 * 1024 * 1024;
 
 pub const skip_dirs = [_][]const u8{

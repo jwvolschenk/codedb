@@ -19,6 +19,7 @@ const snapshot_mod = @import("../snapshot.zig");
 const telemetry_mod = @import("../telemetry.zig");
 const git_mod = @import("../git.zig");
 const root_policy = @import("../root_policy.zig");
+const disk_cache = @import("../cli/disk_cache.zig");
 const release_info = @import("../release_info.zig");
 
 const mcp = @import("../mcp.zig");
@@ -115,6 +116,10 @@ pub fn triggerDeferredScanWithFallback(
     indexable_roots: []const Root,
     fallback_cwd: []const u8,
 ) bool {
+    // Cheap pre-check so repeat triggers (roots notifications, tool-call
+    // timeouts) don't re-run the git-work-tree subprocess below. The
+    // authoritative gate is still the swap further down.
+    if (ds.triggered.load(.acquire)) return false;
     var path: []const u8 = "";
     if (indexable_roots.len > 0) {
         const uri_raw = indexable_roots[0].uri;
@@ -220,25 +225,9 @@ pub fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8)
 }
 
 pub fn loadProjectTrigramFromDiskIfPresent(io: std.Io, explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
-    explorer.mu.lockShared();
-    const disk_backed = explorer.trigram_index != .heap;
-    const heap_files = explorer.trigram_index.fileCount();
-    const total_files = explorer.outlines.count();
-    explorer.mu.unlockShared();
-    // Mirror loadTrigramFromDiskIfPresent: a PARTIAL heap index (freshness
-    // reindex of changed files) must not block the disk load. (#615)
-    if (disk_backed or (heap_files > 0 and heap_files >= total_files)) return;
-
     const data_dir = getProjectDataDir(allocator, project_path) orelse return;
     defer allocator.free(data_dir);
-
-    if (idx.MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
-        explorer.adoptTrigramBase(loaded);
-    } else if (heap_files == 0) {
-        if (idx.TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
-            explorer.adoptTrigramIndex(.{ .heap = loaded });
-        }
-    }
+    disk_cache.loadTrigramFromDiskIfPresent(io, explorer, data_dir, allocator);
 }
 
 fn loadProjectWordIndexFromDiskIfPresent(io: std.Io, explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
@@ -1220,6 +1209,18 @@ pub fn dispatch(
         waitForScanReady(scan_wait_timeout_ms);
     }
 
+    // #629: the project root used to rescope absolute read/edit paths. Must be
+    // the root the server actually indexed — the roots-handshake result when
+    // the deferred scan resolved one, else the CLI root — never the process
+    // cwd, which is `/` or an unrelated directory for spawned MCP servers.
+    const project_root: []const u8 = blk: {
+        if (project_path) |p| break :blk p;
+        if (deferred_scan) |ds| {
+            if (ds.resolved_root.len > 0) break :blk ds.resolved_root;
+        }
+        break :blk cache.default_path;
+    };
+
     if (tool == .codedb_word or (tool == .codedb_search and shouldLoadWordIndexForSearch(args))) {
         const effective_project = project_path orelse cache.default_path;
         var wi_timer: ?cio.Timer = cio.Timer.start() catch null;
@@ -1247,8 +1248,8 @@ pub fn dispatch(
         .codedb_relations => handleRelations(alloc, args, out, ctx.explorer),
         .codedb_hot => handleHot(alloc, args, out, ctx.store, ctx.explorer),
         .codedb_deps => handleDeps(alloc, args, out, ctx.explorer),
-        .codedb_read => handleRead(io, alloc, args, out, ctx.explorer),
-        .codedb_edit => handleEdit(io, alloc, args, out, default_store, default_explorer, agents),
+        .codedb_read => handleRead(io, alloc, args, out, ctx.explorer, project_root),
+        .codedb_edit => handleEdit(io, alloc, args, out, default_store, default_explorer, agents, project_root),
         .codedb_changes => handleChanges(alloc, args, out, default_store),
         .codedb_status => handleStatus(alloc, out, ctx.store, ctx.explorer),
         .codedb_snapshot => handleSnapshot(alloc, out, ctx.explorer, ctx.store, ctx.snapshot_cache),

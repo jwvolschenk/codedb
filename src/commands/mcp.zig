@@ -106,7 +106,7 @@ pub fn run(ctx: *Context) !void {
             // explicit `codedb <path> mcp` form (root_from_cwd is null), which
             // bypasses triggerDeferredScanWithFallback's git guard. A pre-existing
             // snapshot (loaded above) is still served; we only refuse the walk.
-            if (ctx.require_git_repo and !git_mod.isInGitWorkTree(ctx.abs_root, ctx.allocator)) {
+            if (mcp_server.getRequireGitRepo() and !git_mod.isInGitWorkTree(ctx.abs_root, ctx.allocator)) {
                 std.log.info("codedb mcp: refusing to walk non-git root {s} (require_git_repo=true)", .{ctx.abs_root});
                 mcp_server.setScanState(.lazy);
                 scan_done = std.atomic.Value(bool).init(true);

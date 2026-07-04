@@ -44,6 +44,10 @@ pub fn projectRelPath(path: []const u8, root: []const u8) ?[]const u8 {
     // Only absolute paths get the in-root rescue; anything else stays rejected.
     if (path.len == 0 or path[0] != '/') return null;
     if (root.len == 0) return null;
+    // "/" is never a legitimate project root (root_policy rejects it for
+    // indexing) — and accepting it would let `//etc/passwd` pass the child
+    // check via its doubled slash.
+    if (std.mem.eql(u8, root, "/")) return null;
     if (!root_policy.isExactOrChild(path, root)) return null;
     var rel = path[root.len..];
     while (rel.len > 0 and rel[0] == '/') rel = rel[1..];

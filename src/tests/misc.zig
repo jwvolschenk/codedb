@@ -380,6 +380,11 @@ test "issue-629: projectRelPath accepts absolute paths inside the project root" 
     // uses root to rescue in-root absolutes).
     try testing.expect(mcp.projectRelPath("", root) == null);
     try testing.expect(mcp.projectRelPath("/etc/passwd", "") == null);
+
+    // "/" is never a legitimate project root; without this guard
+    // `//etc/passwd` would pass the child check via its doubled slash.
+    try testing.expect(mcp.projectRelPath("//etc/passwd", "/") == null);
+    try testing.expect(mcp.projectRelPath("/etc/passwd", "/") == null);
 }
 
 test "content hash: Wyhash produces consistent hash" {

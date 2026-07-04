@@ -30,7 +30,7 @@ const getScanState = mcp.getScanState;
 const pathglob = @import("pathglob.zig");
 const isPathSafe = pathglob.isPathSafe;
 
-pub fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+pub fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, project_root: []const u8) void {
     const path_arg = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path' argument") catch {};
         appendBundleArgKeysDiagnostic(alloc, out, args);
@@ -38,9 +38,7 @@ pub fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Ob
     };
     // #629: accept absolute paths that live inside the project root, rewriting
     // them to relative form; reject everything else as traversal.
-    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root: []const u8 = if (std.Io.Dir.cwd().realPathFile(io, ".", &root_buf)) |n| root_buf[0..n] else |_| "";
-    const path = pathglob.projectRelPath(path_arg, root) orelse {
+    const path = pathglob.projectRelPath(path_arg, project_root) orelse {
         out.appendSlice(alloc, "error: path traversal not allowed") catch {};
         return;
     };
@@ -147,16 +145,14 @@ pub fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Ob
     }
 }
 
-pub fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer, agents: *AgentRegistry) void {
+pub fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer, agents: *AgentRegistry, project_root: []const u8) void {
     const path_arg = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path'") catch {};
         return;
     };
     // #629: accept absolute paths that live inside the project root, rewriting
     // them to relative form; reject everything else as traversal.
-    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root: []const u8 = if (std.Io.Dir.cwd().realPathFile(io, ".", &root_buf)) |n| root_buf[0..n] else |_| "";
-    const path = pathglob.projectRelPath(path_arg, root) orelse {
+    const path = pathglob.projectRelPath(path_arg, project_root) orelse {
         out.appendSlice(alloc, "error: path traversal not allowed") catch {};
         return;
     };

@@ -62,7 +62,7 @@ test "issue-258: cached project reads use the project root after contents are re
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(testing.allocator);
-    handleRead(io, testing.allocator, &parsed.value.object, &out, ctx.explorer);
+    handleRead(io, testing.allocator, &parsed.value.object, &out, ctx.explorer, project_path);
 
     try testing.expect(std.mem.indexOf(u8, out.items, "const project = \"secondary\";") != null);
 }
