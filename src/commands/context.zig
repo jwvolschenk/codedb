@@ -20,4 +20,5 @@ pub const Context = struct {
     use_color: bool,
     mcp_deferred_root: bool,
     mcp_auto_index: bool,
+    require_git_repo: bool,
 };

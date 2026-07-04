@@ -31,6 +31,11 @@ pub const Config = struct {
     /// the agent explicitly calls codedb_index. Set to true in .codedbrc to
     /// restore legacy auto-index behavior.
     mcp_auto_index: bool = false,
+    /// When true, the MCP server refuses to index a path that is not inside a
+    /// git work tree. Default true — prevents OOM when an agent or editor
+    /// points codedb at a large non-project directory (e.g. ~/repos/ with
+    /// dozens of repos). Set to false in .codedbrc to index non-git projects.
+    require_git_repo: bool = true,
 
     pub const default: Config = .{};
 
@@ -62,6 +67,8 @@ pub const Config = struct {
                 cfg.index_generated_files = parseBool(val) catch return error.InvalidBool;
             } else if (std.mem.eql(u8, key, "mcp_auto_index")) {
                 cfg.mcp_auto_index = parseBool(val) catch return error.InvalidBool;
+            } else if (std.mem.eql(u8, key, "require_git_repo")) {
+                cfg.require_git_repo = parseBool(val) catch return error.InvalidBool;
             }
         }
         return cfg;

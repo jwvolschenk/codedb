@@ -40,6 +40,8 @@ pub const ScanState = server.ScanState;
 pub const setScanState = server.setScanState;
 pub const getScanState = server.getScanState;
 pub const setLazyStart = server.setLazyStart;
+pub const setRequireGitRepo = server.setRequireGitRepo;
+pub const getRequireGitRepo = server.getRequireGitRepo;
 pub const run = server.run;
 pub const dispatch = server.dispatch;
 

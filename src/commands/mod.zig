@@ -418,6 +418,7 @@ pub fn run() !void {
         .use_color = use_color,
         .mcp_deferred_root = mcp_deferred_root,
         .mcp_auto_index = cfg.mcp_auto_index,
+        .require_git_repo = cfg.require_git_repo,
     };
 
     if (std.mem.eql(u8, cmd, "tree")) {

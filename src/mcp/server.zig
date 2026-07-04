@@ -132,6 +132,16 @@ pub fn triggerDeferredScanWithFallback(
         path = fallback_cwd;
     }
     if (path.len == 0) return false;
+    // Refuse to walk a path that isn't inside a git work tree. This prevents
+    // OOM when an editor or agent points codedb at a large non-project
+    // directory (e.g. ~/repos/ with dozens of repos). The server stays alive
+    // in lazy state so the agent can still call codedb_index on a sub-project.
+    // Opt out via require_git_repo = false in .codedbrc.
+    if (require_git_repo and !git_mod.isInGitWorkTree(path, ds.allocator)) {
+        std.log.info("codedb mcp: refusing to index non-git root {s} (require_git_repo=true)", .{path});
+        setScanState(.lazy);
+        return false;
+    }
     if (ds.triggered.swap(true, .acq_rel)) return false;
     ds.triggerFn(ds, path);
     return true;
@@ -779,6 +789,20 @@ pub var lazy_start: bool = false;
 
 pub fn setLazyStart(v: bool) void {
     lazy_start = v;
+}
+
+/// When true, the MCP server refuses to index a path that is not inside a
+/// git work tree. Default true — prevents OOM when an agent or editor points
+/// codedb at a large non-project directory. Set by mcp.zig run() based on
+/// the `require_git_repo` config option (overridable via CODEDB_REQUIRE_GIT_REPO).
+pub var require_git_repo: bool = true;
+
+pub fn setRequireGitRepo(v: bool) void {
+    require_git_repo = v;
+}
+
+pub fn getRequireGitRepo() bool {
+    return require_git_repo;
 }
 
 fn waitForScanReady(timeout_ms: u64) void {

@@ -36,6 +36,17 @@ pub fn run(ctx: *Context) !void {
         break :blk !ctx.mcp_auto_index;
     });
 
+    // When require_git_repo is true (default), the MCP server refuses to index
+    // a path that isn't inside a git work tree — prevents OOM when an agent or
+    // editor points codedb at a large non-project directory (e.g. ~/repos/).
+    // CODEDB_REQUIRE_GIT_REPO=0 env var overrides config to opt out.
+    mcp_server.setRequireGitRepo(blk: {
+        if (cio.posixGetenv("CODEDB_REQUIRE_GIT_REPO")) |v| {
+            break :blk !(std.mem.eql(u8, v, "0") or std.mem.eql(u8, v, "false"));
+        }
+        break :blk ctx.require_git_repo;
+    });
+
     disk_cache.saveProjectInfo(ctx.io, ctx.allocator, ctx.data_dir, ctx.abs_root) catch {};
 
     // Set up query tracking WAL
@@ -91,8 +102,18 @@ pub fn run(ctx: *Context) !void {
         const snapshot_loaded = disk_cache.loadBestSnapshot(ctx.io, ctx.explorer, ctx.store, ctx.abs_root, ctx.data_dir, git_head, ctx.allocator);
         var scan_done = std.atomic.Value(bool).init(snapshot_loaded);
         if (!snapshot_loaded) {
-            mcp_server.setScanState(.walking);
-            scan_thread = try std.Thread.spawn(.{}, scan.scanBg, .{ ctx.io, ctx.store, ctx.explorer, ctx.root, ctx.allocator, &scan_done, &shutdown, ctx.data_dir, ctx.abs_root, &telem, startup_t0 });
+            // Refuse to walk a non-git root. This else-branch handles the
+            // explicit `codedb <path> mcp` form (root_from_cwd is null), which
+            // bypasses triggerDeferredScanWithFallback's git guard. A pre-existing
+            // snapshot (loaded above) is still served; we only refuse the walk.
+            if (ctx.require_git_repo and !git_mod.isInGitWorkTree(ctx.abs_root, ctx.allocator)) {
+                std.log.info("codedb mcp: refusing to walk non-git root {s} (require_git_repo=true)", .{ctx.abs_root});
+                mcp_server.setScanState(.lazy);
+                scan_done = std.atomic.Value(bool).init(true);
+            } else {
+                mcp_server.setScanState(.walking);
+                scan_thread = try std.Thread.spawn(.{}, scan.scanBg, .{ ctx.io, ctx.store, ctx.explorer, ctx.root, ctx.allocator, &scan_done, &shutdown, ctx.data_dir, ctx.abs_root, &telem, startup_t0 });
+            }
         } else {
             const startup_time_ms: u64 = @intCast(@max(cio.milliTimestamp() - startup_t0, 0));
             disk_cache.loadTrigramFromDiskIfPresent(ctx.io, ctx.explorer, ctx.data_dir, ctx.allocator);

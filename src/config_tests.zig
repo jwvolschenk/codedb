@@ -69,3 +69,15 @@ test "config: index_generated_files defaults off and parses true/false" {
 
     try testing.expectError(error.InvalidBool, Config.parse("index_generated_files = maybe\n"));
 }
+
+test "config: require_git_repo defaults on and parses true/false" {
+    try testing.expect(Config.default.require_git_repo == true);
+
+    const cfg_off = try Config.parse("require_git_repo = false\n");
+    try testing.expect(cfg_off.require_git_repo == false);
+
+    const cfg_on = try Config.parse("require_git_repo = true\n");
+    try testing.expect(cfg_on.require_git_repo == true);
+
+    try testing.expectError(error.InvalidBool, Config.parse("require_git_repo = maybe\n"));
+}

@@ -17,6 +17,7 @@ const Store = @import("../store.zig").Store;
 const AgentRegistry = @import("../agent.zig").AgentRegistry;
 const snapshot_mod = @import("../snapshot.zig");
 const root_policy = @import("../root_policy.zig");
+const git_mod = @import("../git.zig");
 const mcp_lib = @import("mcp");
 const mcpj = mcp_lib.json;
 const getStr = mcpj.getStr;
@@ -30,6 +31,7 @@ const ProjectCache = mcp.ProjectCache;
 const DeferredScan = mcp.DeferredScan;
 const getScanState = mcp.getScanState;
 const setScanState = mcp.setScanState;
+const getRequireGitRepo = mcp.getRequireGitRepo;
 const loadProjectTrigramFromDiskIfPresent = mcp.loadProjectTrigramFromDiskIfPresent;
 
 const query_mod = @import("query.zig");
@@ -407,6 +409,15 @@ pub fn handleIndex(
     if (!root_policy.isIndexableRoot(abs_path)) {
         out.appendSlice(alloc, "error: refusing to index temporary root: ") catch {};
         out.appendSlice(alloc, abs_path) catch {};
+        return;
+    }
+    // Refuse to index a path that isn't inside a git work tree. Prevents OOM
+    // when an agent points codedb at a large non-project directory (e.g.
+    // ~/repos/ with dozens of repos). Opt out via require_git_repo = false.
+    if (getRequireGitRepo() and !git_mod.isInGitWorkTree(abs_path, alloc)) {
+        out.appendSlice(alloc, "error: not a git repository (or not inside a work tree): ") catch {};
+        out.appendSlice(alloc, abs_path) catch {};
+        out.appendSlice(alloc, " — set require_git_repo = false in .codedbrc to override") catch {};
         return;
     }
 

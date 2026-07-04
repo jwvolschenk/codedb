@@ -373,6 +373,15 @@ index_generated_files = false
 # stays idle until the agent explicitly calls codedb_index. Set to
 # true to restore legacy auto-index behavior.
 mcp_auto_index = false
+
+# ── Git-repo requirement ─────────────────────────────────
+# When true, the MCP server refuses to index a path that isn't inside a
+# git work tree. Default: true — prevents OOM when an agent or editor
+# points codedb at a large non-project directory (e.g. ~/repos/ with
+# dozens of repos and 100K+ files). Set to false to index non-git
+# projects (downloaded tarballs, scratch dirs). Fresh repos with no
+# commits still pass — the check is work-tree presence, not commit history.
+require_git_repo = true
 ```
 
 </details>
@@ -386,6 +395,7 @@ mcp_auto_index = false
 | `rerank_trace` | false | Tuning search relevance offline | Not actively experimenting |
 | `index_generated_files` | false | Investigating EF migrations / source-generated code | Default — keeps generated noise out of the index |
 | `mcp_auto_index` | false | You want the MCP server to index CWD on startup like a CLI tool | Default — prevents OOM on large directories |
+| `require_git_repo` | true | You need to index a non-git project (tarball, scratch dir) | Default — prevents OOM when an agent targets a non-project directory |
 
 ### Agent Precision Defaults
 
@@ -440,6 +450,33 @@ Or via environment variable (overrides config):
 
 ```bash
 CODEDB_LAZY=0 codedb mcp
+```
+
+### Git-repo requirement (default ON)
+
+As a second layer of OOM protection, the MCP server refuses to index any path
+that isn't inside a git work tree. This catches the case where an agent or
+editor explicitly targets a large non-project directory (e.g. `~/repos/` with
+dozens of repos, a home directory, or a downloaded tarball) — `codedb_index`
+returns an error instead of walking everything.
+
+- **Applies to:** the `codedb_index` tool, the editor workspace-roots handshake,
+  and the explicit `codedb <path> mcp` CLI form.
+- **Fresh repos pass:** a repo with no commits yet still indexes — the check is
+  work-tree presence, not commit history.
+- **The server stays alive** after a refusal (in `lazy` state), so the agent can
+  call `codedb_index` again on a different, git-backed project.
+
+To opt out (index a non-git project at your own risk), set in `.codedbrc`:
+
+```
+require_git_repo = false
+```
+
+Or via environment variable (overrides config):
+
+```bash
+CODEDB_REQUIRE_GIT_REPO=0 codedb mcp
 ```
 
 ### Scan states

@@ -510,6 +510,16 @@ test "git: getGitHead returns null for non-git directory" {
     try testing.expect(head == null);
 }
 
+test "git: isInGitWorkTree returns true inside a git repo" {
+    // codedb itself is a git repo, so this should return true
+    try testing.expect(git_mod.isInGitWorkTree(".", testing.allocator));
+}
+
+test "git: isInGitWorkTree returns false for non-git directory" {
+    // /tmp is not a git repo
+    try testing.expect(!git_mod.isInGitWorkTree("/tmp", testing.allocator));
+}
+
 test "auto-update: shouldRunAutoUpdate gates correctly" {
     const day_ms: i64 = 24 * 60 * 60 * 1000;
 
