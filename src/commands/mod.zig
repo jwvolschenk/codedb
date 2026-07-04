@@ -120,6 +120,17 @@ pub fn run() !void {
         cmd = args[2];
         cmd_args_start = 3;
         root_is_explicit = true;
+        // #639: editors launch codedb with the unexpanded `${workspaceFolder}`
+        // placeholder (VS Code etc.). Treat it as an alias for the implicit cwd
+        // root, NOT an explicit one — otherwise root_is_explicit stays true and
+        // silently disables the deferred-scan handshake, CODEDB_ROOT fallback,
+        // and (with the git-repo guard) the lazy→git-gated index path, leaving
+        // the agent with an empty index and no error. Normalize here so the
+        // downstream gates behave exactly like a bare `codedb mcp`.
+        if (std.mem.eql(u8, root, "${workspaceFolder}")) {
+            root = ".";
+            root_is_explicit = false;
+        }
     } else {
         shell.printUsage(out, s);
         std.process.exit(1);
@@ -130,7 +141,7 @@ pub fn run() !void {
     // so the MCP scan kicks off at startup instead of waiting for a roots
     // handshake — without this, every fresh `codedb mcp` call against a
     // client that doesn't send roots/list_changed sees an empty index.
-    if (std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".")) {
+    if (shell.mcpRootAcceptsEnvFallback(cmd, root)) {
         if (cio.posixGetenv("CODEDB_ROOT")) |env_root| {
             if (env_root.len > 0) {
                 root = env_root;
@@ -170,10 +181,6 @@ pub fn run() !void {
         return;
     }
 
-    if (std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, "${workspaceFolder}")) {
-        root = ".";
-    }
-
     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
     const abs_root = shell.resolveRoot(io, root, &root_buf) catch {
         out.p("{s}\xe2\x9c\x97{s} cannot resolve root: {s}{s}{s}\n", .{
@@ -188,7 +195,7 @@ pub fn run() !void {
     // path is fast (snapshot load happens in-process when the trigger fires),
     // and clients that don't advertise the roots capability fire the trigger
     // immediately on notifications/initialized — see handleSession.
-    const mcp_deferred_root = std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".") and !root_is_explicit;
+    const mcp_deferred_root = shell.mcpRootIsImplicitCwd(cmd, root, root_is_explicit);
     if (!mcp_deferred_root and !root_policy.isIndexableRoot(abs_root)) {
         out.p("{s}\xe2\x9c\x97{s} refusing to index temporary root: {s}{s}{s}\n", .{
             s.red, s.reset, s.bold, abs_root, s.reset,

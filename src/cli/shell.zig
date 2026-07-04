@@ -27,6 +27,26 @@ pub fn resolveRoot(io: std.Io, root: []const u8, buf: *[std.fs.max_path_bytes]u8
     return buf[0..n];
 }
 
+/// Pure predicates over the parsed (cmd, root, root_is_explicit) triple — the
+/// single source of truth for the MCP root-resolution gates (#639, mirroring
+/// upstream 375997e9). Keeping them in one place prevents the two consumption
+/// sites (CODEDB_ROOT fallback, deferred-scan handshake) from drifting.
+
+/// `codedb mcp` with an implicit cwd root (root=="." and NOT passed explicitly)
+/// — drives the deferred-scan handshake: the server stays lazy until the client
+/// sends roots/list_changed (or the timeout fires), instead of eagerly indexing.
+/// A bare `codedb mcp` and a `${workspaceFolder}`-normalized launch both match.
+pub fn mcpRootIsImplicitCwd(cmd: []const u8, root: []const u8, root_is_explicit: bool) bool {
+    return std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".") and !root_is_explicit;
+}
+
+/// `codedb mcp` with the cwd root (explicit OR implicit) — drives the CODEDB_ROOT
+/// env fallback. Explicit `<path> mcp` (where path resolved to ".") also matches,
+/// since the point is "no concrete project path was given".
+pub fn mcpRootAcceptsEnvFallback(cmd: []const u8, root: []const u8) bool {
+    return std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".");
+}
+
 /// Resolve config from the (already-extracted) --config-file path, falling
 /// back to $CWD/.codedbrc and then <binary_dir>/.codedbrc. Returns the
 /// default Config if nothing is found. Addresses #101, #102.

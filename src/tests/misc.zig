@@ -985,3 +985,33 @@ test "notify drain preserves other projects' absolute paths" {
     // Sibling dir sharing a prefix must be treated as foreign (boundary check).
     try testing.expect(watcher.notifyLineBelongsToOtherRoot("/home/u/repos/pro-old/src/A.cs", root));
 }
+
+test "issue-639: ${workspaceFolder} normalizes to implicit cwd for MCP root gates" {
+    const shell = @import("../cli/shell.zig");
+
+    // The post-normalization triple for `codedb ${workspaceFolder} mcp` MUST
+    // match a bare `codedb mcp`: root=".", cmd="mcp", root_is_explicit=false.
+    // Pre-fix, root_is_explicit stayed true and silently disabled both gates.
+    const cmd = "mcp";
+    const root = ".";
+    const explicit = false;
+
+    // Deferred-scan handshake fires for the implicit cwd root.
+    try testing.expect(shell.mcpRootIsImplicitCwd(cmd, root, explicit));
+
+    // An explicitly-passed "." (e.g. `codedb . mcp`) does NOT defer — it was
+    // intentional, so index eagerly. This is the bug's crux: the unexpanded
+    // placeholder must land on the implicit side of this line.
+    try testing.expect(!shell.mcpRootIsImplicitCwd(cmd, root, true));
+
+    // CODEDB_ROOT env fallback accepts cwd-root regardless of explicitness.
+    try testing.expect(shell.mcpRootAcceptsEnvFallback(cmd, root));
+
+    // A concrete project path disables both gates.
+    try testing.expect(!shell.mcpRootIsImplicitCwd(cmd, "/home/u/pro", false));
+    try testing.expect(!shell.mcpRootAcceptsEnvFallback(cmd, "/home/u/pro"));
+
+    // Non-mcp commands never trip either gate.
+    try testing.expect(!shell.mcpRootIsImplicitCwd("search", root, explicit));
+    try testing.expect(!shell.mcpRootAcceptsEnvFallback("search", root));
+}
