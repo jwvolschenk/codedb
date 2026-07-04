@@ -83,7 +83,7 @@ pub const TrigramIndex = struct {
         self.free_ids.deinit(self.allocator);
     }
 
-    fn getOrCreateDocId(self: *TrigramIndex, path: []const u8) !u32 {
+    pub fn getOrCreateDocId(self: *TrigramIndex, path: []const u8) !u32 {
         if (self.path_to_id.get(path)) |id| return id;
         // owns_paths=true stores a dup so callers can free their source memory.
         const stored_path: []const u8 = if (self.owns_paths)

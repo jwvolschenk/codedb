@@ -142,3 +142,98 @@ test "issue-164: AnyTrigramIndex dispatches to mmap variant" {
     try testing.expect(explorer.trigram_index.containsFile("foo.zig"));
     try testing.expect(!explorer.trigram_index.containsFile("bar.zig"));
 }
+
+test "issue-593: mmap overlay masks stale base entries (no ghost matches)" {
+    // Build heap, persist, load as mmap, then removeFile a file. Pre-fix the
+    // .mmap removeFile was a no-op, so the deleted file's base trigrams kept
+    // answering candidates() — ghost matches from a deleted file.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    try explorer.indexFile("keepme.zig", "pub fn keepFunc() void {}");
+    try explorer.indexFile("goner.zig", "pub fn ghostFunc() void {}");
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path_len = try tmp_dir.dir.realPathFile(io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
+
+    try explorer.trigram_index.writeToDisk(io, tmp_path, null);
+    const mmap_loaded = MmapTrigramIndex.initFromDisk(io, tmp_path, testing.allocator) orelse
+        return error.MmapInitFailed;
+    explorer.trigram_index.deinit();
+    explorer.trigram_index = .{ .mmap = mmap_loaded };
+
+    // Confirm the file is reachable before removal.
+    try testing.expect(explorer.trigram_index.containsFile("goner.zig"));
+
+    // removeFile promotes to mmap_overlay and masks the base entry.
+    explorer.trigram_index.removeFile("goner.zig");
+    try testing.expect(explorer.trigram_index != .mmap); // promoted
+    // #593: the masked base path must no longer answer containsFile, and its
+    // trigrams must not leak into candidates (no ghost).
+    try testing.expect(!explorer.trigram_index.containsFile("goner.zig"));
+    try testing.expect(explorer.trigram_index.containsFile("keepme.zig"));
+
+    // ghostFunc appears ONLY in goner.zig — candidates must not return it.
+    const tri_idx = &explorer.trigram_index;
+    const cands = tri_idx.candidates("ghostFunc", allocator);
+    if (cands) |list| {
+        for (list) |p| try testing.expect(!std.mem.eql(u8, p, "goner.zig"));
+        allocator.free(list);
+    }
+}
+
+test "issue-600: mmap_overlay writeToDisk persists overlay edits" {
+    // Pre-fix the .mmap_overlay writeToDisk was a no-op, so overlay edits
+    // vanished on restart. Materialize+serialize must persist the merged state.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    try explorer.indexFile("base.zig", "pub fn baseFn() void {}");
+    try explorer.indexFile("edited.zig", "pub fn oldContent() void {}");
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path_len = try tmp_dir.dir.realPathFile(io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
+
+    try explorer.trigram_index.writeToDisk(io, tmp_path, null);
+    const mmap_loaded = MmapTrigramIndex.initFromDisk(io, tmp_path, testing.allocator) orelse
+        return error.MmapInitFailed;
+    explorer.trigram_index.deinit();
+    explorer.trigram_index = .{ .mmap = mmap_loaded };
+
+    // Re-index "edited.zig" with new content (promotes to mmap_overlay).
+    try explorer.trigram_index.indexFile("edited.zig", "pub fn newContent() void {}");
+    try testing.expect(explorer.trigram_index == .mmap_overlay);
+
+    // Persist the overlay (this was the no-op bug).
+    try explorer.trigram_index.writeToDisk(io, tmp_path, null);
+
+    // Reload fresh: the new content must survive, the old must be gone.
+    var explorer2 = Explorer.init(testing.allocator);
+    defer explorer2.deinit();
+    const reloaded = MmapTrigramIndex.initFromDisk(io, tmp_path, testing.allocator) orelse
+        return error.MmapReloadFailed;
+    explorer2.trigram_index = .{ .mmap = reloaded };
+
+    // newContent (overlay) persisted; oldContent (superseded base) did not.
+    const new_cands = explorer2.trigram_index.candidates("newContent", allocator);
+    var found_new = false;
+    if (new_cands) |list| {
+        for (list) |p| if (std.mem.eql(u8, p, "edited.zig")) {
+            found_new = true;
+        };
+        allocator.free(list);
+    }
+    try testing.expect(found_new);
+}

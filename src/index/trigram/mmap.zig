@@ -205,7 +205,19 @@ pub const MmapTrigramIndex = struct {
         return null;
     }
 
-    fn readPosting(self: *const MmapTrigramIndex, index: usize) ?struct { file_id: u32, next_mask: u8, loc_mask: u8 } {
+    /// Read lookup entry `idx` directly from the mmapped lookup table. Used by
+    /// materializeOverlay to walk every (trigram, posting) pair when persisting
+    /// an mmap_overlay to disk. (#600)
+    pub fn lookupEntryAt(self: *const MmapTrigramIndex, idx: usize) TrigramIndex.LookupEntry {
+        const entry_off = 12 + idx * @sizeOf(TrigramIndex.LookupEntry);
+        return .{
+            .trigram = std.mem.readInt(u32, self.lookup_data[entry_off..][0..4], .little),
+            .offset = std.mem.readInt(u32, self.lookup_data[entry_off + 4 ..][0..4], .little),
+            .count = std.mem.readInt(u32, self.lookup_data[entry_off + 8 ..][0..4], .little),
+        };
+    }
+
+    pub fn readPosting(self: *const MmapTrigramIndex, index: usize) ?struct { file_id: u32, next_mask: u8, loc_mask: u8 } {
         const posting_size: usize = if (self.post_version >= 3) @sizeOf(TrigramIndex.DiskPosting) else @sizeOf(TrigramIndex.OldDiskPosting);
         const pb_off = self.postings_start + index * posting_size;
         if (pb_off + posting_size > self.postings_data.len) return null;
