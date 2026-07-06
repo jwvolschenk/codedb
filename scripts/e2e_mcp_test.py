@@ -648,6 +648,112 @@ def run_scenario_5_restart_staleness(binary: str) -> list[TestResult]:
     return results
 
 
+def run_scenario_6_worktree_branch_switch(binary: str) -> list[TestResult]:
+    """
+    issue-591 Task 6: branch switches must be detected in git WORKTREES, where
+    `.git` is a file (gitdir pointer) — the old watcher stat'd `{root}/.git/HEAD`
+    and was silently blind there forever.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S6] {name}")
+        results.append(r)
+        return r
+
+    home = str(Path.home())
+    base = os.path.join(home, f".codedb-e2e-591t6-{os.getpid()}-{int(time.time())}")
+    repo = os.path.join(base, "repo")
+    wt = os.path.join(base, "wt")
+    os.makedirs(repo)
+    try:
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+               **os.environ}
+
+        def git(cwd: str, *args: str) -> None:
+            subprocess.run(["git", *args], cwd=cwd, check=True, env=env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # main: one file. feat: an extra file (different tree, different SHA).
+        Path(repo, "base.zig").write_text("pub fn baseFn591() void {}\n")
+        git(repo, "init", "-q", "-b", "main")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "base")
+        git(repo, "switch", "-q", "-c", "feat")
+        Path(repo, "feat.zig").write_text("pub fn featOnly591() void {}\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "feat")
+        git(repo, "switch", "-q", "main")
+
+        # Linked worktree on its own branch at main's commit (a branch checked
+        # out in the primary tree can't be checked out again in a worktree).
+        git(repo, "worktree", "add", "-q", "-b", "wtbranch", wt, "main")
+        wt_real = os.path.realpath(wt)
+
+        p = MCPProcess(binary, [], cwd="/", command=[binary, wt_real, "mcp"])
+        try:
+            r = t("server ready on the worktree")
+            if not do_initialize(p, with_roots=False) or not wait_for_scan(p, timeout=90.0):
+                r.fail("server never became ready on the worktree")
+                return results
+            r.ok()
+
+            r = t("feat-branch file not indexed yet")
+            text = tool_text(p.call_tool("codedb_search", {"query": "featOnly591", "max_results": 5}))
+            if "feat.zig" in text:
+                r.fail("feat.zig visible before the switch?!")
+                return results
+            r.ok()
+
+            # Give the watcher time to seed its HEAD watch (it resolves the
+            # git dir and records baseline mtimes right after scan_done). A
+            # switch inside that window is healed by the seed walk itself but
+            # doesn't register as a HEAD *event*, which is what we assert below.
+            time.sleep(4.0)
+
+            # Switch the WORKTREE to feat — updates the worktree-private HEAD
+            # (under repo/.git/worktrees/...), never {wt}/.git/HEAD.
+            git(wt_real, "switch", "-q", "feat")
+
+            r = t("branch switch detected; feat file searchable (≤30s)")
+            deadline = time.monotonic() + 30.0
+            seen = False
+            while time.monotonic() < deadline:
+                text = tool_text(p.call_tool("codedb_search", {"query": "featOnly591", "max_results": 5}))
+                if "feat.zig" in text:
+                    seen = True
+                    break
+                time.sleep(1.0)
+            if seen:
+                r.ok()
+            else:
+                r.fail("worktree branch switch never reflected in the index")
+
+            # The 2s file poller would eventually index feat.zig by itself, so
+            # the load-bearing assertion is the HEAD-rescan log: it only fires
+            # when the worktree-aware watch actually saw HEAD move.
+            r = t("HEAD-change rescan actually triggered (stderr log)")
+            deadline = time.monotonic() + 30.0
+            found_log = False
+            while time.monotonic() < deadline and not found_log:
+                with p._lock:
+                    found_log = any("git HEAD changed" in ln for ln in p._stderr_lines)
+                if not found_log:
+                    time.sleep(1.0)
+            if found_log:
+                r.ok()
+            else:
+                r.fail("no 'git HEAD changed' rescan log — worktree HEAD watch is blind")
+        finally:
+            p.close()
+    finally:
+        import shutil
+        shutil.rmtree(base, ignore_errors=True)
+
+    return results
+
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -686,6 +792,9 @@ def main() -> int:
 
     print(f"\n{CYAN}── Scenario 5: issue-591 warm-start reconcile (offline edits, no force) ──{RESET}")
     all_results += run_scenario_5_restart_staleness(binary)
+
+    print(f"\n{CYAN}── Scenario 6: issue-591 worktree branch-switch detection ──{RESET}")
+    all_results += run_scenario_6_worktree_branch_switch(binary)
 
     print()
     passed = 0

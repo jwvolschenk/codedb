@@ -158,33 +158,47 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
 
     var last_git_head: ?[40]u8 = git_mod.getGitHead(root, backing) catch null;
 
-    var git_head_mtime: i128 = blk: {
-        const root_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch break :blk -1;
-        defer root_dir.close(io);
-        const st = root_dir.statFile(io, ".git/HEAD", .{}) catch break :blk -1;
-        break :blk @intCast(st.mtime.nanoseconds);
-    };
+    // Worktree/submodule-aware HEAD watching (#591 Task 6): resolve the REAL
+    // git dir once — in linked worktrees and submodules `{root}/.git` is a
+    // file, so the old `.git/HEAD` stat failed forever and branch switches
+    // were invisible. Watch mtimes of HEAD (worktree-private), the current
+    // symref target, and packed-refs (shared common dir).
+    var head_watch: ?git_mod.HeadWatchPaths = git_mod.resolveHeadWatchPaths(io, root, backing);
+    defer if (head_watch) |*hw| hw.deinit(backing);
+    var watch_mtimes = [3]i128{ -1, -1, -1 };
+    seedHeadWatchMtimes(io, head_watch, &watch_mtimes);
+
+    // Slow-path safety net: every SLOW_VERIFY_CYCLES polls (~30s) compare the
+    // SHA unconditionally. Covers resolveHeadWatchPaths failures (non-standard
+    // layouts that used to mean total silence) and packed-refs rewrites within
+    // mtime granularity.
+    const SLOW_VERIFY_CYCLES: usize = 15;
+    var poll_cycle: usize = 0;
 
     while (!shutdown.load(.acquire)) {
         drainNotifyFile(io, store, explorer, queue, &known, root, backing);
 
         cio.sleepMs(2 * std.time.ns_per_s / 1_000_000);
+        poll_cycle +%= 1;
 
         var current_head: ?[40]u8 = last_git_head;
         const head_changed = blk: {
-            {
-                const root_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch break :blk false;
-                defer root_dir.close(io);
-                const st = root_dir.statFile(io, ".git/HEAD", .{}) catch break :blk false;
-                const st_mtime: i128 = @intCast(st.mtime.nanoseconds);
-                if (st_mtime == git_head_mtime) break :blk false;
-                git_head_mtime = st_mtime;
-            }
+            const mtime_moved = headWatchMtimesChanged(io, head_watch, &watch_mtimes);
+            const slow_verify = (poll_cycle % SLOW_VERIFY_CYCLES == 0);
+            if (!mtime_moved and !slow_verify) break :blk false;
             current_head = git_mod.getGitHead(root, backing) catch null;
             if (last_git_head == null and current_head == null) break :blk false;
             if (last_git_head == null or current_head == null) break :blk true;
             break :blk !std.mem.eql(u8, &last_git_head.?, &current_head.?);
         };
+
+        if (head_changed) {
+            // Branch switch: the symref target changed, so re-resolve the
+            // watch set (new ref_path) and re-seed its mtimes.
+            if (head_watch) |*hw| hw.deinit(backing);
+            head_watch = git_mod.resolveHeadWatchPaths(io, root, backing);
+            seedHeadWatchMtimes(io, head_watch, &watch_mtimes);
+        }
 
         if (head_changed) {
             std.log.info("git HEAD changed — re-scanning", .{});
@@ -234,6 +248,38 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
             std.log.err("watcher: diff failed: {}", .{err});
         };
     }
+}
+
+fn seedHeadWatchMtimes(io: std.Io, head_watch: ?git_mod.HeadWatchPaths, mtimes: *[3]i128) void {
+    mtimes.* = .{ -1, -1, -1 };
+    const hw = head_watch orelse return;
+    const paths = [3]?[]const u8{ hw.head_path, hw.ref_path, hw.packed_refs_path };
+    for (paths, 0..) |maybe_path, i| {
+        const p = maybe_path orelse continue;
+        const st = std.Io.Dir.cwd().statFile(io, p, .{}) catch continue;
+        mtimes[i] = @intCast(st.mtime.nanoseconds);
+    }
+}
+
+/// Stat the 2-3 watched absolute paths; true when any mtime moved (including
+/// a path appearing or disappearing). Updates `mtimes` in place so a change
+/// is reported once.
+fn headWatchMtimesChanged(io: std.Io, head_watch: ?git_mod.HeadWatchPaths, mtimes: *[3]i128) bool {
+    const hw = head_watch orelse return false;
+    var changed = false;
+    const paths = [3]?[]const u8{ hw.head_path, hw.ref_path, hw.packed_refs_path };
+    for (paths, 0..) |maybe_path, i| {
+        const p = maybe_path orelse continue;
+        const new_mtime: i128 = blk: {
+            const st = std.Io.Dir.cwd().statFile(io, p, .{}) catch break :blk -1;
+            break :blk @intCast(st.mtime.nanoseconds);
+        };
+        if (new_mtime != mtimes[i]) {
+            mtimes[i] = new_mtime;
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 fn hashFile(io: std.Io, dir: std.Io.Dir, path: []const u8, size: u64) !u64 {
