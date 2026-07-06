@@ -398,7 +398,11 @@ pub fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: 
 }
 
 fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, alloc: std.mem.Allocator) void {
-    const notify_path = "/tmp/codedb-notify";
+    // Portable notify path (#591 Task 7): %TEMP% on Windows, $TMPDIR/tmp on
+    // POSIX — the old hardcoded /tmp/codedb-notify simply never worked on
+    // Windows (and ignored per-user TMPDIR on macOS).
+    var notify_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const notify_path = std.fmt.bufPrint(&notify_buf, "{s}/codedb-notify", .{cio.tempDir()}) catch return;
     const file = std.Io.Dir.cwd().openFile(io, notify_path, .{ .mode = .read_write }) catch return;
     defer file.close(io);
 

@@ -1020,3 +1020,21 @@ test "issue-639: ${workspaceFolder} normalizes to implicit cwd for MCP root gate
     try testing.expect(!shell.mcpRootIsImplicitCwd("search", root, explicit));
     try testing.expect(!shell.mcpRootAcceptsEnvFallback("search", root));
 }
+
+test "cio.tempDir: POSIX honors TMPDIR, falls back to /tmp, no trailing separator" {
+    const dir = cio.tempDir();
+    try testing.expect(dir.len > 0);
+    // Never a trailing separator (callers join with "/{name}").
+    try testing.expect(dir[dir.len - 1] != '/' and dir[dir.len - 1] != '\\');
+    if (@import("builtin").os.tag != .windows) {
+        if (cio.posixGetenv("TMPDIR")) |t| {
+            if (t.len > 0) {
+                var end = t.len;
+                while (end > 1 and t[end - 1] == '/') end -= 1;
+                try testing.expectEqualStrings(t[0..end], dir);
+                return;
+            }
+        }
+        try testing.expectEqualStrings("/tmp", dir);
+    }
+}

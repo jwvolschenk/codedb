@@ -75,6 +75,31 @@ pub fn getHomeDir() ?[]const u8 {
     return null;
 }
 
+/// Cross-platform temp directory resolution. Windows: %TEMP% then %TMP%;
+/// POSIX: $TMPDIR (macOS sets a per-user one) with a /tmp fallback. Returned
+/// slice has no trailing separator. Never null — the fallback is constant.
+pub fn tempDir() []const u8 {
+    if (is_windows) {
+        if (posixGetenv("TEMP")) |t| {
+            if (t.len > 0) return stripTrailingSep(t);
+        }
+        if (posixGetenv("TMP")) |t| {
+            if (t.len > 0) return stripTrailingSep(t);
+        }
+        return "C:/Windows/Temp";
+    }
+    if (posixGetenv("TMPDIR")) |t| {
+        if (t.len > 0) return stripTrailingSep(t);
+    }
+    return "/tmp";
+}
+
+fn stripTrailingSep(p: []const u8) []const u8 {
+    var end = p.len;
+    while (end > 1 and (p[end - 1] == '/' or p[end - 1] == '\\')) end -= 1;
+    return p[0..end];
+}
+
 // Linux/other POSIX: 0.16 doesn't expose argv globally — main() must call
 // `setProcessArgs(argv_slice)` once at startup to populate `process_args`.
 // Windows: args arrive as WTF-16 (`[]const u16`), stored separately and

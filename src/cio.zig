@@ -35,6 +35,7 @@ pub const makePipe = process.makePipe;
 pub const closeFd = process.closeFd;
 pub const posixGetenv = process.posixGetenv;
 pub const getHomeDir = process.getHomeDir;
+pub const tempDir = process.tempDir;
 pub const setProcessArgs = process.setProcessArgs;
 pub const setProcessArgsWindows = process.setProcessArgsWindows;
 pub const argsAlloc = process.argsAlloc;
