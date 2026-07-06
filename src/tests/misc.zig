@@ -257,7 +257,12 @@ test "file versions: countSince" {
 }
 
 test "watcher: queue overflow is explicit" {
-    var queue = watcher.EventQueue{};
+    // EventQueue is ~16.8MB (4096 x max_path_bytes events) — heap-allocate
+    // like production does (commands/mcp.zig); as a stack local it blows the
+    // test thread's stack depending on allocation layout.
+    const queue = try testing.allocator.create(watcher.EventQueue);
+    defer testing.allocator.destroy(queue);
+    queue.* = watcher.EventQueue{};
 
     var pushed: usize = 0;
     while (true) : (pushed += 1) {
@@ -276,7 +281,9 @@ test "watcher: queue overflow is explicit" {
 }
 
 test "watcher: queue event copies path bytes" {
-    var queue = watcher.EventQueue{};
+    const queue = try testing.allocator.create(watcher.EventQueue);
+    defer testing.allocator.destroy(queue);
+    queue.* = watcher.EventQueue{};
     const original = try testing.allocator.dupe(u8, "tmp/deleted.zig");
     try testing.expect(queue.push(watcher.FsEvent.init(original, .deleted, 99) orelse unreachable));
     testing.allocator.free(original);

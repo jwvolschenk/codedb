@@ -432,23 +432,35 @@ pub fn handleIndex(
     };
     check_dir.close(io);
 
-    // Force refresh: delete existing snapshots before re-indexing
+    // Force refresh: delete ALL index artifacts before re-indexing (#591
+    // Task 9). Snapshot-only deletion wasn't enough — scanBg re-adopts
+    // leftover git-head-matching trigram.postings/word.index artifacts, so
+    // "force" silently served the old index.
     const force = getBool(args, "force");
+    var force_report: std.ArrayList(u8) = .empty;
+    defer force_report.deinit(alloc);
     if (force) {
-        // Delete in-repo snapshot
+        // In-repo snapshot.
         const in_repo_snap = std.fmt.allocPrint(alloc, "{s}/codedb.snapshot", .{abs_path}) catch null;
         if (in_repo_snap) |snap| {
             defer alloc.free(snap);
-            std.Io.Dir.cwd().deleteFile(io, snap) catch {};
+            if (std.Io.Dir.cwd().deleteFile(io, snap)) {
+                force_report.appendSlice(alloc, "codedb.snapshot (repo)") catch {};
+            } else |_| {}
         }
-        // Delete central cache snapshot. Hash via root_resolve.cacheKey to
-        // match getDataDir — otherwise force can target the wrong dir (#591).
+        // Every artifact in the canonical central cache dir (cacheKey matches
+        // getDataDir, so this is the dir the next scan will actually use).
         if (cio.getHomeDir()) |home_dir| {
             const hash = root_resolve.cacheKey(abs_path);
-            const cache_snap = std.fmt.allocPrint(alloc, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home_dir, hash }) catch null;
-            if (cache_snap) |cs| {
-                defer alloc.free(cs);
-                std.Io.Dir.cwd().deleteFile(io, cs) catch {};
+            const artifacts = [_][]const u8{ "codedb.snapshot", "trigram.postings", "trigram.lookup", "word.index", "data.log" };
+            for (artifacts) |artifact| {
+                const p = std.fmt.allocPrint(alloc, "{s}/.codedb/projects/{x}/{s}", .{ home_dir, hash, artifact }) catch continue;
+                defer alloc.free(p);
+                if (std.Io.Dir.cwd().deleteFile(io, p)) {
+                    if (force_report.items.len > 0) force_report.appendSlice(alloc, ", ") catch {};
+                    force_report.appendSlice(alloc, artifact) catch {};
+                    force_report.appendSlice(alloc, " (cache)") catch {};
+                } else |_| {}
             }
         }
     }
@@ -520,6 +532,26 @@ pub fn handleIndex(
 
     out.appendSlice(alloc, "indexed: ") catch {};
     out.appendSlice(alloc, abs_path) catch {};
+    // Report what the request actually resolved and did (#591 Task 9): the
+    // canonicalized root (exposes URI/symlink/trailing-slash rewrites), the
+    // artifacts force deleted, and the cache dir in use.
+    if (!std.mem.eql(u8, path, abs_path)) {
+        out.appendSlice(alloc, "\nroot: canonicalized \"") catch {};
+        out.appendSlice(alloc, path) catch {};
+        out.appendSlice(alloc, "\" -> ") catch {};
+        out.appendSlice(alloc, abs_path) catch {};
+    }
+    if (force) {
+        out.appendSlice(alloc, "\nforce: deleted ") catch {};
+        out.appendSlice(alloc, if (force_report.items.len > 0) force_report.items else "nothing (no artifacts found)") catch {};
+    }
+    if (cio.getHomeDir()) |home_dir| {
+        const cache_line = std.fmt.allocPrint(alloc, "\ncache: {s}/.codedb/projects/{x}/", .{ home_dir, root_resolve.cacheKey(abs_path) }) catch null;
+        if (cache_line) |cl| {
+            defer alloc.free(cl);
+            out.appendSlice(alloc, cl) catch {};
+        }
+    }
     if (result.stdout.len > 0) {
         out.appendSlice(alloc, "\n") catch {};
         // Strip ANSI escape sequences

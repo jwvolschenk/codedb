@@ -837,6 +837,85 @@ def run_scenario_7_memory_budget(binary: str) -> list[TestResult]:
     return results
 
 
+def run_scenario_8_force_deletes_artifacts(binary: str) -> list[TestResult]:
+    """
+    issue-591 Task 9: codedb_index force=true must delete ALL index artifacts
+    in the canonical cache dir — previously only snapshots were deleted and
+    scanBg re-adopted leftover trigram/word artifacts, defeating force.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S8] {name}")
+        results.append(r)
+        return r
+
+    home = str(Path.home())
+    proj = os.path.join(home, f".codedb-e2e-591t9-{os.getpid()}-{int(time.time())}")
+    os.makedirs(proj)
+    proj = os.path.realpath(proj)
+    try:
+        Path(proj, "a.zig").write_text("pub fn forceMe591() void {}\n")
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+               **os.environ}
+        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=proj,
+                       check=True, env=env)
+
+        p = MCPProcess(binary, [], cwd="/", command=[binary, proj, "mcp"])
+        try:
+            r = t("server ready")
+            if not do_initialize(p, with_roots=False) or not wait_for_scan(p, timeout=90.0):
+                r.fail("server never ready")
+                return results
+            r.ok()
+
+            # Locate the canonical cache dir via project.txt.
+            cache_dir = None
+            projects = Path(home) / ".codedb" / "projects"
+            if projects.is_dir():
+                for d in projects.iterdir():
+                    pt = d / "project.txt"
+                    if pt.exists() and pt.read_text().strip() == proj:
+                        cache_dir = d
+                        break
+            r = t("canonical cache dir found via project.txt")
+            if cache_dir is None:
+                r.fail("no cache dir matched the project")
+                return results
+            r.ok()
+
+            # Plant a stale sentinel artifact that snapshot-only force would leave.
+            sentinel = cache_dir / "trigram.postings"
+            if not sentinel.exists():
+                sentinel.write_bytes(b"stale-sentinel")
+
+            r = t("force=true deletes trigram.postings and reports deletions")
+            resp = p.call_tool("codedb_index", {"path": proj, "force": True}, timeout=60.0)
+            text = tool_text(resp)
+            if "force: deleted" not in text or "trigram.postings" not in text:
+                r.fail(f"force report missing: {text[:300]!r}")
+            elif sentinel.exists() and sentinel.read_bytes() == b"stale-sentinel":
+                r.fail("stale trigram.postings sentinel survived force")
+            else:
+                r.ok()
+
+            r = t("response reports the cache dir")
+            if "cache: " in text and ".codedb/projects/" in text:
+                r.ok()
+            else:
+                r.fail(f"no cache line: {text[:300]!r}")
+        finally:
+            p.close()
+    finally:
+        import shutil
+        shutil.rmtree(proj, ignore_errors=True)
+
+    return results
+
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -881,6 +960,9 @@ def main() -> int:
 
     print(f"\n{CYAN}── Scenario 7: issue-591 memory budget backstop (CODEDB_MAX_MEMORY_MB=1) ──{RESET}")
     all_results += run_scenario_7_memory_budget(binary)
+
+    print(f"\n{CYAN}── Scenario 8: issue-591 force reindex deletes all artifacts ──{RESET}")
+    all_results += run_scenario_8_force_deletes_artifacts(binary)
 
     print()
     passed = 0

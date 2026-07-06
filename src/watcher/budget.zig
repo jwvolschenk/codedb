@@ -65,7 +65,10 @@ pub fn checkMemoryBudget(limit_mb: u32) BudgetCheck {
 pub fn shouldStopIndexing() bool {
     const check = checkMemoryBudget(limitMb());
     if (!check.over) return false;
-    if (!exceeded_atomic.swap(true, .acq_rel)) {
+    // Silent in test builds: the zig build runner's listen-mode protocol is
+    // disturbed by stderr log writes mid-run (first pass "fails", then the
+    // retry passes) — and tests assert the flag, not the log line.
+    if (!exceeded_atomic.swap(true, .acq_rel) and !@import("builtin").is_test) {
         std.log.warn(
             "codedb: memory budget {d}MB exceeded (rss={d}MB) — stopping index walk, keeping partial index. Raise max_index_memory_mb in .codedbrc or CODEDB_MAX_MEMORY_MB, or index a subfolder.",
             .{ limitMb(), check.rss_bytes / (1024 * 1024) },
