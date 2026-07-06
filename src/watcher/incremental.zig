@@ -107,7 +107,52 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
             const stat = dir.statFile(io, entry.path, .{}) catch continue;
             const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
             const duped = backing.dupe(u8, entry.path) catch continue;
-            known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = false }) catch backing.free(duped);
+            known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = false }) catch {
+                backing.free(duped);
+                continue;
+            };
+            // Seed sweep half 1 (#591 Task 5): a walked file the explorer has
+            // never indexed was created while the server was down (and, for
+            // non-git projects, missed by the git reconcile). Index it now.
+            const missing = blk: {
+                explorer.mu.lockShared();
+                defer explorer.mu.unlockShared();
+                break :blk !explorer.outlines.contains(entry.path);
+            };
+            if (missing) {
+                indexFileContent(io, explorer, dir, entry.path, tmp, false) catch {};
+                _ = store.recordSnapshot(entry.path, stat.size, 0) catch {};
+            }
+        }
+        // Seed sweep half 2: an indexed path the walk never visited was
+        // deleted while the server was down — evict it. (Before this sweep,
+        // such entries lived in the index forever: the poll loop only diffs
+        // against `known`, which was just seeded from the same walk.)
+        var stale: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (stale.items) |p| tmp.free(p);
+            stale.deinit(tmp);
+        }
+        {
+            explorer.mu.lockShared();
+            defer explorer.mu.unlockShared();
+            var oit = explorer.outlines.keyIterator();
+            while (oit.next()) |k| {
+                if (!known.contains(k.*)) {
+                    const duped = tmp.dupe(u8, k.*) catch break;
+                    stale.append(tmp, duped) catch {
+                        tmp.free(duped);
+                        break;
+                    };
+                }
+            }
+        }
+        for (stale.items) |p| {
+            _ = store.recordDelete(p, 0) catch {};
+            explorer.removeFile(p);
+        }
+        if (stale.items.len > 0) {
+            std.log.info("codedb: watcher seed sweep evicted {d} deleted-while-down files", .{stale.items.len});
         }
     }
 
@@ -282,7 +327,11 @@ fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
     }
 }
 
-fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator, skip_trigram: bool) !void {
+/// Shared read-and-index funnel: skip rules (extensions, lockfiles, sensitive
+/// paths, generated code), size cap, binary sniff, trigram-size cutoff. The
+/// warm-start reconcile (reconcile.zig) reuses this so every indexing path
+/// applies identical filtering — do not fork a second copy of this logic.
+pub fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator, skip_trigram: bool) !void {
     _ = allocator;
     if (skip_rules.shouldSkipFile(path)) return;
     const stat = try dir.statFile(io, path, .{});

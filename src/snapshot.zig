@@ -38,6 +38,7 @@ pub const readSections = format.readSections;
 pub const readSectionBytes = format.readSectionBytes;
 pub const readSnapshotGitHead = format.readSnapshotGitHead;
 pub const readSnapshotCodedbIgnoreHash = format.readSnapshotCodedbIgnoreHash;
+pub const readSnapshotDirtyPaths = format.readSnapshotDirtyPaths;
 pub const writeSnapshot = writer.writeSnapshot;
 pub const writeSnapshotDual = writer.writeSnapshotDual;
 pub const writeProjectCacheSnapshot = writer.writeProjectCacheSnapshot;

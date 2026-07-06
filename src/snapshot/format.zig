@@ -155,6 +155,97 @@ pub fn readSnapshotCodedbIgnoreHash(io: std.Io, path: []const u8, allocator: std
     return parseJsonU64(mb, "codedbignore_hash");
 }
 
+/// Read the `dirty_paths` array from a snapshot's META section — the list of
+/// working-tree paths that were dirty when the snapshot was written (see
+/// watcher/reconcile.zig for why a warm start needs it). Returns null when the
+/// file/META is unreadable or the key is absent (legacy snapshots, clean
+/// trees) — callers treat null as "no recorded dirty paths". Free the result
+/// with git.freePathList.
+pub fn readSnapshotDirtyPaths(io: std.Io, path: []const u8, allocator: std.mem.Allocator) ?[][]u8 {
+    const meta = readSectionBytes(io, path, .meta, allocator) catch return null;
+    const mb = meta orelse return null;
+    defer allocator.free(mb);
+    return parseJsonStringArray(mb, "dirty_paths", allocator);
+}
+
+/// Minimal JSON string-array extractor for META's key-lookup parsing style
+/// (same family as parseJsonU64). Handles the escape set json_utils emits:
+/// \" \\ \n \r \t and \u00XX. Returns null when the key is absent or the
+/// array is malformed.
+pub fn parseJsonStringArray(json: []const u8, key: []const u8, allocator: std.mem.Allocator) ?[][]u8 {
+    // Locate `"key"` then the following `[`.
+    var i: usize = 0;
+    const arr_start: usize = blk: {
+        while (i + key.len + 2 <= json.len) : (i += 1) {
+            if (json[i] == '"' and
+                std.mem.eql(u8, json[i + 1 .. i + 1 + key.len], key) and
+                json[i + 1 + key.len] == '"')
+            {
+                var j = i + 2 + key.len;
+                while (j < json.len and (json[j] == ':' or json[j] == ' ')) j += 1;
+                if (j < json.len and json[j] == '[') break :blk j + 1;
+                return null;
+            }
+        }
+        return null;
+    };
+
+    var out: std.ArrayList([]u8) = .empty;
+
+    var j = arr_start;
+    while (j < json.len and json[j] != ']') {
+        if (json[j] == ',' or json[j] == ' ') {
+            j += 1;
+            continue;
+        }
+        if (json[j] != '"') return freeAndNull(&out, allocator);
+        j += 1;
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(allocator);
+        while (j < json.len and json[j] != '"') {
+            if (json[j] == '\\') {
+                if (j + 1 >= json.len) return freeAndNull(&out, allocator);
+                const esc = json[j + 1];
+                switch (esc) {
+                    '"', '\\', '/' => buf.append(allocator, esc) catch return freeAndNull(&out, allocator),
+                    'n' => buf.append(allocator, '\n') catch return freeAndNull(&out, allocator),
+                    'r' => buf.append(allocator, '\r') catch return freeAndNull(&out, allocator),
+                    't' => buf.append(allocator, '\t') catch return freeAndNull(&out, allocator),
+                    'u' => {
+                        if (j + 5 >= json.len) return freeAndNull(&out, allocator);
+                        const cp = std.fmt.parseInt(u16, json[j + 2 .. j + 6], 16) catch return freeAndNull(&out, allocator);
+                        if (cp > 0xFF) return freeAndNull(&out, allocator); // writer only emits \u00XX
+                        buf.append(allocator, @intCast(cp)) catch return freeAndNull(&out, allocator);
+                        j += 4;
+                    },
+                    else => return freeAndNull(&out, allocator),
+                }
+                j += 2;
+            } else {
+                buf.append(allocator, json[j]) catch return freeAndNull(&out, allocator);
+                j += 1;
+            }
+        }
+        if (j >= json.len) return freeAndNull(&out, allocator); // unterminated string
+        j += 1; // closing quote
+        const duped = allocator.dupe(u8, buf.items) catch return freeAndNull(&out, allocator);
+        out.append(allocator, duped) catch {
+            allocator.free(duped);
+            return freeAndNull(&out, allocator);
+        };
+    }
+    if (j >= json.len) return freeAndNull(&out, allocator); // no closing ]
+
+    return out.toOwnedSlice(allocator) catch return freeAndNull(&out, allocator);
+}
+
+fn freeAndNull(out: *std.ArrayList([]u8), allocator: std.mem.Allocator) ?[][]u8 {
+    for (out.items) |p| allocator.free(p);
+    out.deinit(allocator);
+    out.* = .empty;
+    return null;
+}
+
 /// Load a snapshot into an Explorer. Populates contents, outlines, and
 /// rebuilds trigram + sparse n-gram indexes from the loaded content.
 /// Returns true on success, false if the snapshot couldn't be loaded.

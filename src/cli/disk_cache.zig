@@ -9,6 +9,8 @@ const index_mod = @import("../index.zig");
 const snapshot_mod = @import("../snapshot.zig");
 const Config = @import("../config.zig").Config;
 const root_resolve = @import("../root_resolve.zig");
+const git_mod = @import("../git.zig");
+const reconcile_mod = @import("../watcher/reconcile.zig");
 
 pub fn loadUserConfig(io: std.Io, alloc: std.mem.Allocator, explicit: ?[]const u8) !Config {
     const self_exe: ?[:0]u8 = std.process.executablePathAlloc(io, alloc) catch null;
@@ -72,6 +74,10 @@ fn codedbignoreChanged(io: std.Io, snapshot_path: []const u8, abs_root: []const 
     return stored != current_hash;
 }
 
+/// Try the in-repo snapshot, then the central-cache one. Returns the path of
+/// the snapshot that loaded (caller owns, frees with `allocator`) so the
+/// caller can run `reconcileAfterLoad` once disk indexes are adopted; null
+/// when neither loaded.
 pub fn loadBestSnapshot(
     io: std.Io,
     explorer: *Explorer,
@@ -80,17 +86,45 @@ pub fn loadBestSnapshot(
     data_dir: []const u8,
     current_git_head: ?[40]u8,
     allocator: std.mem.Allocator,
-) bool {
+) ?[]u8 {
     const root_snapshot = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
-    defer if (root_snapshot) |p| allocator.free(p);
-    const first_snapshot = root_snapshot orelse "codedb.snapshot";
-    if (loadSnapshotIfHeadMatches(io, first_snapshot, explorer, store, abs_root, current_git_head, allocator)) {
-        return true;
+    if (root_snapshot) |first_snapshot| {
+        if (loadSnapshotIfHeadMatches(io, first_snapshot, explorer, store, abs_root, current_git_head, allocator)) {
+            return first_snapshot;
+        }
+        allocator.free(first_snapshot);
     }
 
-    const central_snapshot = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{data_dir}) catch return false;
-    defer allocator.free(central_snapshot);
-    return loadSnapshotIfHeadMatches(io, central_snapshot, explorer, store, abs_root, current_git_head, allocator);
+    const central_snapshot = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{data_dir}) catch return null;
+    if (loadSnapshotIfHeadMatches(io, central_snapshot, explorer, store, abs_root, current_git_head, allocator)) {
+        return central_snapshot;
+    }
+    allocator.free(central_snapshot);
+    return null;
+}
+
+/// Warm-start reconcile (#591 Task 5): a snapshot that passed the git-HEAD
+/// gate is still stale for files edited/created/deleted while the server was
+/// down (dirty now) and for files that were dirty at write time but reverted
+/// since (the snapshot's recorded dirty_paths). This is the single funnel for
+/// all three warm-load call sites (cli/scan, commands/mcp, commands/mod).
+///
+/// ORDERING: must run AFTER loadTrigramFromDiskIfPresent / word-index disk
+/// adoption. removeFile on a pure-mmap trigram index promotes to an overlay
+/// that masks the path — but an adoption AFTER the removal would replace the
+/// overlay with the stale disk view and resurrect deleted files.
+pub fn reconcileAfterLoad(
+    io: std.Io,
+    snapshot_path: []const u8,
+    explorer: *Explorer,
+    store: *Store,
+    abs_root: []const u8,
+    allocator: std.mem.Allocator,
+) void {
+    const snap_dirty: ?[][]u8 = snapshot_mod.readSnapshotDirtyPaths(io, snapshot_path, allocator);
+    defer if (snap_dirty) |d| git_mod.freePathList(d, allocator);
+    const snap_dirty_slice: []const []const u8 = if (snap_dirty) |d| @ptrCast(d) else &.{};
+    reconcile_mod.reconcileWorkingTree(io, explorer, store, abs_root, snap_dirty_slice, allocator);
 }
 
 pub fn getDataDir(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8) ![]u8 {

@@ -549,6 +549,105 @@ def run_scenario_4_root_canonicalization(binary: str, project: str) -> list[Test
     return results
 
 
+def run_scenario_5_restart_staleness(binary: str) -> list[TestResult]:
+    """
+    issue-591 Task 5: warm-start reconcile.
+
+    Index a project, shut the server down, then edit one file, create one, and
+    delete one. On restart the warm-loaded snapshot passes the git-HEAD gate
+    (no commit happened) — before the fix, all three offline changes were
+    invisible until `codedb_index force=true`. The reconcile + seed sweep must
+    surface them with no manual step.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S5] {name}")
+        results.append(r)
+        return r
+
+    home = str(Path.home())
+    proj = os.path.join(home, f".codedb-e2e-591t5-{os.getpid()}-{int(time.time())}")
+    os.makedirs(proj)
+    proj = os.path.realpath(proj)
+    try:
+        Path(proj, "keep.zig").write_text("pub fn keepMe591() void {}\n")
+        Path(proj, "edit.zig").write_text("pub fn beforeEdit591() void {}\n")
+        Path(proj, "gone.zig").write_text("pub fn goneSoon591() void {}\n")
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+               **os.environ}
+        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=proj,
+                       check=True, env=env)
+
+        # First run: index and persist a snapshot.
+        p = MCPProcess(binary, [], cwd="/", command=[binary, proj, "mcp"])
+        try:
+            r = t("first run: initialize + scan")
+            if not do_initialize(p, with_roots=False) or not wait_for_scan(p, timeout=90.0):
+                r.fail("first run never became ready")
+                return results
+            r.ok()
+
+            r = t("first run: snapshot persisted")
+            deadline = time.monotonic() + 30.0
+            snap = Path(proj, "codedb.snapshot")
+            while time.monotonic() < deadline and not snap.exists():
+                time.sleep(0.5)
+            if not snap.exists():
+                r.fail("codedb.snapshot never written")
+                return results
+            r.ok()
+        finally:
+            p.close()
+
+        # Offline edits — same git HEAD, so the snapshot will warm-load.
+        Path(proj, "edit.zig").write_text("pub fn afterEdit591() void {}\n")
+        Path(proj, "born.zig").write_text("pub fn bornOffline591() void {}\n")
+        os.unlink(os.path.join(proj, "gone.zig"))
+
+        # Second run: warm start must reconcile, no force=true.
+        p = MCPProcess(binary, [], cwd="/", command=[binary, proj, "mcp"])
+        try:
+            r = t("second run: initialize + ready")
+            if not do_initialize(p, with_roots=False) or not wait_for_scan(p, timeout=90.0):
+                r.fail("second run never became ready")
+                return results
+            r.ok()
+
+            r = t("edited-while-down content visible (no force)")
+            text = tool_text(p.call_tool("codedb_search", {"query": "afterEdit591", "max_results": 5}))
+            if "afterEdit591" not in text:
+                r.fail(f"stale content — search saw: {text[:200]!r}")
+            else:
+                r.ok()
+
+            r = t("created-while-down file visible (no force)")
+            text = tool_text(p.call_tool("codedb_search", {"query": "bornOffline591", "max_results": 5}))
+            if "bornOffline591" not in text:
+                r.fail(f"created file invisible — search saw: {text[:200]!r}")
+            else:
+                r.ok()
+
+            r = t("deleted-while-down file evicted (no force)")
+            # NOTE: the response header echoes the query string, so match on
+            # the file path — a live hit renders as "gone.zig:N: ...".
+            text = tool_text(p.call_tool("codedb_search", {"query": "goneSoon591", "max_results": 5}))
+            if "gone.zig" in text:
+                r.fail(f"deleted file still served from the index: {text[:200]!r}")
+            else:
+                r.ok()
+        finally:
+            p.close()
+    finally:
+        import shutil
+        shutil.rmtree(proj, ignore_errors=True)
+
+    return results
+
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -584,6 +683,9 @@ def main() -> int:
 
     print(f"\n{CYAN}── Scenario 4: issue-591 root canonicalization (localhost + %20 + trailing slash) ──{RESET}")
     all_results += run_scenario_4_root_canonicalization(binary, project)
+
+    print(f"\n{CYAN}── Scenario 5: issue-591 warm-start reconcile (offline edits, no force) ──{RESET}")
+    all_results += run_scenario_5_restart_staleness(binary)
 
     print()
     passed = 0

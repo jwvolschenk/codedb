@@ -255,7 +255,9 @@ pub fn run() !void {
         const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
 
         const snapshot_t0 = cio.nanoTimestamp();
-        const snapshot_loaded = disk_cache.loadBestSnapshot(io, &explorer, &store, abs_root, data_dir, git_head, allocator);
+        const loaded_snapshot = disk_cache.loadBestSnapshot(io, &explorer, &store, abs_root, data_dir, git_head, allocator);
+        defer if (loaded_snapshot) |p| allocator.free(p);
+        const snapshot_loaded = loaded_snapshot != null;
         const snapshot_elapsed = cio.nanoTimestamp() - snapshot_t0;
 
         const needs_word_index = std.mem.eql(u8, cmd, "word");
@@ -265,6 +267,9 @@ pub fn run() !void {
             } else if (std.mem.eql(u8, cmd, "word")) {
                 disk_cache.loadWordIndexFromDiskIfPresent(io, &explorer, data_dir, git_head, allocator);
             }
+            // Heal offline edits AFTER disk-index adoption (ordering note on
+            // reconcileAfterLoad) so one-shot CLI queries see current reality.
+            disk_cache.reconcileAfterLoad(io, loaded_snapshot.?, &explorer, &store, abs_root, allocator);
             var dur_buf: [64]u8 = undefined;
             out.p("{s}\xe2\x9c\x93{s} {s}loaded snapshot{s}  {s}{d} files{s}  {s}{s}{s}\n", .{
                 s.green,                                        s.reset,
