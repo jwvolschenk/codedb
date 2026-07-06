@@ -1450,3 +1450,43 @@ test "csharp: single or initialized field defers to single-field path" {
     // Non-field line.
     try testing.expectEqual(@as(usize, 0), csharp_parser.extractFieldNames("DoWork(a, b, c);", &buf));
 }
+
+test "issue-591: index-dependent responses carry a freshness envelope" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, "/home/user/myproj");
+    defer bench_ctx.deinit();
+
+    mcp_mod.setScanState(.ready);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"query":"main"}
+    , .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Envelope is ALWAYS appended for index-dependent tools — non-empty
+    // results included — so stale-but-plausible output stops looking
+    // authoritative. root= is the project basename, scan= the state, seq=
+    // the store sequence the codedb_changes counter uses.
+    try testing.expect(std.mem.indexOf(u8, out.items, "index: root=myproj scan=ready seq=0") != null);
+
+    // codedb_status reports its own richer fields — no envelope duplication.
+    var status_out: std.ArrayList(u8) = .empty;
+    defer status_out.deinit(testing.allocator);
+    const empty = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{}", .{});
+    defer empty.deinit();
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_status, &empty.value.object, &status_out, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, status_out.items, "index: root=") == null);
+}

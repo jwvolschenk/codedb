@@ -1324,7 +1324,38 @@ pub fn dispatch(
             });
         }
     }
-    appendScanProgressHint(alloc, out, tool);
+    // output_format=json responses are strict JSON documents — a trailing
+    // text envelope would corrupt them for parsers. Those callers get
+    // freshness from codedb_status instead.
+    const json_output = if (mcpj.getStr(args, "output_format")) |f| std.mem.eql(u8, f, "json") else false;
+    if (!json_output) {
+        appendFreshnessEnvelope(alloc, out, tool, project_path orelse cache.default_path, ctx.store);
+        appendScanProgressHint(alloc, out, tool);
+    }
+}
+
+/// Freshness envelope (#591 Task 10): ONE trailing line on every response of
+/// an index-dependent tool — always, not only when output looks empty — so a
+/// stale-but-plausible result never reads as authoritative:
+///   index: root=<basename> scan=<state> seq=<N>
+/// root= makes the project= footgun visible (the agent sees it hit the wrong
+/// project), scan= surfaces walking/budget_exceeded, seq= is the same counter
+/// codedb_changes uses. Central wrapper only — no per-handler changes, so it
+/// can't drift. ~10 tokens per response. codedb_status is exempt (it reports
+/// richer versions of these fields itself).
+fn appendFreshnessEnvelope(alloc: std.mem.Allocator, out: *std.ArrayList(u8), tool: Tool, effective_root: []const u8, store: *Store) void {
+    if (tool == .codedb_status) return;
+    if (!toolDependsOnScannedIndex(tool)) return;
+    const basename = if (std.mem.lastIndexOfScalar(u8, effective_root, '/')) |sep|
+        effective_root[sep + 1 ..]
+    else
+        effective_root;
+    const w = cio.listWriter(out, alloc);
+    w.print("\nindex: root={s} scan={s} seq={d}", .{
+        if (basename.len > 0) basename else effective_root,
+        getScanState().name(),
+        store.currentSeq(),
+    }) catch {};
 }
 
 /// Bug 2: when the initial scan is still running, search/outline/word
