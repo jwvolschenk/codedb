@@ -492,7 +492,7 @@ pub fn handleIndex(
         (getScanState() == .loading_snapshot or getScanState() == .lazy))
     {
         default_explorer.setRoot(io, abs_path);
-        if (snapshot_mod.loadSnapshot(io, snapshot_path, default_explorer, default_store, alloc)) {
+        if (snapshot_mod.loadSnapshot(io, snapshot_path, abs_path, default_explorer, default_store, alloc)) {
             loadProjectTrigramFromDiskIfPresent(io, default_explorer, abs_path, alloc);
             default_explorer.rebuildTypeIndexes();
             if (default_explorer.outlines.count() > 1000) {

@@ -315,7 +315,7 @@ test "issue-405: cleanupStaleTmpFiles deletes in-flight sibling tmp files" {
     var exp2 = Explorer.init(aa);
     var store = Store.init(testing.allocator);
     defer store.deinit();
-    _ = snapshot_mod.loadSnapshotValidated(io, snap_path, null, &exp2, &store, aa);
+    _ = snapshot_mod.loadSnapshotValidated(io, snap_path, null, "", &exp2, &store, aa);
 
     // Expected: the in-flight sibling tmp is preserved.
     // Current (bug): cleanupStaleTmpFiles unconditionally deletes it.

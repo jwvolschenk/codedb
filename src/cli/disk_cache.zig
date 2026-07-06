@@ -36,7 +36,7 @@ pub fn loadSnapshotIfHeadMatches(
         if (current_git_head != null) return false;
         // Still check .codedbignore even for non-git projects
         if (codedbignoreChanged(io, snapshot_path, abs_root, allocator)) return false;
-        return snapshot_mod.loadSnapshot(io, snapshot_path, explorer, store, allocator);
+        return snapshot_mod.loadSnapshot(io, snapshot_path, abs_root, explorer, store, allocator);
     };
     const cur_head = current_git_head orelse return false;
     if (!std.mem.eql(u8, &snap_head, &cur_head)) return false;
@@ -45,7 +45,7 @@ pub fn loadSnapshotIfHeadMatches(
     // If so, force a re-scan so new ignore patterns take effect.
     if (codedbignoreChanged(io, snapshot_path, abs_root, allocator)) return false;
 
-    return snapshot_mod.loadSnapshot(io, snapshot_path, explorer, store, allocator);
+    return snapshot_mod.loadSnapshot(io, snapshot_path, abs_root, explorer, store, allocator);
 }
 
 /// Check if the .codedbignore file has changed since the snapshot was written.

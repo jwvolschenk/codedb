@@ -50,9 +50,10 @@ pub const isSensitivePath = sensitive.isSensitivePath;
 pub fn loadSnapshot(
     io: std.Io,
     snapshot_path: []const u8,
+    abs_root: []const u8,
     explorer: *Explorer,
     store: *Store,
     allocator: std.mem.Allocator,
 ) bool {
-    return loadSnapshotValidated(io, snapshot_path, null, explorer, store, allocator);
+    return loadSnapshotValidated(io, snapshot_path, null, abs_root, explorer, store, allocator);
 }

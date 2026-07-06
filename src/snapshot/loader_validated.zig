@@ -22,6 +22,7 @@ pub fn loadSnapshotValidated(
     io: std.Io,
     snapshot_path: []const u8,
     expected_root: ?[]const u8,
+    abs_root: []const u8,
     explorer: *Explorer,
     store: *Store,
     allocator: std.mem.Allocator,
@@ -35,6 +36,19 @@ pub fn loadSnapshotValidated(
     // Read section table (validates magic internally) — reuse already-open file (#253)
     var sections = (readSectionsFromFile(io, file, allocator) catch return false) orelse return false;
     defer sections.deinit();
+
+    // Open the project root as a dir handle ONCE. Snapshot paths are relative
+    // to the project root (the walker opens `root` and yields relative paths),
+    // but a spawned MCP server's cwd is NOT the project root — so the
+    // freshness re-reads below MUST go through this handle, not Dir.cwd(),
+    // or they silently fail and stale content is served (#591 / warm-start hole).
+    // abs_root may be empty for non-file-backed loads (e.g. tests that stored
+    // absolute paths); in that case fall back to cwd to preserve old behavior.
+    const root_dir: ?std.Io.Dir = if (abs_root.len > 0)
+        std.Io.Dir.cwd().openDir(io, abs_root, .{}) catch null
+    else
+        null;
+    defer if (root_dir) |rd| rd.close(io);
 
     // Parse META section to get expected file_count and root_hash
     var expected_file_count: ?u32 = null;
@@ -69,7 +83,7 @@ pub fn loadSnapshotValidated(
     }
 
     if (sections.get(@intFromEnum(SectionId.outline_state)) != null) {
-        return loader_fast.loadSnapshotFast(io, snapshot_path, expected_file_count, explorer, store, allocator) catch false;
+        return loader_fast.loadSnapshotFast(io, snapshot_path, expected_file_count, abs_root, explorer, store, allocator) catch false;
     }
 
     // Load CONTENT section — this is the core data
@@ -119,15 +133,29 @@ pub fn loadSnapshotValidated(
         read_pos += content_len;
         bytes_read += content_len;
 
-        // Re-index from disk if file was modified after the snapshot
+        // Re-index from disk if file was modified after the snapshot. The path
+        // is relative to the project root, so open/stat via root_dir (NOT
+        // Dir.cwd()) — a spawned MCP server's cwd is not the root, and a
+        // cwd-relative open silently fails, leaving stale content served (#591).
         var disk_content: ?[]u8 = null;
         if (snap_mtime > 0) blk: {
-            const df = std.Io.Dir.cwd().openFile(io, path_buf, .{}) catch break :blk;
-            defer df.close(io);
-            const ds = df.stat(io) catch break :blk;
-            const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
-            if (ds_mtime <= snap_mtime) break :blk;
-            disk_content = std.Io.Dir.cwd().readFileAlloc(io, path_buf, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
+            if (root_dir) |rd| {
+                const df = rd.openFile(io, path_buf, .{}) catch break :blk;
+                defer df.close(io);
+                const ds = df.stat(io) catch break :blk;
+                const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
+                if (ds_mtime <= snap_mtime) break :blk;
+                disk_content = rd.readFileAlloc(io, path_buf, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
+            } else {
+                // No root dir (legacy/test path with absolute paths) — keep the
+                // old cwd-relative behavior so we don't regress those callers.
+                const df = std.Io.Dir.cwd().openFile(io, path_buf, .{}) catch break :blk;
+                defer df.close(io);
+                const ds = df.stat(io) catch break :blk;
+                const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
+                if (ds_mtime <= snap_mtime) break :blk;
+                disk_content = std.Io.Dir.cwd().readFileAlloc(io, path_buf, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
+            }
         }
         defer if (disk_content) |dc| allocator.free(dc);
         const effective = if (disk_content) |dc| dc else content;

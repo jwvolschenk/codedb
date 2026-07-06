@@ -316,7 +316,7 @@ test "issue-220: snapshot fast load restores outlines and lazily rebuilds word i
     var store = Store.init(testing.allocator);
     defer store.deinit();
 
-    const loaded = snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store, arena2.allocator());
+    const loaded = snapshot_mod.loadSnapshot(io, snap_path, "", &exp2, &store, arena2.allocator());
     try testing.expect(loaded);
     try testing.expectEqual(@as(usize, 2), exp2.outlines.count());
     try testing.expectEqual(@as(u32, 0), exp2.trigram_index.fileCount());

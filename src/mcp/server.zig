@@ -419,14 +419,14 @@ pub const ProjectCache = struct {
             return error.PathTooLong;
         };
 
-        if (!snapshot_mod.loadSnapshot(io, snap_path, &new_entry.explorer, &new_entry.store, self.alloc)) {
+        if (!snapshot_mod.loadSnapshot(io, snap_path, p, &new_entry.explorer, &new_entry.store, self.alloc)) {
             // Fallback: try central store at ~/.codedb/projects/{hash}/codedb.snapshot
-            const hash = std.hash.Wyhash.hash(0, p);
+            const hash = root_resolve.cacheKey(p);
             var central_buf: [std.fs.max_path_bytes]u8 = undefined;
             const loaded_central = blk: {
                 const home = cio.getHomeDir() orelse break :blk false;
                 const central = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch break :blk false;
-                break :blk snapshot_mod.loadSnapshot(io, central, &new_entry.explorer, &new_entry.store, self.alloc);
+                break :blk snapshot_mod.loadSnapshot(io, central, p, &new_entry.explorer, &new_entry.store, self.alloc);
             };
             if (!loaded_central) {
                 new_entry.store.deinit();

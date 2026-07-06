@@ -15,6 +15,7 @@ pub fn loadSnapshotFast(
     io: std.Io,
     snapshot_path: []const u8,
     expected_file_count: ?u32,
+    abs_root: []const u8,
     explorer: *Explorer,
     store: *Store,
     allocator: std.mem.Allocator,
@@ -31,6 +32,15 @@ pub fn loadSnapshotFast(
 
     const file_stat = content_file.stat(io) catch return false;
     if (content_entry.offset + content_entry.length > file_stat.size) return false;
+
+    // Project-root dir handle for freshness re-reads — paths in the snapshot
+    // are relative to root, but a spawned MCP server's cwd != root. See
+    // loader_validated.zig for the full rationale (#591 warm-start hole).
+    const root_dir: ?std.Io.Dir = if (abs_root.len > 0)
+        std.Io.Dir.cwd().openDir(io, abs_root, .{}) catch null
+    else
+        null;
+    defer if (root_dir) |rd| rd.close(io);
 
     var read_pos: u64 = content_entry.offset;
     const snap_mtime: i128 = @intCast(file_stat.mtime.nanoseconds);
@@ -81,12 +91,23 @@ pub fn loadSnapshotFast(
 
         var disk_content: ?[]u8 = null;
         if (snap_mtime > 0) blk: {
-            const df = std.Io.Dir.cwd().openFile(io, path_buf, .{}) catch break :blk;
-            defer df.close(io);
-            const ds = df.stat(io) catch break :blk;
-            const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
-            if (ds_mtime <= snap_mtime) break :blk;
-            disk_content = std.Io.Dir.cwd().readFileAlloc(io, path_buf, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
+            // Open relative to the project root (root_dir), not Dir.cwd() —
+            // paths are root-relative and a spawned server's cwd != root (#591).
+            if (root_dir) |rd| {
+                const df = rd.openFile(io, path_buf, .{}) catch break :blk;
+                defer df.close(io);
+                const ds = df.stat(io) catch break :blk;
+                const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
+                if (ds_mtime <= snap_mtime) break :blk;
+                disk_content = rd.readFileAlloc(io, path_buf, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
+            } else {
+                const df = std.Io.Dir.cwd().openFile(io, path_buf, .{}) catch break :blk;
+                defer df.close(io);
+                const ds = df.stat(io) catch break :blk;
+                const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
+                if (ds_mtime <= snap_mtime) break :blk;
+                disk_content = std.Io.Dir.cwd().readFileAlloc(io, path_buf, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
+            }
         }
         defer if (disk_content) |dc| allocator.free(dc);
 
