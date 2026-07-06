@@ -43,6 +43,15 @@ pub fn writeSnapshot(
     const header_reserve: u64 = 256;
     try file_writer.seekTo(header_reserve);
 
+    // Capture the working tree's dirty list BEFORE taking the explorer lock —
+    // it is a git subprocess (~10ms) and must not extend lock hold time. The
+    // list lands in META as `dirty_paths` so a warm start can reconcile files
+    // that were dirty at write time but are clean at load time (the revert
+    // case — see watcher/reconcile.zig). Snapshot writes are cold-path only
+    // (scan completion / CLI `snapshot`), never the query hot path.
+    const dirty_paths: ?[][]u8 = git_mod.getDirtyPaths(root_path, allocator);
+    defer if (dirty_paths) |d| git_mod.freePathList(d, allocator);
+
     explorer.mu.lockShared();
     defer explorer.mu.unlockShared();
 
@@ -66,7 +75,7 @@ pub fn writeSnapshot(
         const root_hash = root_resolve.cacheKey(root_path);
         const cbi_hash = explorer.codedbignore_hash orelse @as(u64, 0);
         try writer.print(
-            \\{{"file_count":{d},"total_bytes":{d},"indexed_at":{d},"format_version":{d},"root_hash":{d},"codedbignore_hash":{d}}}
+            \\{{"file_count":{d},"total_bytes":{d},"indexed_at":{d},"format_version":{d},"root_hash":{d},"codedbignore_hash":{d}
         , .{
             file_count_meta,
             total_bytes,
@@ -75,6 +84,27 @@ pub fn writeSnapshot(
             root_hash,
             cbi_hash,
         });
+        // Optional dirty_paths array — absent for clean trees and non-git
+        // projects (META parsing is key-lookup, so absent == empty; no format
+        // version bump). Sensitive path NAMES are filtered too: the snapshot
+        // must not even reveal that a .env/.pem exists.
+        if (dirty_paths) |dp| {
+            var wrote_any = false;
+            for (dp) |p| {
+                if (isSensitivePath(p)) continue;
+                if (!wrote_any) {
+                    try writer.writeAll(",\"dirty_paths\":[");
+                } else {
+                    try writer.writeByte(',');
+                }
+                wrote_any = true;
+                try writer.writeByte('"');
+                try json_utils.writeEscapedToWriter(writer, p);
+                try writer.writeByte('"');
+            }
+            if (wrote_any) try writer.writeByte(']');
+        }
+        try writer.writeByte('}');
         try fw.writeAll(buf.items);
         try sections.append(allocator, .{ .id = @intFromEnum(SectionId.meta), .offset = offset, .length = buf.items.len });
     }
@@ -399,7 +429,10 @@ pub fn writeProjectCacheSnapshot(
     root_path: []const u8,
     allocator: std.mem.Allocator,
 ) !void {
-    const hash = std.hash.Wyhash.hash(0, root_path);
+    // cacheKey, not raw Wyhash — must agree with disk_cache.getDataDir or the
+    // central snapshot lands in a dir the loader never looks in (#591; the
+    // divergence is only visible on macOS/Windows where cacheKey case-folds).
+    const hash = root_resolve.cacheKey(root_path);
     const home_raw = cio.getHomeDir() orelse return;
     const home = allocator.dupe(u8, home_raw) catch return;
     defer allocator.free(home);
