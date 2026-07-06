@@ -1,6 +1,7 @@
 const initial_scan = @import("watcher/initial_scan.zig");
 const incremental = @import("watcher/incremental.zig");
 const skip_rules = @import("watcher/skip_rules.zig");
+pub const budget = @import("watcher/budget.zig");
 
 pub const skip_dirs = skip_rules.skip_dirs;
 pub const isSensitivePath = skip_rules.isSensitivePath;

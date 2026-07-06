@@ -9,6 +9,9 @@ Scenarios covered:
      and tools return data without needing a roots handshake.
   3. No-roots client: spawn from cwd=/, client declares no roots capability, MCP
      stays alive and tools respond gracefully (0 files, no crash).
+  4. issue-591 root canonicalization: client sends a file://localhost URI with a
+     percent-encoded space and a trailing slash; the server must index the right
+     dir and reuse the same cache dir the CLI path produces (project.txt check).
 
 Usage:
   python3 scripts/e2e_mcp_test.py [--binary /path/to/codedb] [--project /path/to/project]
@@ -50,12 +53,15 @@ class MCPProcess:
     """Wraps a codedb mcp subprocess; sends/receives JSON-RPC over stdio."""
 
     def __init__(self, binary: str, args: list[str], cwd: str,
-                 command: list[str] | None = None) -> None:
+                 command: list[str] | None = None,
+                 env: dict[str, str] | None = None) -> None:
         """
         command: full argv override (default: [binary, "mcp"] + args).
         Use command=[binary, root, "mcp"] for explicit-root invocation.
+        env: extra environment variables merged over os.environ.
         """
         argv = command if command is not None else [binary, "mcp"] + args
+        full_env = {**os.environ, **env} if env else None
         self.proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -64,6 +70,7 @@ class MCPProcess:
             cwd=cwd,
             text=True,
             bufsize=1,
+            env=full_env,
         )
         self._id = 1
         self._lock = threading.Lock()
@@ -377,6 +384,20 @@ def run_scenario_2_normal_mode(binary: str, project: str) -> list[TestResult]:
         else:
             r.ok()
 
+        r = t("codedb_manifest lists build.zig.zon")
+        text = tool_text(p.call_tool("codedb_manifest", {}))
+        if "build.zig.zon" not in text:
+            r.fail(f"manifest listing: {text[:300]!r}")
+        else:
+            r.ok()
+
+        r = t("codedb_manifest path=build.zig.zon returns dependencies")
+        text = tool_text(p.call_tool("codedb_manifest", {"path": "build.zig.zon"}))
+        if "dependencies" not in text or "[runtime]" not in text:
+            r.fail(f"manifest deps: {text[:300]!r}")
+        else:
+            r.ok()
+
     finally:
         p.close()
 
@@ -439,6 +460,476 @@ def run_scenario_3_no_roots_client(binary: str) -> list[TestResult]:
     return results
 
 
+def run_scenario_4_root_canonicalization(binary: str, project: str) -> list[TestResult]:
+    """
+    issue-591: root canonicalization through one funnel.
+
+    The client sends a file:// URI that exercises the bug class:
+      - localhost authority (file://localhost/...)
+      - percent-encoded space (%20)
+      - trailing slash
+    The server must (a) index the right directory (files > 0), and (b) write a
+    project.txt naming the realpath — proving the MCP path and the CLI path share
+    one cache dir (the core #591 invariant). We point the URI at a throwaway tmp
+    dir containing a single source file so we don't mutate the real project's
+    cache dir, and we compare against an independently-computed realpath.
+    """
+    import tempfile
+    import urllib.parse
+
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S4] {name}")
+        results.append(r)
+        return r
+
+    # Build a tmp project dir whose name has a space — forces percent-encoding
+    # to be meaningful. Use the user's home (never /tmp — root_policy denies it)
+    # and clean up explicitly. Symlinks (/tmp -> /private/tmp on macOS) are
+    # resolved by realpath, so we compare against os.path.realpath.
+    home = str(Path.home())
+    tmp_raw = os.path.join(home, f".codedb-e2e-591-{os.getpid()}-{int(time.time())}")
+    os.makedirs(os.path.join(tmp_raw, "space dir"))  # name with a space
+    tmp_real = os.path.realpath(os.path.join(tmp_raw, "space dir"))
+    try:
+        # Drop one file so the index is non-empty.
+        (Path(tmp_real) / "hello.zig").write_text("pub fn hello591() void {}\n")
+        # Make it a git repo so require_git_repo (the default) doesn't reject
+        # it — mirrors real usage and keeps this scenario about URI handling,
+        # not the git guard.
+        subprocess.run(["git", "init", "-q"], cwd=tmp_real, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # URI with localhost authority, %20 for the space, and a trailing slash.
+        encoded_path = urllib.parse.quote(tmp_real)  # spaces -> %20
+        uri = f"file://localhost/{encoded_path.lstrip('/')}/"
+
+        p = MCPProcess(binary, [], cwd="/")
+        try:
+            r = t("initialize succeeds")
+            if not do_initialize(p, with_roots=True):
+                r.fail("no initialize response — transport closed")
+                return results
+            r.ok()
+
+            r = t("server sends roots/list")
+            req = p.recv_method("roots/list", timeout=5.0)
+            if req is None:
+                r.fail("server never sent roots/list")
+                return results
+            # Reply with the adversarial URI.
+            p.send({
+                "jsonrpc": "2.0",
+                "id": req["id"],
+                "result": {"roots": [{"uri": uri, "name": "591-space-dir"}]},
+            })
+            r.ok()
+
+            r = t("scan completes on the canonicalized root (files > 0)")
+            if not wait_for_scan(p, timeout=90.0):
+                r.fail("timed out waiting for scan (root never indexed)")
+                return results
+            r.ok()
+
+            r = t("codedb_search finds the file content")
+            resp = p.call_tool("codedb_search", {"query": "hello591", "max_results": 5})
+            text = tool_text(resp)
+            if "hello591" not in text:
+                r.fail(f"hello591 not found — search saw: {text[:200]!r}")
+            else:
+                r.ok()
+
+            r = t("project.txt names the realpath (CLI/MCP cache-dir parity)")
+            # getDataDir writes project.txt into ~/.codedb/projects/<hash>/.
+            # The hash is root_resolve.cacheKey(canonical_root); for a passing
+            # run the dir exists and names tmp_real.
+            home = Path.home()
+            found = False
+            if (home / ".codedb" / "projects").is_dir():
+                for d in (home / ".codedb" / "projects").iterdir():
+                    pt = d / "project.txt"
+                    if pt.exists():
+                        content = pt.read_text().strip()
+                        if content == tmp_real:
+                            found = True
+                            break
+            if found:
+                r.ok(f"project.txt == {tmp_real}")
+            else:
+                r.fail(f"no project.txt matched realpath {tmp_real!r}")
+        finally:
+            p.close()
+    finally:
+        import shutil
+        shutil.rmtree(tmp_raw, ignore_errors=True)
+
+    return results
+
+
+def run_scenario_5_restart_staleness(binary: str) -> list[TestResult]:
+    """
+    issue-591 Task 5: warm-start reconcile.
+
+    Index a project, shut the server down, then edit one file, create one, and
+    delete one. On restart the warm-loaded snapshot passes the git-HEAD gate
+    (no commit happened) — before the fix, all three offline changes were
+    invisible until `codedb_index force=true`. The reconcile + seed sweep must
+    surface them with no manual step.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S5] {name}")
+        results.append(r)
+        return r
+
+    home = str(Path.home())
+    proj = os.path.join(home, f".codedb-e2e-591t5-{os.getpid()}-{int(time.time())}")
+    os.makedirs(proj)
+    proj = os.path.realpath(proj)
+    try:
+        Path(proj, "keep.zig").write_text("pub fn keepMe591() void {}\n")
+        Path(proj, "edit.zig").write_text("pub fn beforeEdit591() void {}\n")
+        Path(proj, "gone.zig").write_text("pub fn goneSoon591() void {}\n")
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+               **os.environ}
+        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=proj,
+                       check=True, env=env)
+
+        # First run: index and persist a snapshot.
+        p = MCPProcess(binary, [], cwd="/", command=[binary, proj, "mcp"])
+        try:
+            r = t("first run: initialize + scan")
+            if not do_initialize(p, with_roots=False) or not wait_for_scan(p, timeout=90.0):
+                r.fail("first run never became ready")
+                return results
+            r.ok()
+
+            r = t("first run: snapshot persisted")
+            deadline = time.monotonic() + 30.0
+            snap = Path(proj, "codedb.snapshot")
+            while time.monotonic() < deadline and not snap.exists():
+                time.sleep(0.5)
+            if not snap.exists():
+                r.fail("codedb.snapshot never written")
+                return results
+            r.ok()
+        finally:
+            p.close()
+
+        # Offline edits — same git HEAD, so the snapshot will warm-load.
+        Path(proj, "edit.zig").write_text("pub fn afterEdit591() void {}\n")
+        Path(proj, "born.zig").write_text("pub fn bornOffline591() void {}\n")
+        os.unlink(os.path.join(proj, "gone.zig"))
+
+        # Second run: warm start must reconcile, no force=true.
+        p = MCPProcess(binary, [], cwd="/", command=[binary, proj, "mcp"])
+        try:
+            r = t("second run: initialize + ready")
+            if not do_initialize(p, with_roots=False) or not wait_for_scan(p, timeout=90.0):
+                r.fail("second run never became ready")
+                return results
+            r.ok()
+
+            r = t("edited-while-down content visible (no force)")
+            text = tool_text(p.call_tool("codedb_search", {"query": "afterEdit591", "max_results": 5}))
+            if "afterEdit591" not in text:
+                r.fail(f"stale content — search saw: {text[:200]!r}")
+            else:
+                r.ok()
+
+            r = t("created-while-down file visible (no force)")
+            text = tool_text(p.call_tool("codedb_search", {"query": "bornOffline591", "max_results": 5}))
+            if "bornOffline591" not in text:
+                r.fail(f"created file invisible — search saw: {text[:200]!r}")
+            else:
+                r.ok()
+
+            r = t("deleted-while-down file evicted (no force)")
+            # NOTE: the response header echoes the query string, so match on
+            # the file path — a live hit renders as "gone.zig:N: ...".
+            text = tool_text(p.call_tool("codedb_search", {"query": "goneSoon591", "max_results": 5}))
+            if "gone.zig" in text:
+                r.fail(f"deleted file still served from the index: {text[:200]!r}")
+            else:
+                r.ok()
+        finally:
+            p.close()
+    finally:
+        import shutil
+        shutil.rmtree(proj, ignore_errors=True)
+
+    return results
+
+
+def run_scenario_6_worktree_branch_switch(binary: str) -> list[TestResult]:
+    """
+    issue-591 Task 6: branch switches must be detected in git WORKTREES, where
+    `.git` is a file (gitdir pointer) — the old watcher stat'd `{root}/.git/HEAD`
+    and was silently blind there forever.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S6] {name}")
+        results.append(r)
+        return r
+
+    home = str(Path.home())
+    base = os.path.join(home, f".codedb-e2e-591t6-{os.getpid()}-{int(time.time())}")
+    repo = os.path.join(base, "repo")
+    wt = os.path.join(base, "wt")
+    os.makedirs(repo)
+    try:
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+               **os.environ}
+
+        def git(cwd: str, *args: str) -> None:
+            subprocess.run(["git", *args], cwd=cwd, check=True, env=env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # main: one file. feat: an extra file (different tree, different SHA).
+        Path(repo, "base.zig").write_text("pub fn baseFn591() void {}\n")
+        git(repo, "init", "-q", "-b", "main")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "base")
+        git(repo, "switch", "-q", "-c", "feat")
+        Path(repo, "feat.zig").write_text("pub fn featOnly591() void {}\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "feat")
+        git(repo, "switch", "-q", "main")
+
+        # Linked worktree on its own branch at main's commit (a branch checked
+        # out in the primary tree can't be checked out again in a worktree).
+        git(repo, "worktree", "add", "-q", "-b", "wtbranch", wt, "main")
+        wt_real = os.path.realpath(wt)
+
+        p = MCPProcess(binary, [], cwd="/", command=[binary, wt_real, "mcp"])
+        try:
+            r = t("server ready on the worktree")
+            if not do_initialize(p, with_roots=False) or not wait_for_scan(p, timeout=90.0):
+                r.fail("server never became ready on the worktree")
+                return results
+            r.ok()
+
+            r = t("feat-branch file not indexed yet")
+            text = tool_text(p.call_tool("codedb_search", {"query": "featOnly591", "max_results": 5}))
+            if "feat.zig" in text:
+                r.fail("feat.zig visible before the switch?!")
+                return results
+            r.ok()
+
+            # Give the watcher time to seed its HEAD watch (it resolves the
+            # git dir and records baseline mtimes right after scan_done). A
+            # switch inside that window is healed by the seed walk itself but
+            # doesn't register as a HEAD *event*, which is what we assert below.
+            time.sleep(4.0)
+
+            # Switch the WORKTREE to feat — updates the worktree-private HEAD
+            # (under repo/.git/worktrees/...), never {wt}/.git/HEAD.
+            git(wt_real, "switch", "-q", "feat")
+
+            r = t("branch switch detected; feat file searchable (≤30s)")
+            deadline = time.monotonic() + 30.0
+            seen = False
+            while time.monotonic() < deadline:
+                text = tool_text(p.call_tool("codedb_search", {"query": "featOnly591", "max_results": 5}))
+                if "feat.zig" in text:
+                    seen = True
+                    break
+                time.sleep(1.0)
+            if seen:
+                r.ok()
+            else:
+                r.fail("worktree branch switch never reflected in the index")
+
+            # The 2s file poller would eventually index feat.zig by itself, so
+            # the load-bearing assertion is the HEAD-rescan log: it only fires
+            # when the worktree-aware watch actually saw HEAD move.
+            r = t("HEAD-change rescan actually triggered (stderr log)")
+            deadline = time.monotonic() + 30.0
+            found_log = False
+            while time.monotonic() < deadline and not found_log:
+                with p._lock:
+                    found_log = any("git HEAD changed" in ln for ln in p._stderr_lines)
+                if not found_log:
+                    time.sleep(1.0)
+            if found_log:
+                r.ok()
+            else:
+                r.fail("no 'git HEAD changed' rescan log — worktree HEAD watch is blind")
+        finally:
+            p.close()
+    finally:
+        import shutil
+        shutil.rmtree(base, ignore_errors=True)
+
+    return results
+
+
+def run_scenario_7_memory_budget(binary: str) -> list[TestResult]:
+    """
+    issue-591 Task 8: memory budget backstop. With CODEDB_MAX_MEMORY_MB=1 any
+    live process is over budget, so a cold scan must stop immediately, KEEP the
+    partial index, keep the server alive, and report scan=budget_exceeded with
+    an override hint — never OOM the host, never crash.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S7] {name}")
+        results.append(r)
+        return r
+
+    home = str(Path.home())
+    proj = os.path.join(home, f".codedb-e2e-591t8-{os.getpid()}-{int(time.time())}")
+    os.makedirs(proj)
+    proj = os.path.realpath(proj)
+    try:
+        for i in range(20):
+            Path(proj, f"f{i}.zig").write_text(f"pub fn fn591_{i}() void {{}}\n")
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+               **os.environ}
+        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=proj,
+                       check=True, env=env)
+
+        p = MCPProcess(binary, [], cwd="/", command=[binary, proj, "mcp"],
+                       env={"CODEDB_MAX_MEMORY_MB": "1"})
+        try:
+            r = t("server survives hitting the budget (initialize + terminal scan state)")
+            if not do_initialize(p, with_roots=False):
+                r.fail("no initialize response")
+                return results
+            # Wait for a terminal state; wait_for_scan only accepts ready/lazy,
+            # so poll status text directly.
+            deadline = time.monotonic() + 60.0
+            state_text = ""
+            while time.monotonic() < deadline:
+                state_text = tool_text(p.call_tool("codedb_status", {}))
+                if "budget_exceeded" in state_text or "scan: ready" in state_text:
+                    break
+                time.sleep(0.5)
+            if p.proc.poll() is not None:
+                r.fail("server process died")
+                return results
+            r.ok()
+
+            r = t("codedb_status reports scan=budget_exceeded")
+            if "budget_exceeded" not in state_text:
+                r.fail(f"status: {state_text[:300]!r}")
+            else:
+                r.ok()
+
+            r = t("status shows budget limit + override hint")
+            if "memory_budget: 1MB" in state_text and "CODEDB_MAX_MEMORY_MB" in state_text:
+                r.ok()
+            else:
+                r.fail(f"status missing budget/override info: {state_text[:400]!r}")
+
+            r = t("queries still answer (partial index, no crash)")
+            text = tool_text(p.call_tool("codedb_search", {"query": "fn591_0", "max_results": 3}))
+            if p.proc.poll() is not None:
+                r.fail("server died on query after budget stop")
+            elif "PARTIAL index" in text or "search" in text:
+                r.ok()
+            else:
+                r.fail(f"unexpected response: {text[:200]!r}")
+        finally:
+            p.close()
+    finally:
+        import shutil
+        shutil.rmtree(proj, ignore_errors=True)
+
+    return results
+
+
+def run_scenario_8_force_deletes_artifacts(binary: str) -> list[TestResult]:
+    """
+    issue-591 Task 9: codedb_index force=true must delete ALL index artifacts
+    in the canonical cache dir — previously only snapshots were deleted and
+    scanBg re-adopted leftover trigram/word artifacts, defeating force.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S8] {name}")
+        results.append(r)
+        return r
+
+    home = str(Path.home())
+    proj = os.path.join(home, f".codedb-e2e-591t9-{os.getpid()}-{int(time.time())}")
+    os.makedirs(proj)
+    proj = os.path.realpath(proj)
+    try:
+        Path(proj, "a.zig").write_text("pub fn forceMe591() void {}\n")
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+               **os.environ}
+        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=proj,
+                       check=True, env=env)
+
+        p = MCPProcess(binary, [], cwd="/", command=[binary, proj, "mcp"])
+        try:
+            r = t("server ready")
+            if not do_initialize(p, with_roots=False) or not wait_for_scan(p, timeout=90.0):
+                r.fail("server never ready")
+                return results
+            r.ok()
+
+            # Locate the canonical cache dir via project.txt.
+            cache_dir = None
+            projects = Path(home) / ".codedb" / "projects"
+            if projects.is_dir():
+                for d in projects.iterdir():
+                    pt = d / "project.txt"
+                    if pt.exists() and pt.read_text().strip() == proj:
+                        cache_dir = d
+                        break
+            r = t("canonical cache dir found via project.txt")
+            if cache_dir is None:
+                r.fail("no cache dir matched the project")
+                return results
+            r.ok()
+
+            # Plant a stale sentinel artifact that snapshot-only force would leave.
+            sentinel = cache_dir / "trigram.postings"
+            if not sentinel.exists():
+                sentinel.write_bytes(b"stale-sentinel")
+
+            r = t("force=true deletes trigram.postings and reports deletions")
+            resp = p.call_tool("codedb_index", {"path": proj, "force": True}, timeout=60.0)
+            text = tool_text(resp)
+            if "force: deleted" not in text or "trigram.postings" not in text:
+                r.fail(f"force report missing: {text[:300]!r}")
+            elif sentinel.exists() and sentinel.read_bytes() == b"stale-sentinel":
+                r.fail("stale trigram.postings sentinel survived force")
+            else:
+                r.ok()
+
+            r = t("response reports the cache dir")
+            if "cache: " in text and ".codedb/projects/" in text:
+                r.ok()
+            else:
+                r.fail(f"no cache line: {text[:300]!r}")
+        finally:
+            p.close()
+    finally:
+        import shutil
+        shutil.rmtree(proj, ignore_errors=True)
+
+    return results
+
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -471,6 +962,21 @@ def main() -> int:
 
     print(f"\n{CYAN}── Scenario 3: no-roots client (spawn from /, no scan) ──{RESET}")
     all_results += run_scenario_3_no_roots_client(binary)
+
+    print(f"\n{CYAN}── Scenario 4: issue-591 root canonicalization (localhost + %20 + trailing slash) ──{RESET}")
+    all_results += run_scenario_4_root_canonicalization(binary, project)
+
+    print(f"\n{CYAN}── Scenario 5: issue-591 warm-start reconcile (offline edits, no force) ──{RESET}")
+    all_results += run_scenario_5_restart_staleness(binary)
+
+    print(f"\n{CYAN}── Scenario 6: issue-591 worktree branch-switch detection ──{RESET}")
+    all_results += run_scenario_6_worktree_branch_switch(binary)
+
+    print(f"\n{CYAN}── Scenario 7: issue-591 memory budget backstop (CODEDB_MAX_MEMORY_MB=1) ──{RESET}")
+    all_results += run_scenario_7_memory_budget(binary)
+
+    print(f"\n{CYAN}── Scenario 8: issue-591 force reindex deletes all artifacts ──{RESET}")
+    all_results += run_scenario_8_force_deletes_artifacts(binary)
 
     print()
     passed = 0

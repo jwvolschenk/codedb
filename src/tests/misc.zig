@@ -257,7 +257,12 @@ test "file versions: countSince" {
 }
 
 test "watcher: queue overflow is explicit" {
-    var queue = watcher.EventQueue{};
+    // EventQueue is ~16.8MB (4096 x max_path_bytes events) — heap-allocate
+    // like production does (commands/mcp.zig); as a stack local it blows the
+    // test thread's stack depending on allocation layout.
+    const queue = try testing.allocator.create(watcher.EventQueue);
+    defer testing.allocator.destroy(queue);
+    queue.* = watcher.EventQueue{};
 
     var pushed: usize = 0;
     while (true) : (pushed += 1) {
@@ -276,7 +281,9 @@ test "watcher: queue overflow is explicit" {
 }
 
 test "watcher: queue event copies path bytes" {
-    var queue = watcher.EventQueue{};
+    const queue = try testing.allocator.create(watcher.EventQueue);
+    defer testing.allocator.destroy(queue);
+    queue.* = watcher.EventQueue{};
     const original = try testing.allocator.dupe(u8, "tmp/deleted.zig");
     try testing.expect(queue.push(watcher.FsEvent.init(original, .deleted, 99) orelse unreachable));
     testing.allocator.free(original);
@@ -1019,4 +1026,22 @@ test "issue-639: ${workspaceFolder} normalizes to implicit cwd for MCP root gate
     // Non-mcp commands never trip either gate.
     try testing.expect(!shell.mcpRootIsImplicitCwd("search", root, explicit));
     try testing.expect(!shell.mcpRootAcceptsEnvFallback("search", root));
+}
+
+test "cio.tempDir: POSIX honors TMPDIR, falls back to /tmp, no trailing separator" {
+    const dir = cio.tempDir();
+    try testing.expect(dir.len > 0);
+    // Never a trailing separator (callers join with "/{name}").
+    try testing.expect(dir[dir.len - 1] != '/' and dir[dir.len - 1] != '\\');
+    if (@import("builtin").os.tag != .windows) {
+        if (cio.posixGetenv("TMPDIR")) |t| {
+            if (t.len > 0) {
+                var end = t.len;
+                while (end > 1 and t[end - 1] == '/') end -= 1;
+                try testing.expectEqualStrings(t[0..end], dir);
+                return;
+            }
+        }
+        try testing.expectEqualStrings("/tmp", dir);
+    }
 }

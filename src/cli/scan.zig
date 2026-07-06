@@ -24,7 +24,20 @@ pub fn reapLoop(agents: *AgentRegistry, shutdown: *std.atomic.Value(bool)) void 
     }
 }
 
+/// ready — unless the memory budget stopped the walk, in which case the
+/// partial index is served under the budget_exceeded state (#591 Task 8).
+fn scanFinalState() mcp_server.ScanState {
+    return if (watcher.budget.exceeded()) .budget_exceeded else .ready;
+}
+
 pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool), shutdown: *std.atomic.Value(bool), data_dir: []const u8, abs_root: []const u8, telem: *telemetry.Telemetry, startup_t0: i64) void {
+    // The in-repo snapshot must be addressed absolutely: an MCP server's cwd
+    // is not the project root (often "/"), so a bare "codedb.snapshot" either
+    // failed silently or landed in an unrelated directory (#591 family). The
+    // absolute form also makes isRootSnapshot match, so .git/info/exclude
+    // gets the codedb.snapshot entry on MCP-spawned scans too.
+    var root_snap_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_snapshot_path = std.fmt.bufPrint(&root_snap_buf, "{s}/codedb.snapshot", .{abs_root}) catch "codedb.snapshot";
     const git_head = git_mod.getGitHead(root, allocator) catch null;
     const disk_hdr = TrigramIndex.readDiskHeader(io, data_dir, allocator) catch null;
     const heads_match = blk: {
@@ -34,6 +47,7 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
     };
 
     mcp_server.setScanState(.walking);
+    watcher.budget.clearExceeded();
     watcher.initialScan(io, store, explorer, root, allocator, heads_match) catch |err| {
         std.log.warn("background scan failed: {}", .{err});
     };
@@ -53,10 +67,10 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
             if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
                 explorer.adoptTrigramIndex(.{ .mmap = loaded });
                 scan_done.store(true, .release);
-                mcp_server.setScanState(.ready);
+                mcp_server.setScanState(scanFinalState());
                 if (shutdown.load(.acquire)) return;
                 telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));
-                snapshot_mod.writeSnapshotDual(io, explorer, abs_root, "codedb.snapshot", allocator) catch |err| {
+                snapshot_mod.writeSnapshotDual(io, explorer, abs_root, root_snapshot_path, allocator) catch |err| {
                     std.log.warn("could not auto-write snapshot: {}", .{err});
                 };
                 const fc = explorer.outlines.count();
@@ -72,10 +86,10 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
             if (TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
                 explorer.adoptTrigramIndex(.{ .heap = loaded });
                 scan_done.store(true, .release);
-                mcp_server.setScanState(.ready);
+                mcp_server.setScanState(scanFinalState());
                 if (shutdown.load(.acquire)) return;
                 telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));
-                snapshot_mod.writeSnapshotDual(io, explorer, abs_root, "codedb.snapshot", allocator) catch |err| {
+                snapshot_mod.writeSnapshotDual(io, explorer, abs_root, root_snapshot_path, allocator) catch |err| {
                     std.log.warn("could not auto-write snapshot: {}", .{err});
                 };
                 const fc = explorer.outlines.count();
@@ -115,13 +129,13 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
     }
 
     scan_done.store(true, .release);
-    mcp_server.setScanState(.ready);
+    mcp_server.setScanState(scanFinalState());
 
     if (shutdown.load(.acquire)) return;
 
     telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));
 
-    snapshot_mod.writeSnapshotDual(io, explorer, abs_root, "codedb.snapshot", allocator) catch |err| {
+    snapshot_mod.writeSnapshotDual(io, explorer, abs_root, root_snapshot_path, allocator) catch |err| {
         std.log.warn("could not auto-write snapshot: {}", .{err});
     };
     const file_count = explorer.outlines.count();
@@ -138,11 +152,12 @@ pub fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8)
     defer ctx.allocator.free(data_dir);
     const git_head = git_mod.getGitHead(abs_root, ctx.allocator) catch null;
     mcp_server.setScanState(.loading_snapshot);
-    const snapshot_loaded = disk_cache.loadBestSnapshot(ctx.io, ctx.explorer, ctx.store, abs_root, data_dir, git_head, ctx.allocator);
+    const loaded_snapshot = disk_cache.loadBestSnapshot(ctx.io, ctx.explorer, ctx.store, abs_root, data_dir, git_head, ctx.allocator);
+    defer if (loaded_snapshot) |p| ctx.allocator.free(p);
     ctx.resolved_root = abs_root;
     ctx.explorer.setRoot(ctx.io, abs_root);
-    ctx.scan_done.store(snapshot_loaded, .release);
-    if (!snapshot_loaded) {
+    ctx.scan_done.store(loaded_snapshot != null, .release);
+    if (loaded_snapshot == null) {
         mcp_server.setScanState(.walking);
         const scan_thread = std.Thread.spawn(.{}, scanBg, .{ ctx.io, ctx.store, ctx.explorer, abs_root, ctx.allocator, ctx.scan_done, ctx.shutdown, data_dir, abs_root, ctx.telem, ctx.startup_t0 }) catch return;
         ctx.scan_thread = scan_thread;
@@ -154,6 +169,11 @@ pub fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8)
         // loaded outlines so codedb_deps / codedb_types / codedb_hierarchy
         // serve correct data — mirrors the project= load path (server.zig).
         ctx.explorer.rebuildTypeIndexes();
+        // Heal offline edits AFTER disk indexes are adopted (the mmap trigram
+        // overlay must mask removals) but BEFORE compaction — indexing into a
+        // compacted explorer corrupts dep-graph keys (dangling slices into
+        // released content). Runs before .ready so the first query sees it.
+        disk_cache.reconcileAfterLoad(ctx.io, loaded_snapshot.?, ctx.explorer, ctx.store, abs_root, ctx.allocator);
         ctx.telem.recordCodebaseStats(ctx.explorer, startup_time_ms);
         disk_cache.compactMcpReadyMemory(ctx.io, ctx.explorer, data_dir, git_head, ctx.allocator);
         mcp_server.setScanState(.ready);

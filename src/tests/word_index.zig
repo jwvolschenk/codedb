@@ -282,7 +282,7 @@ test "issue-220: partial word index state rebuilds before search" {
     var store = Store.init(testing.allocator);
     defer store.deinit();
 
-    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store, testing.allocator));
+    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, "", &exp2, &store, testing.allocator));
     try testing.expect(exp2.wordIndexCanLoadFromDisk());
     try testing.expect(!exp2.wordIndexIsComplete());
 

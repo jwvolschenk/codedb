@@ -99,9 +99,10 @@ pub fn run(ctx: *Context) !void {
     } else {
         const git_head = git_mod.getGitHead(ctx.abs_root, ctx.allocator) catch null;
         mcp_server.setScanState(.loading_snapshot);
-        const snapshot_loaded = disk_cache.loadBestSnapshot(ctx.io, ctx.explorer, ctx.store, ctx.abs_root, ctx.data_dir, git_head, ctx.allocator);
-        var scan_done = std.atomic.Value(bool).init(snapshot_loaded);
-        if (!snapshot_loaded) {
+        const loaded_snapshot = disk_cache.loadBestSnapshot(ctx.io, ctx.explorer, ctx.store, ctx.abs_root, ctx.data_dir, git_head, ctx.allocator);
+        defer if (loaded_snapshot) |p| ctx.allocator.free(p);
+        var scan_done = std.atomic.Value(bool).init(loaded_snapshot != null);
+        if (loaded_snapshot == null) {
             // Refuse to walk a non-git root. This else-branch handles the
             // explicit `codedb <path> mcp` form (root_from_cwd is null), which
             // bypasses triggerDeferredScanWithFallback's git guard. A pre-existing
@@ -121,6 +122,12 @@ pub fn run(ctx: *Context) !void {
             // outlines (the snapshot doesn't preserve them completely).
             // Matches the project= load path and triggerScanFromRoots.
             ctx.explorer.rebuildTypeIndexes();
+            // Heal offline edits AFTER disk indexes are adopted (the mmap
+            // trigram overlay must mask removals) but BEFORE compaction —
+            // compactMcpReadyMemory releases contents/secondary indexes, and
+            // indexing into a compacted explorer corrupts the dep graph's
+            // string keys (dangling slices into released content).
+            disk_cache.reconcileAfterLoad(ctx.io, loaded_snapshot.?, ctx.explorer, ctx.store, ctx.abs_root, ctx.allocator);
             telem.recordCodebaseStats(ctx.explorer, startup_time_ms);
             disk_cache.compactMcpReadyMemory(ctx.io, ctx.explorer, ctx.data_dir, git_head, ctx.allocator);
             mcp_server.setScanState(.ready);

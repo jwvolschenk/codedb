@@ -965,3 +965,53 @@ test "codedb_ls ranked annotates and sorts by hotspot score" {
     try testing.expect(std.mem.indexOf(u8, out.items, "2 deps") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "score") != null);
 }
+
+test "issue-591: codedb_search marks global-cap truncation" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    // 6 matching lines; max_results=3 caps the result set.
+    try explorer.indexFile("src/a.zig", "const capMe = 1;\nconst capMe2 = 2;\nconst capMe3 = 3;\n");
+    try explorer.indexFile("src/b.zig", "const capMe4 = 4;\nconst capMe5 = 5;\nconst capMe6 = 6;\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    // Capped: marker present.
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+            \\{"query":"capMe","max_results":3}
+        , .{});
+        defer parsed.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &parsed.value.object, &out, &store, &explorer, &agents);
+        try testing.expect(std.mem.indexOf(u8, out.items, "+more matches exist") != null);
+    }
+    // Under cap: no marker.
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+            \\{"query":"capMe","max_results":50}
+        , .{});
+        defer parsed.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &parsed.value.object, &out, &store, &explorer, &agents);
+        try testing.expect(std.mem.indexOf(u8, out.items, "+more matches exist") == null);
+    }
+    // JSON mode: summary.truncated is true when capped.
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+            \\{"query":"capMe","max_results":3,"output_format":"json"}
+        , .{});
+        defer parsed.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &parsed.value.object, &out, &store, &explorer, &agents);
+        try testing.expect(std.mem.indexOf(u8, out.items, "\"truncated\":true") != null);
+    }
+}

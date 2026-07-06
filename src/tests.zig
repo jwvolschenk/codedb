@@ -8,7 +8,11 @@ comptime {
     _ = @import("tests/explorer_core_extra.zig");
     _ = @import("tests/explorer_search.zig");
     _ = @import("tests/explorer_search_extra.zig");
+    _ = @import("tests/budget.zig");
+    _ = @import("tests/git_head_watch.zig");
+    _ = @import("tests/manifest.zig");
     _ = @import("tests/mcp_protocol.zig");
+    _ = @import("tests/reconcile.zig");
     _ = @import("tests/mcp_search.zig");
     _ = @import("tests/misc.zig");
     _ = @import("tests/mmap_trigram.zig");
@@ -21,6 +25,7 @@ comptime {
     _ = @import("tests/regex.zig");
     _ = @import("tests/regressions.zig");
     _ = @import("tests/regressions_extra.zig");
+    _ = @import("tests/root_resolve.zig");
     _ = @import("tests/snapshot.zig");
     _ = @import("tests/sparse_ngram.zig");
     _ = @import("tests/store.zig");

@@ -38,6 +38,7 @@ pub const readSections = format.readSections;
 pub const readSectionBytes = format.readSectionBytes;
 pub const readSnapshotGitHead = format.readSnapshotGitHead;
 pub const readSnapshotCodedbIgnoreHash = format.readSnapshotCodedbIgnoreHash;
+pub const readSnapshotDirtyPaths = format.readSnapshotDirtyPaths;
 pub const writeSnapshot = writer.writeSnapshot;
 pub const writeSnapshotDual = writer.writeSnapshotDual;
 pub const writeProjectCacheSnapshot = writer.writeProjectCacheSnapshot;
@@ -50,9 +51,16 @@ pub const isSensitivePath = sensitive.isSensitivePath;
 pub fn loadSnapshot(
     io: std.Io,
     snapshot_path: []const u8,
+    abs_root: []const u8,
     explorer: *Explorer,
     store: *Store,
     allocator: std.mem.Allocator,
 ) bool {
-    return loadSnapshotValidated(io, snapshot_path, null, explorer, store, allocator);
+    // Enforce root_hash when we know the root (#591 / Task 4). Passing abs_root
+    // as expected_root activates the validation in loadSnapshotValidated —
+    // previously this was null, making the check dead code and letting a foreign
+    // snapshot with a matching git HEAD be accepted. abs_root="" (tests/legacy)
+    // skips validation, preserving the old behavior for those callers.
+    const expected_root: ?[]const u8 = if (abs_root.len > 0) abs_root else null;
+    return loadSnapshotValidated(io, snapshot_path, expected_root, abs_root, explorer, store, allocator);
 }

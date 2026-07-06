@@ -247,7 +247,11 @@ test "regression #7: tree shows only basenames" {
 }
 
 test "regression: queue push stays non-blocking when full" {
-    var queue = watcher.EventQueue{};
+    // EventQueue is ~16.8MB — heap-allocate like production does
+    // (commands/mcp.zig); as a stack local it can blow the test stack.
+    const queue = try std.testing.allocator.create(watcher.EventQueue);
+    defer std.testing.allocator.destroy(queue);
+    queue.* = watcher.EventQueue{};
 
     var pushed: usize = 0;
     while (true) : (pushed += 1) {

@@ -666,7 +666,7 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
         }
 
         if (json_mode) {
-            writeSearchScopedJson(alloc, out, query, results, path_glob, compact, visible_total, false);
+            writeSearchScopedJson(alloc, out, query, results, path_glob, compact, visible_total, orig.len >= max_results);
             return;
         }
 
@@ -696,6 +696,7 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
             }
         }
         appendSearchHints(alloc, out, query, visible_total, dir_set.count());
+        appendGlobalCapMarker(alloc, out, orig.len, max_results);
     } else if (scope) {
         const orig = explorer.searchContentWithScope(query, alloc, max_results) catch {
             out.appendSlice(alloc, "error: search failed") catch {};
@@ -723,7 +724,7 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
         }
 
         if (json_mode) {
-            writeSearchScopedJson(alloc, out, query, results, path_glob, compact, visible_total, false);
+            writeSearchScopedJson(alloc, out, query, results, path_glob, compact, visible_total, orig.len >= max_results);
             return;
         }
 
@@ -771,6 +772,7 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
             w.print("({d} shown, {d} truncated by per-file cap)\n", .{ shown, visible_total - shown }) catch {};
         }
         appendSearchHints(alloc, out, query, visible_total, dir_set.count());
+        appendGlobalCapMarker(alloc, out, orig.len, max_results);
     } else if (is_regex) {
         const orig = explorer.searchContentRegex(query, alloc, max_results) catch {
             out.appendSlice(alloc, "error: regex search failed") catch {};
@@ -796,7 +798,7 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
         }
 
         if (json_mode) {
-            writeSearchJson(alloc, out, query, results, path_glob, compact, visible_total, false);
+            writeSearchJson(alloc, out, query, results, path_glob, compact, visible_total, orig.len >= max_results);
             return;
         }
 
@@ -837,6 +839,7 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
             w.print("({d} shown, {d} truncated by per-file cap)\n", .{ shown, visible_total - shown }) catch {};
         }
         appendSearchHints(alloc, out, query, visible_total, dir_set.count());
+        appendGlobalCapMarker(alloc, out, orig.len, max_results);
     } else {
         const orig = explorer.searchContent(query, alloc, max_results) catch {
             out.appendSlice(alloc, "error: search failed") catch {};
@@ -862,7 +865,7 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
         }
 
         if (json_mode) {
-            writeSearchJson(alloc, out, query, results, path_glob, compact, visible_total, false);
+            writeSearchJson(alloc, out, query, results, path_glob, compact, visible_total, orig.len >= max_results);
             return;
         }
 
@@ -904,6 +907,7 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
             w.print("({d} shown, {d} truncated by per-file cap)\n", .{ shown, visible_total - shown }) catch {};
         }
         appendSearchHints(alloc, out, query, visible_total, dir_set.count());
+        appendGlobalCapMarker(alloc, out, orig.len, max_results);
     }
 }
 
@@ -1702,6 +1706,15 @@ fn writeSymbolHitJson(
         w.print("\"", .{}) catch {};
     }
     w.print("}}", .{}) catch {};
+}
+
+/// Global-cap truncation marker (#591 Task 11): searchContent stops scanning
+/// the moment max_results is reached, so a full result set means MORE matches
+/// almost certainly exist — silence here made capped results look complete.
+/// Boolean length check only (no extra scanning; bench-critical path).
+fn appendGlobalCapMarker(alloc: std.mem.Allocator, out: *std.ArrayList(u8), raw_count: usize, max_results: usize) void {
+    if (raw_count < max_results) return;
+    out.appendSlice(alloc, "\n(+more matches exist \xe2\x80\x94 refine query, add path_glob, or raise max_results)") catch {};
 }
 
 fn writeSearchJson(

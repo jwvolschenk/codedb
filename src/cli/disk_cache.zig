@@ -8,6 +8,9 @@ const WordIndex = @import("../index.zig").WordIndex;
 const index_mod = @import("../index.zig");
 const snapshot_mod = @import("../snapshot.zig");
 const Config = @import("../config.zig").Config;
+const root_resolve = @import("../root_resolve.zig");
+const git_mod = @import("../git.zig");
+const reconcile_mod = @import("../watcher/reconcile.zig");
 
 pub fn loadUserConfig(io: std.Io, alloc: std.mem.Allocator, explicit: ?[]const u8) !Config {
     const self_exe: ?[:0]u8 = std.process.executablePathAlloc(io, alloc) catch null;
@@ -35,7 +38,7 @@ pub fn loadSnapshotIfHeadMatches(
         if (current_git_head != null) return false;
         // Still check .codedbignore even for non-git projects
         if (codedbignoreChanged(io, snapshot_path, abs_root, allocator)) return false;
-        return snapshot_mod.loadSnapshot(io, snapshot_path, explorer, store, allocator);
+        return snapshot_mod.loadSnapshot(io, snapshot_path, abs_root, explorer, store, allocator);
     };
     const cur_head = current_git_head orelse return false;
     if (!std.mem.eql(u8, &snap_head, &cur_head)) return false;
@@ -44,7 +47,7 @@ pub fn loadSnapshotIfHeadMatches(
     // If so, force a re-scan so new ignore patterns take effect.
     if (codedbignoreChanged(io, snapshot_path, abs_root, allocator)) return false;
 
-    return snapshot_mod.loadSnapshot(io, snapshot_path, explorer, store, allocator);
+    return snapshot_mod.loadSnapshot(io, snapshot_path, abs_root, explorer, store, allocator);
 }
 
 /// Check if the .codedbignore file has changed since the snapshot was written.
@@ -71,6 +74,10 @@ fn codedbignoreChanged(io: std.Io, snapshot_path: []const u8, abs_root: []const 
     return stored != current_hash;
 }
 
+/// Try the in-repo snapshot, then the central-cache one. Returns the path of
+/// the snapshot that loaded (caller owns, frees with `allocator`) so the
+/// caller can run `reconcileAfterLoad` once disk indexes are adopted; null
+/// when neither loaded.
 pub fn loadBestSnapshot(
     io: std.Io,
     explorer: *Explorer,
@@ -79,21 +86,60 @@ pub fn loadBestSnapshot(
     data_dir: []const u8,
     current_git_head: ?[40]u8,
     allocator: std.mem.Allocator,
-) bool {
+) ?[]u8 {
     const root_snapshot = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
-    defer if (root_snapshot) |p| allocator.free(p);
-    const first_snapshot = root_snapshot orelse "codedb.snapshot";
-    if (loadSnapshotIfHeadMatches(io, first_snapshot, explorer, store, abs_root, current_git_head, allocator)) {
-        return true;
+    if (root_snapshot) |first_snapshot| {
+        if (loadSnapshotIfHeadMatches(io, first_snapshot, explorer, store, abs_root, current_git_head, allocator)) {
+            return first_snapshot;
+        }
+        allocator.free(first_snapshot);
     }
 
-    const central_snapshot = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{data_dir}) catch return false;
-    defer allocator.free(central_snapshot);
-    return loadSnapshotIfHeadMatches(io, central_snapshot, explorer, store, abs_root, current_git_head, allocator);
+    const central_snapshot = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{data_dir}) catch return null;
+    if (loadSnapshotIfHeadMatches(io, central_snapshot, explorer, store, abs_root, current_git_head, allocator)) {
+        return central_snapshot;
+    }
+    allocator.free(central_snapshot);
+    return null;
+}
+
+/// Warm-start reconcile (#591 Task 5): a snapshot that passed the git-HEAD
+/// gate is still stale for files edited/created/deleted while the server was
+/// down (dirty now) and for files that were dirty at write time but reverted
+/// since (the snapshot's recorded dirty_paths). This is the single funnel for
+/// all three warm-load call sites (cli/scan, commands/mcp, commands/mod).
+///
+/// ORDERING: must run AFTER loadTrigramFromDiskIfPresent / word-index disk
+/// adoption. removeFile on a pure-mmap trigram index promotes to an overlay
+/// that masks the path — but an adoption AFTER the removal would replace the
+/// overlay with the stale disk view and resurrect deleted files.
+pub fn reconcileAfterLoad(
+    io: std.Io,
+    snapshot_path: []const u8,
+    explorer: *Explorer,
+    store: *Store,
+    abs_root: []const u8,
+    allocator: std.mem.Allocator,
+) void {
+    const snap_dirty: ?[][]u8 = snapshot_mod.readSnapshotDirtyPaths(io, snapshot_path, allocator);
+    defer if (snap_dirty) |d| git_mod.freePathList(d, allocator);
+    const snap_dirty_slice: []const []const u8 = if (snap_dirty) |d| @ptrCast(d) else &.{};
+    reconcile_mod.reconcileWorkingTree(io, explorer, store, abs_root, snap_dirty_slice, allocator);
 }
 
 pub fn getDataDir(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8) ![]u8 {
-    const hash = std.hash.Wyhash.hash(0, abs_root);
+    // Precondition: abs_root is canonical (absolute, no trailing separator,
+    // symlinks resolved). The CLI path satisfies this via shell.resolveRoot;
+    // the MCP path must route through root_resolve.canonicalizeRoot. Asserting
+    // here catches a future caller that forgets the funnel — the worst symptom
+    // (two cache dirs for one project, #591) is silent otherwise.
+    std.debug.assert(abs_root.len > 0);
+    std.debug.assert(abs_root[0] == '/' or (abs_root.len >= 2 and std.ascii.isAlphabetic(abs_root[0]) and abs_root[1] == ':'));
+    std.debug.assert(abs_root.len == 1 or abs_root[abs_root.len - 1] != '/');
+
+    // The ONLY hash of the root string — #591. Case-folded on macOS/Windows so
+    // case-insensitive-FS aliasing can't produce divergent cache dirs.
+    const hash = root_resolve.cacheKey(abs_root);
     const home_env = cio.getHomeDir() orelse {
         return std.fmt.allocPrint(allocator, "{s}/.codedb", .{abs_root});
     };
@@ -103,7 +149,27 @@ pub fn getDataDir(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8
     std.Io.Dir.cwd().createDirPath(io, dir) catch |err| {
         std.log.warn("could not create data dir {s}: {}", .{ dir, err });
     };
+    // Record the canonical root for human inspection and as a collision
+    // detector: if an existing project.txt names a different root, two roots
+    // hashed to the same dir (aliasing/collision). Never fatal — just warn.
+    saveProjectInfo(io, allocator, dir, abs_root) catch {};
+    warnIfProjectTxtDisagrees(io, allocator, dir, abs_root);
     return dir;
+}
+
+/// Reads project.txt (if present) and warns when it names a different root than
+/// the one currently being indexed into this data dir. A disagreement means two
+/// distinct canonical roots hashed to the same cache dir — either a hash
+/// collision or, more likely, an aliasing bug we haven't fully closed. Warn-only
+/// per #591's "never fatal" policy.
+fn warnIfProjectTxtDisagrees(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u8, abs_root: []const u8) void {
+    const info_path = std.fmt.allocPrint(allocator, "{s}/project.txt", .{data_dir}) catch return;
+    defer allocator.free(info_path);
+    const existing = std.Io.Dir.cwd().readFileAlloc(io, info_path, allocator, .limited(4096)) catch return;
+    defer allocator.free(existing);
+    if (!std.mem.eql(u8, std.mem.trim(u8, existing, " \n\r\t"), abs_root)) {
+        std.log.warn("codedb: cache dir {s} previously held project \"{s}\"; now indexing \"{s}\" (aliasing/collision?)", .{ data_dir, existing, abs_root });
+    }
 }
 
 pub fn loadTrigramFromDiskIfPresent(io: std.Io, explorer: *Explorer, data_dir: []const u8, allocator: std.mem.Allocator) void {

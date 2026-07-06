@@ -24,6 +24,7 @@ pub const DependencyGraph = struct {
         var rev_iter = self.reverse.iterator();
         while (rev_iter.next()) |entry| {
             entry.value_ptr.deinit();
+            self.allocator.free(entry.key_ptr.*);
         }
         self.reverse.deinit();
     }
@@ -48,7 +49,15 @@ pub const DependencyGraph = struct {
         for (deps.items) |dep| {
             const rev_gop = try self.reverse.getOrPut(dep);
             if (!rev_gop.found_existing) {
-                rev_gop.key_ptr.* = dep;
+                // The map must OWN this key (#586 pattern): `dep` is a slice
+                // into the importing file's outline and dies when that file is
+                // re-indexed, while the reverse entry survives — a later map
+                // grow would then rehash a dangling key and panic.
+                const owned = self.allocator.dupe(u8, dep) catch {
+                    _ = self.reverse.remove(dep);
+                    return error.OutOfMemory;
+                };
+                rev_gop.key_ptr.* = owned;
                 rev_gop.value_ptr.* = std.StringHashMap(void).init(self.allocator);
             }
             try rev_gop.value_ptr.put(path, {});

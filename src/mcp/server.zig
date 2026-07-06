@@ -7,7 +7,20 @@ const cio = @import("../cio.zig");
 const std = @import("std");
 const mcp_lib = @import("mcp");
 const mcpj = mcp_lib.json;
-pub const Root = mcp_lib.mcp.Root;
+const root_resolve = @import("../root_resolve.zig");
+
+/// Workspace root — codedb's local shape.
+///
+/// The upstream `mcp-zig` library models a root as `{ uri, name }` (the raw
+/// `file://` URI from the client's `roots/list` reply). We decode the URI to a
+/// filesystem path at parse time and store that instead, so every read site
+/// (the deferred-scan handshake, project-cache lookups) sees the same canonical
+/// string the CLI path produces. This is half of #591; the other half is routing
+/// the value through `root_resolve.canonicalizeRoot` before any policy check.
+pub const Root = struct {
+    path: []u8,
+    name: []u8,
+};
 const Store = @import("../store.zig").Store;
 const explore_mod = @import("../explore.zig");
 const Explorer = explore_mod.Explorer;
@@ -68,6 +81,7 @@ const handleDeps = explore_tools.handleDeps;
 
 // ── mutation tool handlers (mcp/mutation_tools.zig) ──
 const mutation_tools = @import("mutation_tools.zig");
+const manifest_tools = @import("manifest_tools.zig");
 const handleRead = mutation_tools.handleRead;
 const handleEdit = mutation_tools.handleEdit;
 const handleChanges = mutation_tools.handleChanges;
@@ -120,10 +134,20 @@ pub fn triggerDeferredScanWithFallback(
     // timeouts) don't re-run the git-work-tree subprocess below. The
     // authoritative gate is still the swap further down.
     if (ds.triggered.load(.acquire)) return false;
+    // Pick a path: first indexable root's decoded path, else the cwd fallback.
+    // The root is already URI-decoded by parseRoots (#591); canonicalize here so
+    // the git-work-tree check and the scan see the same realpath-resolved string
+    // the CLI path produces, and so the cache-dir hash matches.
+    //
+    // Ownership: the canonical string must outlive this function —
+    // triggerScanFromRoots stores it in ctx.resolved_root and the watcher loop
+    // reads it after we return. So we hand ownership to the DeferredScan by
+    // setting resolved_root (process-lifetime, freed implicitly at exit) and
+    // pass that slice to triggerFn. Any prior resolved_root is process-lifetime
+    // too, so we only overwrite on the first trigger.
     var path: []const u8 = "";
     if (indexable_roots.len > 0) {
-        const uri_raw = indexable_roots[0].uri;
-        path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
+        path = root_resolve.canonicalizeRoot(ds.io, ds.allocator, indexable_roots[0].path) catch "";
     }
     if (path.len == 0 and fallback_cwd.len > 0 and root_policy.isIndexableRoot(fallback_cwd)) {
         // In lazy mode, do not auto-index CWD. The server stays idle until
@@ -134,9 +158,12 @@ pub fn triggerDeferredScanWithFallback(
             setScanState(.lazy);
             return false;
         }
-        path = fallback_cwd;
+        path = root_resolve.canonicalizeRoot(ds.io, ds.allocator, fallback_cwd) catch "";
     }
     if (path.len == 0) return false;
+    // Transfer ownership: resolved_root holds the canonical allocation for the
+    // rest of the process. triggerFn and the watcher read from there.
+    ds.resolved_root = path;
     // Refuse to walk a path that isn't inside a git work tree. This prevents
     // OOM when an editor or agent points codedb at a large non-project
     // directory (e.g. ~/repos/ with dozens of repos). The server stays alive
@@ -148,7 +175,7 @@ pub fn triggerDeferredScanWithFallback(
         return false;
     }
     if (ds.triggered.swap(true, .acq_rel)) return false;
-    ds.triggerFn(ds, path);
+    ds.triggerFn(ds, ds.resolved_root);
     return true;
 }
 
@@ -355,7 +382,14 @@ pub const ProjectCache = struct {
         default_exp: *Explorer,
         default_store: *Store,
     ) !ProjectCtx {
-        const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache };
+        const raw = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache };
+        // Canonicalize the project= param through the #591 funnel. Agents pass
+        // trailing slashes and symlinked paths here; since root_hash enforcement
+        // landed, a non-canonical string computes a different cacheKey and every
+        // snapshot load is silently rejected (empty index). Canonical form also
+        // makes the LRU path-equality check below actually hit for aliases.
+        const p = root_resolve.canonicalizeRoot(io, self.alloc, raw) catch return error.PathNotAllowed;
+        defer self.alloc.free(p);
         if (!root_policy.isIndexableRoot(p))
             return error.PathNotAllowed;
 
@@ -393,14 +427,14 @@ pub const ProjectCache = struct {
             return error.PathTooLong;
         };
 
-        if (!snapshot_mod.loadSnapshot(io, snap_path, &new_entry.explorer, &new_entry.store, self.alloc)) {
+        if (!snapshot_mod.loadSnapshot(io, snap_path, p, &new_entry.explorer, &new_entry.store, self.alloc)) {
             // Fallback: try central store at ~/.codedb/projects/{hash}/codedb.snapshot
-            const hash = std.hash.Wyhash.hash(0, p);
+            const hash = root_resolve.cacheKey(p);
             var central_buf: [std.fs.max_path_bytes]u8 = undefined;
             const loaded_central = blk: {
                 const home = cio.getHomeDir() orelse break :blk false;
                 const central = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch break :blk false;
-                break :blk snapshot_mod.loadSnapshot(io, central, &new_entry.explorer, &new_entry.store, self.alloc);
+                break :blk snapshot_mod.loadSnapshot(io, central, p, &new_entry.explorer, &new_entry.store, self.alloc);
             };
             if (!loaded_central) {
                 new_entry.store.deinit();
@@ -577,6 +611,7 @@ pub const Tool = enum {
     codedb_query,
     codedb_glob,
     codedb_ls,
+    codedb_manifest,
 };
 
 pub const tools_list =
@@ -606,7 +641,8 @@ pub const tools_list =
     \\{"name":"codedb_find","description":"Fuzzy FILE-NAME search ONLY — typo-tolerant subsequence match against indexed file paths. NOT a content/symbol search: 'rerank' will NOT find files containing rerankSignalScore unless the filename itself contains 'rerank'. For symbol lookups use codedb_word/codedb_symbol; for content use codedb_search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy filename query (e.g. 'authmidlware' for auth_middleware.go, 'test_auth', 'main.zig'). Matched against path basenames, not file contents."},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
     \\{"name":"codedb_query","description":"Composable pipeline — chain ops where each step feeds the next. Ops: find, search, filter, deps, outline, read, sort, limit, word, symbol, callers, type_search, type_compat. Replaces multi-call workflows with one request. search/word/callers steps track hit line numbers; the read step's context_lines param reads N lines of context around those tracked hits instead of reading from the start. type_search finds symbols by return_type or param_type (exact match). type_compat finds all types that implement/extend a given base type via the type graph. Example: [{\"op\":\"search\",\"query\":\"TODO\"},{\"op\":\"read\",\"context_lines\":3}] shows 3 lines around each TODO hit. [{\"op\":\"callers\",\"name\":\"handleRequest\"},{\"op\":\"read\",\"context_lines\":5}] finds all callers and reads 5 lines of context around each call site. callers op: filters to real call sites (excludes definitions, non-call languages); use standalone or after a filter step to scope to specific files.","inputSchema":{"type":"object","properties":{"pipeline":{"type":"array","items":{"type":"object"},"description":"Array of pipeline steps. Each step has 'op' (find/search/filter/deps/outline/read/sort/limit/word/symbol/callers) and op-specific params. Steps execute in order, each filtering/transforming the file set from the previous step. deps op: {\"op\":\"deps\",\"direction\":\"imported_by|depends_on\",\"transitive\":true,\"max_depth\":3}"},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":["pipeline"]}},
     \\{"name":"codedb_glob","description":"Match indexed paths against a glob: * (no /), ** (across /), ? (one char). Sorted lexicographically. Use when you know the path shape; codedb_find for fuzzy names.","inputSchema":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. 'src/**/*.zig', '*.md', 'tests/test_*.py')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 200)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["pattern"]}},
-    \\{"name":"codedb_ls","description":"List immediate children of a directory with deterministic file descriptors. Set ranked=true to sort by hotspot score and annotate dependents/symbol centrality.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"ranked":{"type":"boolean","description":"Sort by hotspot score instead of alphabetically, and include score/dependent counts (default: false)."},"no_descriptor":{"type":"boolean","description":"Suppress deterministic descriptor text in file rows (default: false)."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}}
+    \\{"name":"codedb_ls","description":"List immediate children of a directory with deterministic file descriptors. Set ranked=true to sort by hotspot score and annotate dependents/symbol centrality.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"ranked":{"type":"boolean","description":"Sort by hotspot score instead of alphabetically, and include score/dependent counts (default: false)."},"no_descriptor":{"type":"boolean","description":"Suppress deterministic descriptor text in file rows (default: false)."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+\\{"name":"codedb_manifest","description":"Project dependency facts from package manifests (package.json, go.mod, Cargo.toml, requirements.txt, build.zig.zon). No args: list manifests found. path=: full dependency list for one manifest. name=: which manifests declare a package and at what version. Parsed on demand - always current.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Manifest path relative to project root (from the no-args listing)"},"name":{"type":"string","description":"Package name to look up across all manifests"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}}
     \\]}
 ;
 
@@ -745,6 +781,11 @@ pub const ScanState = enum(u8) {
     indexing = 2,
     ready = 3,
     lazy = 4,
+    /// The memory budget (max_index_memory_mb) was hit mid-scan: the walk
+    /// stopped, the PARTIAL index is kept and served, and the server stays
+    /// alive. Surfaced in codedb_status and tool-response hints so an agent
+    /// immediately sees why results are incomplete (#591 Task 8).
+    budget_exceeded = 5,
 
     pub fn name(self: ScanState) []const u8 {
         return switch (self) {
@@ -753,6 +794,7 @@ pub const ScanState = enum(u8) {
             .indexing => "indexing",
             .ready => "ready",
             .lazy => "lazy",
+            .budget_exceeded => "budget_exceeded",
         };
     }
 };
@@ -794,11 +836,16 @@ pub fn getRequireGitRepo() bool {
     return require_git_repo;
 }
 
+fn scanStateIsTerminal(state: ScanState) bool {
+    // budget_exceeded is terminal: the scan will not progress further, and
+    // the partial index is what there is to serve — don't spin on it.
+    return state == .ready or state == .lazy or state == .budget_exceeded;
+}
+
 fn waitForScanReady(timeout_ms: u64) void {
-    const state = getScanState();
-    if (state == .ready or state == .lazy) return;
+    if (scanStateIsTerminal(getScanState())) return;
     const deadline = cio.milliTimestamp() + @as(i64, @intCast(timeout_ms));
-    while (getScanState() != .ready and getScanState() != .lazy) {
+    while (!scanStateIsTerminal(getScanState())) {
         if (cio.milliTimestamp() >= deadline) return;
         cio.sleepMs(25);
     }
@@ -820,7 +867,7 @@ const Session = struct {
 
     fn freeRoots(self: *Session) void {
         for (self.roots.items) |r| {
-            self.alloc.free(r.uri);
+            self.alloc.free(r.path);
             self.alloc.free(r.name);
         }
         self.roots.clearRetainingCapacity();
@@ -1023,19 +1070,28 @@ fn parseRoots(s: *Session, result: *const std.json.ObjectMap) void {
         const obj = item.object;
         const uri_raw = mcpj.getStr(&obj, "uri") orelse continue;
         const name_raw = mcpj.getStr(&obj, "name") orelse "";
-        // Strip file:// prefix for policy check
-        const path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
-        if (!root_policy.isIndexableRoot(path)) {
-            std.log.info("codedb mcp: rejected root \"{s}\" (denied by policy)", .{uri_raw});
-            continue;
-        }
-        const uri = s.alloc.dupe(u8, uri_raw) catch continue;
-        const name = s.alloc.dupe(u8, name_raw) catch {
-            s.alloc.free(uri);
+        // Decode the file:// URI to a filesystem path (percent-decoding,
+        // localhost/UNC/drive-letter handling) — the single funnel from #591.
+        // On any parse error, skip this root rather than storing junk.
+        const decoded = root_resolve.pathFromFileUri(s.alloc, uri_raw) catch {
+            std.log.info("codedb mcp: rejected root \"{s}\" (invalid URI)", .{uri_raw});
             continue;
         };
-        s.roots.append(s.alloc, .{ .uri = uri, .name = name }) catch {
-            s.alloc.free(uri);
+        // Policy-check the decoded path. realpath/symlink resolution happens
+        // later in canonicalizeRoot, at the deferred-scan trigger; the policy
+        // check is intentionally on the raw decoded path so an obviously-bad
+        // root (e.g. /tmp) is dropped before any subprocess work.
+        if (!root_policy.isIndexableRoot(decoded)) {
+            std.log.info("codedb mcp: rejected root \"{s}\" (denied by policy)", .{uri_raw});
+            s.alloc.free(decoded);
+            continue;
+        }
+        const name = s.alloc.dupe(u8, name_raw) catch {
+            s.alloc.free(decoded);
+            continue;
+        };
+        s.roots.append(s.alloc, .{ .path = decoded, .name = name }) catch {
+            s.alloc.free(decoded);
             s.alloc.free(name);
             continue;
         };
@@ -1262,6 +1318,7 @@ pub fn dispatch(
         .codedb_query => handleQuery(alloc, args, out, ctx.explorer, ctx.store),
         .codedb_glob => handleGlob(alloc, args, out, ctx.explorer),
         .codedb_ls => handleLs(alloc, args, out, ctx.explorer),
+        .codedb_manifest => manifest_tools.handleManifest(io, alloc, args, out, ctx.explorer, project_root),
     }
     if (total_timer) |*t| {
         const elapsed_ms = @divTrunc(t.read(), 1_000_000);
@@ -1271,7 +1328,38 @@ pub fn dispatch(
             });
         }
     }
-    appendScanProgressHint(alloc, out, tool);
+    // output_format=json responses are strict JSON documents — a trailing
+    // text envelope would corrupt them for parsers. Those callers get
+    // freshness from codedb_status instead.
+    const json_output = if (mcpj.getStr(args, "output_format")) |f| std.mem.eql(u8, f, "json") else false;
+    if (!json_output) {
+        appendFreshnessEnvelope(alloc, out, tool, project_path orelse cache.default_path, ctx.store);
+        appendScanProgressHint(alloc, out, tool);
+    }
+}
+
+/// Freshness envelope (#591 Task 10): ONE trailing line on every response of
+/// an index-dependent tool — always, not only when output looks empty — so a
+/// stale-but-plausible result never reads as authoritative:
+///   index: root=<basename> scan=<state> seq=<N>
+/// root= makes the project= footgun visible (the agent sees it hit the wrong
+/// project), scan= surfaces walking/budget_exceeded, seq= is the same counter
+/// codedb_changes uses. Central wrapper only — no per-handler changes, so it
+/// can't drift. ~10 tokens per response. codedb_status is exempt (it reports
+/// richer versions of these fields itself).
+fn appendFreshnessEnvelope(alloc: std.mem.Allocator, out: *std.ArrayList(u8), tool: Tool, effective_root: []const u8, store: *Store) void {
+    if (tool == .codedb_status) return;
+    if (!toolDependsOnScannedIndex(tool)) return;
+    const basename = if (std.mem.lastIndexOfScalar(u8, effective_root, '/')) |sep|
+        effective_root[sep + 1 ..]
+    else
+        effective_root;
+    const w = cio.listWriter(out, alloc);
+    w.print("\nindex: root={s} scan={s} seq={d}", .{
+        if (basename.len > 0) basename else effective_root,
+        getScanState().name(),
+        store.currentSeq(),
+    }) catch {};
 }
 
 /// Bug 2: when the initial scan is still running, search/outline/word
@@ -1292,6 +1380,10 @@ fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), too
         out.appendSlice(alloc, "\nnote: no project indexed — use codedb_index to index a specific project first") catch return;
         return;
     }
+    if (state == .budget_exceeded) {
+        out.appendSlice(alloc, "\nnote: indexing stopped at the memory budget — results come from a PARTIAL index. Raise max_index_memory_mb in .codedbrc or CODEDB_MAX_MEMORY_MB, or index a subfolder.") catch return;
+        return;
+    }
     out.appendSlice(alloc, "\nnote: scan still in progress (state=") catch return;
     out.appendSlice(alloc, state.name()) catch return;
     out.appendSlice(alloc, "); results may be incomplete — retry shortly") catch return;
@@ -1299,7 +1391,7 @@ fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), too
 
 fn toolDependsOnScannedIndex(tool: Tool) bool {
     return switch (tool) {
-        .codedb_search, .codedb_word, .codedb_callers, .codedb_relations, .codedb_outline, .codedb_symbol, .codedb_hierarchy, .codedb_routes, .codedb_config_xref, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps, .codedb_types => true,
+        .codedb_search, .codedb_word, .codedb_callers, .codedb_relations, .codedb_outline, .codedb_symbol, .codedb_hierarchy, .codedb_routes, .codedb_config_xref, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps, .codedb_types, .codedb_manifest => true,
         else => false,
     };
 }

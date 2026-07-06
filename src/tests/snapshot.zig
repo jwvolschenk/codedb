@@ -224,17 +224,18 @@ test "issue-44: snapshot stale after working tree changes cause stale query resu
 
     const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/test.snapshot", .{dir_path});
     defer testing.allocator.free(snap_path);
-    const file_abs = try std.fmt.allocPrint(testing.allocator, "{s}/stale.zig", .{dir_path});
-    defer testing.allocator.free(file_abs);
 
-    // Step 1: write file with old content, index it, write snapshot.
+    // Step 1: write file with old content, index it under a ROOT-RELATIVE path
+    // (this is what the real walker stores — relative to the opened root dir),
+    // and write the snapshot. The relative path is what makes the warm-start
+    // freshness re-read need the project root as a base dir.
     try tmp.dir.writeFile(io, .{ .sub_path = "stale.zig", .data = "pub fn oldFunc() void {}" });
     {
         var arena = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena.deinit();
         var exp = Explorer.init(arena.allocator());
-        try exp.indexFile(file_abs, "pub fn oldFunc() void {}");
-        try snapshot_mod.writeSnapshot(io, &exp, ".", snap_path, arena.allocator());
+        try exp.indexFile("stale.zig", "pub fn oldFunc() void {}");
+        try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, arena.allocator());
     }
 
     // Step 2: modify file AFTER snapshot creation (simulating uncommitted working tree change).
@@ -242,24 +243,22 @@ test "issue-44: snapshot stale after working tree changes cause stale query resu
     cio.sleepMs(10);
     try tmp.dir.writeFile(io, .{ .sub_path = "stale.zig", .data = "pub fn newFunc() void {}" });
 
-    // Step 3: load snapshot into a fresh explorer (what MCP startup does).
-    // scan_done is set to true immediately; watcher then builds known-FileMap
-    // from current disk mtimes, recording the already-modified file's mtime as
-    // the baseline. It will never be re-indexed unless changed a second time.
+    // Step 3: load snapshot into a fresh explorer (what MCP startup does),
+    // passing the project root as abs_root. The freshness re-read must open
+    // `stale.zig` relative to dir_path — NOT process cwd (which for a spawned
+    // MCP server is not the project root). Pre-fix this silently failed and
+    // stale content was served.
     var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena2.deinit();
     var exp2 = Explorer.init(arena2.allocator());
     var store2 = Store.init(testing.allocator);
     defer store2.deinit();
 
-    const loaded = snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store2, arena2.allocator());
+    const loaded = snapshot_mod.loadSnapshot(io, snap_path, dir_path, &exp2, &store2, arena2.allocator());
     try testing.expect(loaded);
 
-    // Step 4: after the fix, loadSnapshot should detect that the disk file's
-    // mtime > snapshot indexed_at and re-index it from disk, making "newFunc"
-    // visible. Currently no such path exists.
-    // Expected (after fix): results.len == 1
-    // Current (bug): results.len == 0 — stale snapshot content is never evicted.
+    // Step 4: loadSnapshot should detect that the disk file's mtime >
+    // snapshot mtime and re-index it from disk, making "newFunc" visible.
     const results = try exp2.searchContent("newFunc", testing.allocator, 10);
     defer {
         for (results) |r| {
@@ -293,7 +292,7 @@ test "issue-46: empty-repo snapshot rejected on load" {
     var store = Store.init(testing.allocator);
     defer store.deinit();
 
-    const loaded = snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store, testing.allocator);
+    const loaded = snapshot_mod.loadSnapshot(io, snap_path, "", &exp2, &store, testing.allocator);
     try testing.expect(!loaded);
     try testing.expect(exp2.outlines.count() == 0);
 }
@@ -332,7 +331,7 @@ test "snapshot: writer streams uncached file contents for large repos" {
     var store_without_root = Store.init(testing.allocator);
     defer store_without_root.deinit();
 
-    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &loaded_without_root, &store_without_root, testing.allocator));
+    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, "", &loaded_without_root, &store_without_root, testing.allocator));
     try testing.expectEqual(@as(usize, 1002), loaded_without_root.outlines.count());
     // CLOCK cache holds all 1002 — word index can be rebuilt from memory without root dir.
     const hits_no_root = try loaded_without_root.searchWord("func_1001", testing.allocator);
@@ -345,7 +344,7 @@ test "snapshot: writer streams uncached file contents for large repos" {
     var store = Store.init(testing.allocator);
     defer store.deinit();
 
-    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &loaded, &store, testing.allocator));
+    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, "", &loaded, &store, testing.allocator));
     try testing.expectEqual(@as(usize, 1002), loaded.outlines.count());
 
     const hits = try loaded.searchWord("func_1001", testing.allocator);
@@ -449,7 +448,7 @@ test "issue-47: concurrent snapshot writes from parallel instances corrupt file"
     var exp3 = Explorer.init(arena3.allocator());
     var store3 = Store.init(testing.allocator);
     defer store3.deinit();
-    const loaded = snapshot_mod.loadSnapshot(io, snap_path, &exp3, &store3, arena3.allocator());
+    const loaded = snapshot_mod.loadSnapshot(io, snap_path, "", &exp3, &store3, arena3.allocator());
 
     // Expected: loaded == true (snapshot is valid, written atomically)
     // Current (bug): may be false — last writer's rename can land mid-write of
@@ -493,7 +492,7 @@ test "issue-40: truncated snapshot silently loads partial data" {
     var exp2 = Explorer.init(arena2.allocator());
     var store = Store.init(arena2.allocator());
 
-    const loaded = snapshot_mod.loadSnapshot(io, trunc_path, &exp2, &store, arena2.allocator());
+    const loaded = snapshot_mod.loadSnapshot(io, trunc_path, "", &exp2, &store, arena2.allocator());
     try testing.expect(!loaded);
 }
 
@@ -521,8 +520,75 @@ test "issue-41: snapshot not validated against repo identity allows cross-projec
     var store = Store.init(testing.allocator);
     defer store.deinit();
 
-    const loaded = snapshot_mod.loadSnapshotValidated(io, snap_path, "/some/other/project", &exp2, &store, testing.allocator);
+    const loaded = snapshot_mod.loadSnapshotValidated(io, snap_path, "/some/other/project", "", &exp2, &store, testing.allocator);
     try testing.expect(!loaded);
+}
+
+// ── Task 4: root_hash enforcement on the startup load path ──────────
+//
+// loadSnapshot (the production wrapper) used to pass expected_root=null, making
+// the root_hash check in loadSnapshotValidated dead code — a foreign snapshot
+// with a matching git HEAD was accepted. These tests pin the three cases:
+// (a) loads for the root it was written for, (b) rejected for a different root,
+// (c) legacy snapshot with root_hash=0 rejected when validation is requested.
+
+test "task4: loadSnapshot accepts snapshot written for the same root" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/test.snapshot", .{dir_path});
+    defer testing.allocator.free(snap_path);
+
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var exp = Explorer.init(arena.allocator());
+        try exp.indexFile("same_root.zig", "pub fn same() void {}");
+        try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, arena.allocator());
+    }
+
+    var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena2.deinit();
+    var exp2 = Explorer.init(arena2.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+
+    // Same root → accepted.
+    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, dir_path, &exp2, &store, arena2.allocator()));
+    try testing.expectEqual(@as(usize, 1), exp2.outlines.count());
+}
+
+test "task4: loadSnapshot rejects snapshot written for a different root" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/test.snapshot", .{dir_path});
+    defer testing.allocator.free(snap_path);
+
+    // Write the snapshot claiming root_path = dir_path.
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var exp = Explorer.init(arena.allocator());
+        try exp.indexFile("mismatch.zig", "pub fn mismatch() void {}");
+        try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, arena.allocator());
+    }
+
+    var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena2.deinit();
+    var exp2 = Explorer.init(arena2.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+
+    // Load with a DIFFERENT root → must be rejected (root_hash mismatch).
+    try testing.expect(!snapshot_mod.loadSnapshot(io, snap_path, "/a/totally/different/root", &exp2, &store, arena2.allocator()));
+    try testing.expectEqual(@as(usize, 0), exp2.outlines.count());
 }
 
 // DISABLED: telemetry test depends on tmpDir file IO which is flaky
@@ -602,7 +668,7 @@ test "snapshot: symbol detail longer than 4096 bytes survives round-trip" {
     var store2 = Store.init(testing.allocator);
     defer store2.deinit();
 
-    const loaded = snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store2, testing.allocator);
+    const loaded = snapshot_mod.loadSnapshot(io, snap_path, "", &exp2, &store2, testing.allocator);
     try testing.expect(loaded); // must survive long detail
 
     var sym_arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -652,7 +718,7 @@ test "snapshot: corrupted OUTLINE_STATE section falls back to CONTENT load" {
     var store2 = Store.init(testing.allocator);
     defer store2.deinit();
 
-    const loaded = snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store2, testing.allocator);
+    const loaded = snapshot_mod.loadSnapshot(io, snap_path, "", &exp2, &store2, testing.allocator);
     try testing.expect(loaded); // must survive OUTLINE_STATE corruption
 
     // Symbols must still be found — re-indexed from CONTENT
@@ -684,7 +750,7 @@ test "issue-379: snapshot loader returns true with zero outlines for empty-explo
     var store2 = Store.init(testing.allocator);
     defer store2.deinit();
 
-    const loaded = snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store2, testing.allocator);
+    const loaded = snapshot_mod.loadSnapshot(io, snap_path, "", &exp2, &store2, testing.allocator);
     if (loaded) {
         try testing.expect(exp2.outlines.count() > 0);
     }
@@ -730,7 +796,7 @@ test "issue-409: snapshot .env prefix filter wrongly excludes .envoy/.environmen
     var exp2 = Explorer.init(aa);
     var store = Store.init(testing.allocator);
     defer store.deinit();
-    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store, aa));
+    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, "", &exp2, &store, aa));
 
     // Expected: both files round-trip through the snapshot.
     // Current (bug): only "a.zig" survives — ".envoy.json" was excluded by
