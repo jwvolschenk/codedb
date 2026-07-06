@@ -712,6 +712,7 @@ Requires `gh auth login`. Builds from local source, uploads to GitHub Releases.
 | `codedb_search` | <50ms | Full-text search |
 | `codedb_word` | <1ms | Identifier lookup |
 | `codedb_deps` | <2ms | Import graph |
+| `codedb_manifest` | <5ms | Package deps from manifests |
 | `codedb_read` | <1ms | Read file/range |
 | `codedb_edit` | <1ms | Line-based edit |
 | `codedb_hot` | <4ms | Recent changes |

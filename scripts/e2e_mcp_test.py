@@ -384,6 +384,20 @@ def run_scenario_2_normal_mode(binary: str, project: str) -> list[TestResult]:
         else:
             r.ok()
 
+        r = t("codedb_manifest lists build.zig.zon")
+        text = tool_text(p.call_tool("codedb_manifest", {}))
+        if "build.zig.zon" not in text:
+            r.fail(f"manifest listing: {text[:300]!r}")
+        else:
+            r.ok()
+
+        r = t("codedb_manifest path=build.zig.zon returns dependencies")
+        text = tool_text(p.call_tool("codedb_manifest", {"path": "build.zig.zon"}))
+        if "dependencies" not in text or "[runtime]" not in text:
+            r.fail(f"manifest deps: {text[:300]!r}")
+        else:
+            r.ok()
+
     finally:
         p.close()
 

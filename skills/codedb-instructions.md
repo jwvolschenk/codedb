@@ -98,6 +98,7 @@ codedb_search query="UserService" project=/home/user/monorepo/services/api
 | `codedb_types` | Find functions by return type or param type | `types return_type="Task<UserDto>"` |
 | `codedb_hierarchy` | Class/interface inheritance tree | What extends this class? |
 | `codedb_config_xref` | Config key cross-reference (ASP.NET) | Find unused/missing config keys |
+| `codedb_manifest` | Package-dependency facts from manifests (package.json, go.mod, Cargo.toml, requirements.txt, build.zig.zon) | Do we depend on X? At what version? No args lists manifests; `path=` full list; `name=` lookup |
 | `codedb_routes` | Route map extraction (ASP.NET) | List all API endpoints |
 
 ### Indexing & Status

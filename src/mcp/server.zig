@@ -81,6 +81,7 @@ const handleDeps = explore_tools.handleDeps;
 
 // ── mutation tool handlers (mcp/mutation_tools.zig) ──
 const mutation_tools = @import("mutation_tools.zig");
+const manifest_tools = @import("manifest_tools.zig");
 const handleRead = mutation_tools.handleRead;
 const handleEdit = mutation_tools.handleEdit;
 const handleChanges = mutation_tools.handleChanges;
@@ -610,6 +611,7 @@ pub const Tool = enum {
     codedb_query,
     codedb_glob,
     codedb_ls,
+    codedb_manifest,
 };
 
 pub const tools_list =
@@ -639,7 +641,8 @@ pub const tools_list =
     \\{"name":"codedb_find","description":"Fuzzy FILE-NAME search ONLY — typo-tolerant subsequence match against indexed file paths. NOT a content/symbol search: 'rerank' will NOT find files containing rerankSignalScore unless the filename itself contains 'rerank'. For symbol lookups use codedb_word/codedb_symbol; for content use codedb_search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy filename query (e.g. 'authmidlware' for auth_middleware.go, 'test_auth', 'main.zig'). Matched against path basenames, not file contents."},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
     \\{"name":"codedb_query","description":"Composable pipeline — chain ops where each step feeds the next. Ops: find, search, filter, deps, outline, read, sort, limit, word, symbol, callers, type_search, type_compat. Replaces multi-call workflows with one request. search/word/callers steps track hit line numbers; the read step's context_lines param reads N lines of context around those tracked hits instead of reading from the start. type_search finds symbols by return_type or param_type (exact match). type_compat finds all types that implement/extend a given base type via the type graph. Example: [{\"op\":\"search\",\"query\":\"TODO\"},{\"op\":\"read\",\"context_lines\":3}] shows 3 lines around each TODO hit. [{\"op\":\"callers\",\"name\":\"handleRequest\"},{\"op\":\"read\",\"context_lines\":5}] finds all callers and reads 5 lines of context around each call site. callers op: filters to real call sites (excludes definitions, non-call languages); use standalone or after a filter step to scope to specific files.","inputSchema":{"type":"object","properties":{"pipeline":{"type":"array","items":{"type":"object"},"description":"Array of pipeline steps. Each step has 'op' (find/search/filter/deps/outline/read/sort/limit/word/symbol/callers) and op-specific params. Steps execute in order, each filtering/transforming the file set from the previous step. deps op: {\"op\":\"deps\",\"direction\":\"imported_by|depends_on\",\"transitive\":true,\"max_depth\":3}"},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":["pipeline"]}},
     \\{"name":"codedb_glob","description":"Match indexed paths against a glob: * (no /), ** (across /), ? (one char). Sorted lexicographically. Use when you know the path shape; codedb_find for fuzzy names.","inputSchema":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. 'src/**/*.zig', '*.md', 'tests/test_*.py')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 200)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["pattern"]}},
-    \\{"name":"codedb_ls","description":"List immediate children of a directory with deterministic file descriptors. Set ranked=true to sort by hotspot score and annotate dependents/symbol centrality.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"ranked":{"type":"boolean","description":"Sort by hotspot score instead of alphabetically, and include score/dependent counts (default: false)."},"no_descriptor":{"type":"boolean","description":"Suppress deterministic descriptor text in file rows (default: false)."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}}
+    \\{"name":"codedb_ls","description":"List immediate children of a directory with deterministic file descriptors. Set ranked=true to sort by hotspot score and annotate dependents/symbol centrality.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"ranked":{"type":"boolean","description":"Sort by hotspot score instead of alphabetically, and include score/dependent counts (default: false)."},"no_descriptor":{"type":"boolean","description":"Suppress deterministic descriptor text in file rows (default: false)."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+\\{"name":"codedb_manifest","description":"Project dependency facts from package manifests (package.json, go.mod, Cargo.toml, requirements.txt, build.zig.zon). No args: list manifests found. path=: full dependency list for one manifest. name=: which manifests declare a package and at what version. Parsed on demand - always current.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Manifest path relative to project root (from the no-args listing)"},"name":{"type":"string","description":"Package name to look up across all manifests"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}}
     \\]}
 ;
 
@@ -1315,6 +1318,7 @@ pub fn dispatch(
         .codedb_query => handleQuery(alloc, args, out, ctx.explorer, ctx.store),
         .codedb_glob => handleGlob(alloc, args, out, ctx.explorer),
         .codedb_ls => handleLs(alloc, args, out, ctx.explorer),
+        .codedb_manifest => manifest_tools.handleManifest(io, alloc, args, out, ctx.explorer, project_root),
     }
     if (total_timer) |*t| {
         const elapsed_ms = @divTrunc(t.read(), 1_000_000);
@@ -1387,7 +1391,7 @@ fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), too
 
 fn toolDependsOnScannedIndex(tool: Tool) bool {
     return switch (tool) {
-        .codedb_search, .codedb_word, .codedb_callers, .codedb_relations, .codedb_outline, .codedb_symbol, .codedb_hierarchy, .codedb_routes, .codedb_config_xref, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps, .codedb_types => true,
+        .codedb_search, .codedb_word, .codedb_callers, .codedb_relations, .codedb_outline, .codedb_symbol, .codedb_hierarchy, .codedb_routes, .codedb_config_xref, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps, .codedb_types, .codedb_manifest => true,
         else => false,
     };
 }
