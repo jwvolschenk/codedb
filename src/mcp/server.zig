@@ -381,7 +381,14 @@ pub const ProjectCache = struct {
         default_exp: *Explorer,
         default_store: *Store,
     ) !ProjectCtx {
-        const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache };
+        const raw = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache };
+        // Canonicalize the project= param through the #591 funnel. Agents pass
+        // trailing slashes and symlinked paths here; since root_hash enforcement
+        // landed, a non-canonical string computes a different cacheKey and every
+        // snapshot load is silently rejected (empty index). Canonical form also
+        // makes the LRU path-equality check below actually hit for aliases.
+        const p = root_resolve.canonicalizeRoot(io, self.alloc, raw) catch return error.PathNotAllowed;
+        defer self.alloc.free(p);
         if (!root_policy.isIndexableRoot(p))
             return error.PathNotAllowed;
 
