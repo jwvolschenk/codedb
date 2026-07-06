@@ -7,7 +7,20 @@ const cio = @import("../cio.zig");
 const std = @import("std");
 const mcp_lib = @import("mcp");
 const mcpj = mcp_lib.json;
-pub const Root = mcp_lib.mcp.Root;
+const root_resolve = @import("../root_resolve.zig");
+
+/// Workspace root — codedb's local shape.
+///
+/// The upstream `mcp-zig` library models a root as `{ uri, name }` (the raw
+/// `file://` URI from the client's `roots/list` reply). We decode the URI to a
+/// filesystem path at parse time and store that instead, so every read site
+/// (the deferred-scan handshake, project-cache lookups) sees the same canonical
+/// string the CLI path produces. This is half of #591; the other half is routing
+/// the value through `root_resolve.canonicalizeRoot` before any policy check.
+pub const Root = struct {
+    path: []u8,
+    name: []u8,
+};
 const Store = @import("../store.zig").Store;
 const explore_mod = @import("../explore.zig");
 const Explorer = explore_mod.Explorer;
@@ -120,10 +133,20 @@ pub fn triggerDeferredScanWithFallback(
     // timeouts) don't re-run the git-work-tree subprocess below. The
     // authoritative gate is still the swap further down.
     if (ds.triggered.load(.acquire)) return false;
+    // Pick a path: first indexable root's decoded path, else the cwd fallback.
+    // The root is already URI-decoded by parseRoots (#591); canonicalize here so
+    // the git-work-tree check and the scan see the same realpath-resolved string
+    // the CLI path produces, and so the cache-dir hash matches.
+    //
+    // Ownership: the canonical string must outlive this function —
+    // triggerScanFromRoots stores it in ctx.resolved_root and the watcher loop
+    // reads it after we return. So we hand ownership to the DeferredScan by
+    // setting resolved_root (process-lifetime, freed implicitly at exit) and
+    // pass that slice to triggerFn. Any prior resolved_root is process-lifetime
+    // too, so we only overwrite on the first trigger.
     var path: []const u8 = "";
     if (indexable_roots.len > 0) {
-        const uri_raw = indexable_roots[0].uri;
-        path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
+        path = root_resolve.canonicalizeRoot(ds.io, ds.allocator, indexable_roots[0].path) catch "";
     }
     if (path.len == 0 and fallback_cwd.len > 0 and root_policy.isIndexableRoot(fallback_cwd)) {
         // In lazy mode, do not auto-index CWD. The server stays idle until
@@ -134,9 +157,12 @@ pub fn triggerDeferredScanWithFallback(
             setScanState(.lazy);
             return false;
         }
-        path = fallback_cwd;
+        path = root_resolve.canonicalizeRoot(ds.io, ds.allocator, fallback_cwd) catch "";
     }
     if (path.len == 0) return false;
+    // Transfer ownership: resolved_root holds the canonical allocation for the
+    // rest of the process. triggerFn and the watcher read from there.
+    ds.resolved_root = path;
     // Refuse to walk a path that isn't inside a git work tree. This prevents
     // OOM when an editor or agent points codedb at a large non-project
     // directory (e.g. ~/repos/ with dozens of repos). The server stays alive
@@ -148,7 +174,7 @@ pub fn triggerDeferredScanWithFallback(
         return false;
     }
     if (ds.triggered.swap(true, .acq_rel)) return false;
-    ds.triggerFn(ds, path);
+    ds.triggerFn(ds, ds.resolved_root);
     return true;
 }
 
@@ -820,7 +846,7 @@ const Session = struct {
 
     fn freeRoots(self: *Session) void {
         for (self.roots.items) |r| {
-            self.alloc.free(r.uri);
+            self.alloc.free(r.path);
             self.alloc.free(r.name);
         }
         self.roots.clearRetainingCapacity();
@@ -1023,19 +1049,28 @@ fn parseRoots(s: *Session, result: *const std.json.ObjectMap) void {
         const obj = item.object;
         const uri_raw = mcpj.getStr(&obj, "uri") orelse continue;
         const name_raw = mcpj.getStr(&obj, "name") orelse "";
-        // Strip file:// prefix for policy check
-        const path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
-        if (!root_policy.isIndexableRoot(path)) {
-            std.log.info("codedb mcp: rejected root \"{s}\" (denied by policy)", .{uri_raw});
-            continue;
-        }
-        const uri = s.alloc.dupe(u8, uri_raw) catch continue;
-        const name = s.alloc.dupe(u8, name_raw) catch {
-            s.alloc.free(uri);
+        // Decode the file:// URI to a filesystem path (percent-decoding,
+        // localhost/UNC/drive-letter handling) — the single funnel from #591.
+        // On any parse error, skip this root rather than storing junk.
+        const decoded = root_resolve.pathFromFileUri(s.alloc, uri_raw) catch {
+            std.log.info("codedb mcp: rejected root \"{s}\" (invalid URI)", .{uri_raw});
             continue;
         };
-        s.roots.append(s.alloc, .{ .uri = uri, .name = name }) catch {
-            s.alloc.free(uri);
+        // Policy-check the decoded path. realpath/symlink resolution happens
+        // later in canonicalizeRoot, at the deferred-scan trigger; the policy
+        // check is intentionally on the raw decoded path so an obviously-bad
+        // root (e.g. /tmp) is dropped before any subprocess work.
+        if (!root_policy.isIndexableRoot(decoded)) {
+            std.log.info("codedb mcp: rejected root \"{s}\" (denied by policy)", .{uri_raw});
+            s.alloc.free(decoded);
+            continue;
+        }
+        const name = s.alloc.dupe(u8, name_raw) catch {
+            s.alloc.free(decoded);
+            continue;
+        };
+        s.roots.append(s.alloc, .{ .path = decoded, .name = name }) catch {
+            s.alloc.free(decoded);
             s.alloc.free(name);
             continue;
         };

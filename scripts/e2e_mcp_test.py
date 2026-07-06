@@ -9,6 +9,9 @@ Scenarios covered:
      and tools return data without needing a roots handshake.
   3. No-roots client: spawn from cwd=/, client declares no roots capability, MCP
      stays alive and tools respond gracefully (0 files, no crash).
+  4. issue-591 root canonicalization: client sends a file://localhost URI with a
+     percent-encoded space and a trailing slash; the server must index the right
+     dir and reuse the same cache dir the CLI path produces (project.txt check).
 
 Usage:
   python3 scripts/e2e_mcp_test.py [--binary /path/to/codedb] [--project /path/to/project]
@@ -439,6 +442,113 @@ def run_scenario_3_no_roots_client(binary: str) -> list[TestResult]:
     return results
 
 
+def run_scenario_4_root_canonicalization(binary: str, project: str) -> list[TestResult]:
+    """
+    issue-591: root canonicalization through one funnel.
+
+    The client sends a file:// URI that exercises the bug class:
+      - localhost authority (file://localhost/...)
+      - percent-encoded space (%20)
+      - trailing slash
+    The server must (a) index the right directory (files > 0), and (b) write a
+    project.txt naming the realpath — proving the MCP path and the CLI path share
+    one cache dir (the core #591 invariant). We point the URI at a throwaway tmp
+    dir containing a single source file so we don't mutate the real project's
+    cache dir, and we compare against an independently-computed realpath.
+    """
+    import tempfile
+    import urllib.parse
+
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S4] {name}")
+        results.append(r)
+        return r
+
+    # Build a tmp project dir whose name has a space — forces percent-encoding
+    # to be meaningful. Use the user's home (never /tmp — root_policy denies it)
+    # and clean up explicitly. Symlinks (/tmp -> /private/tmp on macOS) are
+    # resolved by realpath, so we compare against os.path.realpath.
+    home = str(Path.home())
+    tmp_raw = os.path.join(home, f".codedb-e2e-591-{os.getpid()}-{int(time.time())}")
+    os.makedirs(os.path.join(tmp_raw, "space dir"))  # name with a space
+    tmp_real = os.path.realpath(os.path.join(tmp_raw, "space dir"))
+    try:
+        # Drop one file so the index is non-empty.
+        (Path(tmp_real) / "hello.zig").write_text("pub fn hello591() void {}\n")
+        # Make it a git repo so require_git_repo (the default) doesn't reject
+        # it — mirrors real usage and keeps this scenario about URI handling,
+        # not the git guard.
+        subprocess.run(["git", "init", "-q"], cwd=tmp_real, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # URI with localhost authority, %20 for the space, and a trailing slash.
+        encoded_path = urllib.parse.quote(tmp_real)  # spaces -> %20
+        uri = f"file://localhost/{encoded_path.lstrip('/')}/"
+
+        p = MCPProcess(binary, [], cwd="/")
+        try:
+            r = t("initialize succeeds")
+            if not do_initialize(p, with_roots=True):
+                r.fail("no initialize response — transport closed")
+                return results
+            r.ok()
+
+            r = t("server sends roots/list")
+            req = p.recv_method("roots/list", timeout=5.0)
+            if req is None:
+                r.fail("server never sent roots/list")
+                return results
+            # Reply with the adversarial URI.
+            p.send({
+                "jsonrpc": "2.0",
+                "id": req["id"],
+                "result": {"roots": [{"uri": uri, "name": "591-space-dir"}]},
+            })
+            r.ok()
+
+            r = t("scan completes on the canonicalized root (files > 0)")
+            if not wait_for_scan(p, timeout=90.0):
+                r.fail("timed out waiting for scan (root never indexed)")
+                return results
+            r.ok()
+
+            r = t("codedb_search finds the file content")
+            resp = p.call_tool("codedb_search", {"query": "hello591", "max_results": 5})
+            text = tool_text(resp)
+            if "hello591" not in text:
+                r.fail(f"hello591 not found — search saw: {text[:200]!r}")
+            else:
+                r.ok()
+
+            r = t("project.txt names the realpath (CLI/MCP cache-dir parity)")
+            # getDataDir writes project.txt into ~/.codedb/projects/<hash>/.
+            # The hash is root_resolve.cacheKey(canonical_root); for a passing
+            # run the dir exists and names tmp_real.
+            home = Path.home()
+            found = False
+            if (home / ".codedb" / "projects").is_dir():
+                for d in (home / ".codedb" / "projects").iterdir():
+                    pt = d / "project.txt"
+                    if pt.exists():
+                        content = pt.read_text().strip()
+                        if content == tmp_real:
+                            found = True
+                            break
+            if found:
+                r.ok(f"project.txt == {tmp_real}")
+            else:
+                r.fail(f"no project.txt matched realpath {tmp_real!r}")
+        finally:
+            p.close()
+    finally:
+        import shutil
+        shutil.rmtree(tmp_raw, ignore_errors=True)
+
+    return results
+
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -471,6 +581,9 @@ def main() -> int:
 
     print(f"\n{CYAN}── Scenario 3: no-roots client (spawn from /, no scan) ──{RESET}")
     all_results += run_scenario_3_no_roots_client(binary)
+
+    print(f"\n{CYAN}── Scenario 4: issue-591 root canonicalization (localhost + %20 + trailing slash) ──{RESET}")
+    all_results += run_scenario_4_root_canonicalization(binary, project)
 
     print()
     passed = 0

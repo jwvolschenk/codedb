@@ -241,6 +241,14 @@ test "issue-346: root_policy rejects dangerous ambient cwd roots" {
     try testing.expect(!root_policy.isIndexableRoot("/opt/homebrew"));
 }
 
+test "issue-591: Root struct stores decoded filesystem path, not raw URI" {
+    // The MCP roots/list path used to store the raw file:// URI and strip it
+    // naively at every read site. Now Root carries the decoded path directly.
+    // Structural check: the field is named `path`, not `uri`.
+    try testing.expect(@hasField(mcp_mod.Root, "path"));
+    try testing.expect(!@hasField(mcp_mod.Root, "uri"));
+}
+
 test "issue-359: mcp.globMatch backtracks across **/* boundary" {
     // Pipeline filter (codedb_query) calls mcp.globMatch on each path. The
     // iterative version forgot the outer ** position when it entered the

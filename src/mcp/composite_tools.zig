@@ -17,6 +17,7 @@ const Store = @import("../store.zig").Store;
 const AgentRegistry = @import("../agent.zig").AgentRegistry;
 const snapshot_mod = @import("../snapshot.zig");
 const root_policy = @import("../root_policy.zig");
+const root_resolve = @import("../root_resolve.zig");
 const git_mod = @import("../git.zig");
 const mcp_lib = @import("mcp");
 const mcpj = mcp_lib.json;
@@ -398,14 +399,16 @@ pub fn handleIndex(
         return;
     };
 
-    // Resolve to absolute path
-    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_len = std.Io.Dir.cwd().realPathFile(io, path, &abs_buf) catch {
+    // Canonicalize: realpath + trailing-slash trim, via the single funnel
+    // (#591). Routes the MCP `codedb_index path=` path through the same
+    // root_resolve.canonicalizeRoot that parseRoots uses, so the cache-dir
+    // hash and the snapshot root_hash agree.
+    const abs_path = root_resolve.canonicalizeRoot(io, alloc, path) catch {
         out.appendSlice(alloc, "error: cannot resolve path: ") catch {};
         out.appendSlice(alloc, path) catch {};
         return;
     };
-    const abs_path = abs_buf[0..abs_len];
+    defer alloc.free(abs_path);
     if (!root_policy.isIndexableRoot(abs_path)) {
         out.appendSlice(alloc, "error: refusing to index temporary root: ") catch {};
         out.appendSlice(alloc, abs_path) catch {};
@@ -438,9 +441,10 @@ pub fn handleIndex(
             defer alloc.free(snap);
             std.Io.Dir.cwd().deleteFile(io, snap) catch {};
         }
-        // Delete central cache snapshot
+        // Delete central cache snapshot. Hash via root_resolve.cacheKey to
+        // match getDataDir — otherwise force can target the wrong dir (#591).
         if (cio.getHomeDir()) |home_dir| {
-            const hash = std.hash.Wyhash.hash(0, abs_path);
+            const hash = root_resolve.cacheKey(abs_path);
             const cache_snap = std.fmt.allocPrint(alloc, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home_dir, hash }) catch null;
             if (cache_snap) |cs| {
                 defer alloc.free(cs);

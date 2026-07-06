@@ -8,6 +8,7 @@ const WordIndex = @import("../index.zig").WordIndex;
 const index_mod = @import("../index.zig");
 const snapshot_mod = @import("../snapshot.zig");
 const Config = @import("../config.zig").Config;
+const root_resolve = @import("../root_resolve.zig");
 
 pub fn loadUserConfig(io: std.Io, alloc: std.mem.Allocator, explicit: ?[]const u8) !Config {
     const self_exe: ?[:0]u8 = std.process.executablePathAlloc(io, alloc) catch null;
@@ -93,7 +94,18 @@ pub fn loadBestSnapshot(
 }
 
 pub fn getDataDir(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8) ![]u8 {
-    const hash = std.hash.Wyhash.hash(0, abs_root);
+    // Precondition: abs_root is canonical (absolute, no trailing separator,
+    // symlinks resolved). The CLI path satisfies this via shell.resolveRoot;
+    // the MCP path must route through root_resolve.canonicalizeRoot. Asserting
+    // here catches a future caller that forgets the funnel — the worst symptom
+    // (two cache dirs for one project, #591) is silent otherwise.
+    std.debug.assert(abs_root.len > 0);
+    std.debug.assert(abs_root[0] == '/' or (abs_root.len >= 2 and std.ascii.isAlphabetic(abs_root[0]) and abs_root[1] == ':'));
+    std.debug.assert(abs_root.len == 1 or abs_root[abs_root.len - 1] != '/');
+
+    // The ONLY hash of the root string — #591. Case-folded on macOS/Windows so
+    // case-insensitive-FS aliasing can't produce divergent cache dirs.
+    const hash = root_resolve.cacheKey(abs_root);
     const home_env = cio.getHomeDir() orelse {
         return std.fmt.allocPrint(allocator, "{s}/.codedb", .{abs_root});
     };
@@ -103,7 +115,27 @@ pub fn getDataDir(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8
     std.Io.Dir.cwd().createDirPath(io, dir) catch |err| {
         std.log.warn("could not create data dir {s}: {}", .{ dir, err });
     };
+    // Record the canonical root for human inspection and as a collision
+    // detector: if an existing project.txt names a different root, two roots
+    // hashed to the same dir (aliasing/collision). Never fatal — just warn.
+    saveProjectInfo(io, allocator, dir, abs_root) catch {};
+    warnIfProjectTxtDisagrees(io, allocator, dir, abs_root);
     return dir;
+}
+
+/// Reads project.txt (if present) and warns when it names a different root than
+/// the one currently being indexed into this data dir. A disagreement means two
+/// distinct canonical roots hashed to the same cache dir — either a hash
+/// collision or, more likely, an aliasing bug we haven't fully closed. Warn-only
+/// per #591's "never fatal" policy.
+fn warnIfProjectTxtDisagrees(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u8, abs_root: []const u8) void {
+    const info_path = std.fmt.allocPrint(allocator, "{s}/project.txt", .{data_dir}) catch return;
+    defer allocator.free(info_path);
+    const existing = std.Io.Dir.cwd().readFileAlloc(io, info_path, allocator, .limited(4096)) catch return;
+    defer allocator.free(existing);
+    if (!std.mem.eql(u8, std.mem.trim(u8, existing, " \n\r\t"), abs_root)) {
+        std.log.warn("codedb: cache dir {s} previously held project \"{s}\"; now indexing \"{s}\" (aliasing/collision?)", .{ data_dir, existing, abs_root });
+    }
 }
 
 pub fn loadTrigramFromDiskIfPresent(io: std.Io, explorer: *Explorer, data_dir: []const u8, allocator: std.mem.Allocator) void {
