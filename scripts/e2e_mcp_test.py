@@ -53,12 +53,15 @@ class MCPProcess:
     """Wraps a codedb mcp subprocess; sends/receives JSON-RPC over stdio."""
 
     def __init__(self, binary: str, args: list[str], cwd: str,
-                 command: list[str] | None = None) -> None:
+                 command: list[str] | None = None,
+                 env: dict[str, str] | None = None) -> None:
         """
         command: full argv override (default: [binary, "mcp"] + args).
         Use command=[binary, root, "mcp"] for explicit-root invocation.
+        env: extra environment variables merged over os.environ.
         """
         argv = command if command is not None else [binary, "mcp"] + args
+        full_env = {**os.environ, **env} if env else None
         self.proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -67,6 +70,7 @@ class MCPProcess:
             cwd=cwd,
             text=True,
             bufsize=1,
+            env=full_env,
         )
         self._id = 1
         self._lock = threading.Lock()
@@ -754,6 +758,85 @@ def run_scenario_6_worktree_branch_switch(binary: str) -> list[TestResult]:
     return results
 
 
+def run_scenario_7_memory_budget(binary: str) -> list[TestResult]:
+    """
+    issue-591 Task 8: memory budget backstop. With CODEDB_MAX_MEMORY_MB=1 any
+    live process is over budget, so a cold scan must stop immediately, KEEP the
+    partial index, keep the server alive, and report scan=budget_exceeded with
+    an override hint — never OOM the host, never crash.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S7] {name}")
+        results.append(r)
+        return r
+
+    home = str(Path.home())
+    proj = os.path.join(home, f".codedb-e2e-591t8-{os.getpid()}-{int(time.time())}")
+    os.makedirs(proj)
+    proj = os.path.realpath(proj)
+    try:
+        for i in range(20):
+            Path(proj, f"f{i}.zig").write_text(f"pub fn fn591_{i}() void {{}}\n")
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+               **os.environ}
+        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=proj,
+                       check=True, env=env)
+
+        p = MCPProcess(binary, [], cwd="/", command=[binary, proj, "mcp"],
+                       env={"CODEDB_MAX_MEMORY_MB": "1"})
+        try:
+            r = t("server survives hitting the budget (initialize + terminal scan state)")
+            if not do_initialize(p, with_roots=False):
+                r.fail("no initialize response")
+                return results
+            # Wait for a terminal state; wait_for_scan only accepts ready/lazy,
+            # so poll status text directly.
+            deadline = time.monotonic() + 60.0
+            state_text = ""
+            while time.monotonic() < deadline:
+                state_text = tool_text(p.call_tool("codedb_status", {}))
+                if "budget_exceeded" in state_text or "scan: ready" in state_text:
+                    break
+                time.sleep(0.5)
+            if p.proc.poll() is not None:
+                r.fail("server process died")
+                return results
+            r.ok()
+
+            r = t("codedb_status reports scan=budget_exceeded")
+            if "budget_exceeded" not in state_text:
+                r.fail(f"status: {state_text[:300]!r}")
+            else:
+                r.ok()
+
+            r = t("status shows budget limit + override hint")
+            if "memory_budget: 1MB" in state_text and "CODEDB_MAX_MEMORY_MB" in state_text:
+                r.ok()
+            else:
+                r.fail(f"status missing budget/override info: {state_text[:400]!r}")
+
+            r = t("queries still answer (partial index, no crash)")
+            text = tool_text(p.call_tool("codedb_search", {"query": "fn591_0", "max_results": 3}))
+            if p.proc.poll() is not None:
+                r.fail("server died on query after budget stop")
+            elif "PARTIAL index" in text or "search" in text:
+                r.ok()
+            else:
+                r.fail(f"unexpected response: {text[:200]!r}")
+        finally:
+            p.close()
+    finally:
+        import shutil
+        shutil.rmtree(proj, ignore_errors=True)
+
+    return results
+
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -795,6 +878,9 @@ def main() -> int:
 
     print(f"\n{CYAN}── Scenario 6: issue-591 worktree branch-switch detection ──{RESET}")
     all_results += run_scenario_6_worktree_branch_switch(binary)
+
+    print(f"\n{CYAN}── Scenario 7: issue-591 memory budget backstop (CODEDB_MAX_MEMORY_MB=1) ──{RESET}")
+    all_results += run_scenario_7_memory_budget(binary)
 
     print()
     passed = 0

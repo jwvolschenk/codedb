@@ -382,6 +382,14 @@ mcp_auto_index = false
 # projects (downloaded tarballs, scratch dirs). Fresh repos with no
 # commits still pass — the check is work-tree presence, not commit history.
 require_git_repo = true
+
+# ── Indexing memory budget ───────────────────────────────
+# Bulk-indexing stops when process RSS exceeds this many MB: the walk halts,
+# the PARTIAL index is kept and served, and codedb_status reports
+# scan=budget_exceeded. A safety backstop so indexing the wrong folder or a
+# huge mono-repo can't exhaust host memory. 0 = unlimited.
+# Env override: CODEDB_MAX_MEMORY_MB.
+max_index_memory_mb = 6144
 ```
 
 </details>
@@ -396,6 +404,7 @@ require_git_repo = true
 | `index_generated_files` | false | Investigating EF migrations / source-generated code | Default — keeps generated noise out of the index |
 | `mcp_auto_index` | false | You want the MCP server to index CWD on startup like a CLI tool | Default — prevents OOM on large directories |
 | `require_git_repo` | true | You need to index a non-git project (tarball, scratch dir) | Default — prevents OOM when an agent targets a non-project directory |
+| `max_index_memory_mb` | 6144 | Indexing a legitimately huge repo stops early at the budget (or 0 to disable) | Host has little memory to spare |
 
 ### Agent Precision Defaults
 

@@ -223,6 +223,17 @@ pub fn run() !void {
     // lets a user opt back in via .codedbrc.
     watcher.setIncludeGenerated(cfg.index_generated_files);
 
+    // Indexing memory budget (#591 Task 8): config value, overridable by the
+    // CODEDB_MAX_MEMORY_MB env var (same precedence as CODEDB_REQUIRE_GIT_REPO).
+    // Applied here so every entry point — mcp server, CLI scan, and the
+    // `codedb <path> snapshot` subprocess handleIndex spawns — gets the cap.
+    watcher.budget.setLimitMb(blk: {
+        if (cio.posixGetenv("CODEDB_MAX_MEMORY_MB")) |v| {
+            if (std.fmt.parseInt(u32, v, 10) catch null) |mb| break :blk mb;
+        }
+        break :blk cfg.max_index_memory_mb;
+    });
+
     const data_log_path = try std.fmt.allocPrint(allocator, "{s}/data.log", .{data_dir});
     defer allocator.free(data_log_path);
     store.openDataLog(io, data_log_path) catch |err| {

@@ -508,6 +508,16 @@ pub fn handleIndex(
         }
     }
 
+    // Memory budget (#591 Task 8): the spawned indexer inherits
+    // CODEDB_MAX_MEMORY_MB / .codedbrc and logs a warning when it stops at
+    // the cap. Surface that in the tool response so the agent knows the
+    // resulting snapshot is PARTIAL and how to override.
+    if (std.mem.indexOf(u8, result.stderr, "memory budget") != null) {
+        out.appendSlice(alloc, "index stopped at memory budget — PARTIAL index written for ") catch {};
+        out.appendSlice(alloc, abs_path) catch {};
+        out.appendSlice(alloc, "\nraise max_index_memory_mb in .codedbrc or set CODEDB_MAX_MEMORY_MB, or index a subfolder\n") catch {};
+    }
+
     out.appendSlice(alloc, "indexed: ") catch {};
     out.appendSlice(alloc, abs_path) catch {};
     if (result.stdout.len > 0) {

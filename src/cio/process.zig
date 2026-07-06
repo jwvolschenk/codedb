@@ -75,6 +75,79 @@ pub fn getHomeDir() ?[]const u8 {
     return null;
 }
 
+/// Current process resident set size in bytes, or null when the platform
+/// probe fails/is unsupported (callers must treat null as "budget checks
+/// disabled"). Cheap — one small read/syscall — safe to call every few
+/// hundred files during bulk indexing.
+///   Linux:   /proc/self/statm field 2 (resident pages) × page size
+///   macOS:   task_info(MACH_TASK_BASIC_INFO).resident_size
+///   Windows: GetProcessMemoryInfo().WorkingSetSize
+pub fn processRssBytes() ?u64 {
+    switch (builtin.os.tag) {
+        .linux => {
+            const fd = std.posix.openat(std.posix.AT.FDCWD, "/proc/self/statm", .{}, 0) catch return null;
+            defer closeFd(fd);
+            var buf: [128]u8 = undefined;
+            const n = std.posix.read(fd, &buf) catch return null;
+            if (n == 0) return null;
+            // "size resident shared text lib data dt" — resident is field 2.
+            var it = std.mem.tokenizeScalar(u8, buf[0..n], ' ');
+            _ = it.next() orelse return null;
+            const resident_str = it.next() orelse return null;
+            const resident_pages = std.fmt.parseInt(u64, resident_str, 10) catch return null;
+            return resident_pages * std.heap.pageSize();
+        },
+        .macos => {
+            const mach_task_basic_info = extern struct {
+                virtual_size: u64,
+                resident_size: u64,
+                resident_size_max: u64,
+                user_time: u64,
+                system_time: u64,
+                policy: i32,
+                suspend_count: i32,
+            };
+            const MACH_TASK_BASIC_INFO: c_int = 20;
+            const count_of = @sizeOf(mach_task_basic_info) / @sizeOf(c_int);
+            const c = struct {
+                extern "c" fn mach_task_self() u32;
+                extern "c" fn task_info(target: u32, flavor: c_int, info: *anyopaque, count: *c_uint) c_int;
+            };
+            var info: mach_task_basic_info = undefined;
+            var count: c_uint = count_of;
+            if (c.task_info(c.mach_task_self(), MACH_TASK_BASIC_INFO, &info, &count) != 0) return null;
+            return info.resident_size;
+        },
+        .windows => {
+            const PROCESS_MEMORY_COUNTERS = extern struct {
+                cb: u32,
+                PageFaultCount: u32,
+                PeakWorkingSetSize: usize,
+                WorkingSetSize: usize,
+                QuotaPeakPagedPoolUsage: usize,
+                QuotaPagedPoolUsage: usize,
+                QuotaPeakNonPagedPoolUsage: usize,
+                QuotaNonPagedPoolUsage: usize,
+                PagefileUsage: usize,
+                PeakPagefileUsage: usize,
+            };
+            const k32 = struct {
+                extern "kernel32" fn K32GetProcessMemoryInfo(
+                    process: std.os.windows.HANDLE,
+                    counters: *PROCESS_MEMORY_COUNTERS,
+                    cb: u32,
+                ) callconv(.winapi) std.os.windows.BOOL;
+            };
+            var pmc: PROCESS_MEMORY_COUNTERS = undefined;
+            pmc.cb = @sizeOf(PROCESS_MEMORY_COUNTERS);
+            const self = std.os.windows.GetCurrentProcess();
+            if (k32.K32GetProcessMemoryInfo(self, &pmc, pmc.cb) == 0) return null;
+            return pmc.WorkingSetSize;
+        },
+        else => return null,
+    }
+}
+
 /// Cross-platform temp directory resolution. Windows: %TEMP% then %TMP%;
 /// POSIX: $TMPDIR (macOS sets a per-user one) with a /tmp fallback. Returned
 /// slice has no trailing separator. Never null — the fallback is constant.

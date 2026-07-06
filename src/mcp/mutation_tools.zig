@@ -290,6 +290,19 @@ pub fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *S
         getScanState().name(),
     }) catch {};
 
+    // Memory budget (#591 Task 8): always show the limit; when exceeded,
+    // spell out that the index is partial and how to raise the cap.
+    {
+        const limit = watcher.budget.limitMb();
+        if (limit == 0) {
+            w.print("  memory_budget: unlimited\n", .{}) catch {};
+        } else if (watcher.budget.exceeded()) {
+            w.print("  memory_budget: {d}MB (EXCEEDED — indexing stopped, partial index served; raise max_index_memory_mb in .codedbrc or CODEDB_MAX_MEMORY_MB, or index a subfolder)\n", .{limit}) catch {};
+        } else {
+            w.print("  memory_budget: {d}MB\n", .{limit}) catch {};
+        }
+    }
+
     w.print("  ignore_patterns: {d}\n", .{ignore_patterns.len}) catch {};
     for (ignore_patterns) |pattern| {
         w.print("    {s}\n", .{pattern}) catch {};

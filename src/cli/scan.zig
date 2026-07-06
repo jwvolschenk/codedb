@@ -24,6 +24,12 @@ pub fn reapLoop(agents: *AgentRegistry, shutdown: *std.atomic.Value(bool)) void 
     }
 }
 
+/// ready — unless the memory budget stopped the walk, in which case the
+/// partial index is served under the budget_exceeded state (#591 Task 8).
+fn scanFinalState() mcp_server.ScanState {
+    return if (watcher.budget.exceeded()) .budget_exceeded else .ready;
+}
+
 pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool), shutdown: *std.atomic.Value(bool), data_dir: []const u8, abs_root: []const u8, telem: *telemetry.Telemetry, startup_t0: i64) void {
     // The in-repo snapshot must be addressed absolutely: an MCP server's cwd
     // is not the project root (often "/"), so a bare "codedb.snapshot" either
@@ -41,6 +47,7 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
     };
 
     mcp_server.setScanState(.walking);
+    watcher.budget.clearExceeded();
     watcher.initialScan(io, store, explorer, root, allocator, heads_match) catch |err| {
         std.log.warn("background scan failed: {}", .{err});
     };
@@ -60,7 +67,7 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
             if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
                 explorer.adoptTrigramIndex(.{ .mmap = loaded });
                 scan_done.store(true, .release);
-                mcp_server.setScanState(.ready);
+                mcp_server.setScanState(scanFinalState());
                 if (shutdown.load(.acquire)) return;
                 telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));
                 snapshot_mod.writeSnapshotDual(io, explorer, abs_root, root_snapshot_path, allocator) catch |err| {
@@ -79,7 +86,7 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
             if (TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
                 explorer.adoptTrigramIndex(.{ .heap = loaded });
                 scan_done.store(true, .release);
-                mcp_server.setScanState(.ready);
+                mcp_server.setScanState(scanFinalState());
                 if (shutdown.load(.acquire)) return;
                 telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));
                 snapshot_mod.writeSnapshotDual(io, explorer, abs_root, root_snapshot_path, allocator) catch |err| {
@@ -122,7 +129,7 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
     }
 
     scan_done.store(true, .release);
-    mcp_server.setScanState(.ready);
+    mcp_server.setScanState(scanFinalState());
 
     if (shutdown.load(.acquire)) return;
 

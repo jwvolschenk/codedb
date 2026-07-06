@@ -778,6 +778,11 @@ pub const ScanState = enum(u8) {
     indexing = 2,
     ready = 3,
     lazy = 4,
+    /// The memory budget (max_index_memory_mb) was hit mid-scan: the walk
+    /// stopped, the PARTIAL index is kept and served, and the server stays
+    /// alive. Surfaced in codedb_status and tool-response hints so an agent
+    /// immediately sees why results are incomplete (#591 Task 8).
+    budget_exceeded = 5,
 
     pub fn name(self: ScanState) []const u8 {
         return switch (self) {
@@ -786,6 +791,7 @@ pub const ScanState = enum(u8) {
             .indexing => "indexing",
             .ready => "ready",
             .lazy => "lazy",
+            .budget_exceeded => "budget_exceeded",
         };
     }
 };
@@ -827,11 +833,16 @@ pub fn getRequireGitRepo() bool {
     return require_git_repo;
 }
 
+fn scanStateIsTerminal(state: ScanState) bool {
+    // budget_exceeded is terminal: the scan will not progress further, and
+    // the partial index is what there is to serve — don't spin on it.
+    return state == .ready or state == .lazy or state == .budget_exceeded;
+}
+
 fn waitForScanReady(timeout_ms: u64) void {
-    const state = getScanState();
-    if (state == .ready or state == .lazy) return;
+    if (scanStateIsTerminal(getScanState())) return;
     const deadline = cio.milliTimestamp() + @as(i64, @intCast(timeout_ms));
-    while (getScanState() != .ready and getScanState() != .lazy) {
+    while (!scanStateIsTerminal(getScanState())) {
         if (cio.milliTimestamp() >= deadline) return;
         cio.sleepMs(25);
     }
@@ -1332,6 +1343,10 @@ fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), too
     if (!(looks_empty or looks_unindexed)) return;
     if (state == .lazy) {
         out.appendSlice(alloc, "\nnote: no project indexed — use codedb_index to index a specific project first") catch return;
+        return;
+    }
+    if (state == .budget_exceeded) {
+        out.appendSlice(alloc, "\nnote: indexing stopped at the memory budget — results come from a PARTIAL index. Raise max_index_memory_mb in .codedbrc or CODEDB_MAX_MEMORY_MB, or index a subfolder.") catch return;
         return;
     }
     out.appendSlice(alloc, "\nnote: scan still in progress (state=") catch return;

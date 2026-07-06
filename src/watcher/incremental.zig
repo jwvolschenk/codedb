@@ -6,6 +6,7 @@ const Explorer = @import("../explore.zig").Explorer;
 const git_mod = @import("../git.zig");
 const FilteredWalker = @import("filtered_walker.zig").FilteredWalker;
 const skip_rules = @import("skip_rules.zig");
+const budget = @import("budget.zig");
 
 pub const EventKind = enum(u8) {
     created,
@@ -229,6 +230,7 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
             const max_trigram_files: usize = 15_000;
             var file_count: usize = 0;
             while (walker.next() catch null) |entry| {
+                if (file_count % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing()) break;
                 const stat = dir.statFile(io, entry.path, .{}) catch continue;
                 _ = store.recordSnapshot(entry.path, stat.size, 0) catch {};
                 file_count += 1;

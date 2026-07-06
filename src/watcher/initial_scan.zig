@@ -7,6 +7,7 @@ const TrigramIndex = @import("../index.zig").TrigramIndex;
 const explore_mod = @import("../explore.zig");
 const FilteredWalker = @import("filtered_walker.zig").FilteredWalker;
 const skip_rules = @import("skip_rules.zig");
+const budget = @import("budget.zig");
 
 const InitialScanEntry = struct {
     path: []u8,
@@ -53,6 +54,8 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, explorer: *Explorer, dir
     const max_trigram_files: usize = 15_000;
     var file_count: usize = 0;
     while (try walker.next()) |entry| {
+        // Memory budget (#591 Task 8): stop the walk, keep what we have.
+        if (file_count % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing()) break;
         const stat = dir.statFile(io, entry.path, .{}) catch continue;
         _ = try store.recordSnapshot(entry.path, stat.size, 0);
         file_count += 1;
@@ -87,7 +90,10 @@ fn parseInitialScanEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, 
 
 fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8, entries: []const InitialScanEntry) void {
     const arena_alloc = results.arena.allocator();
-    for (entries) |entry| {
+    for (entries, 0..) |entry, i| {
+        // Budget check inside the parse phase too — worker arenas hold file
+        // contents, so a wrong-folder blowup shows up here before any commit.
+        if (i % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing()) return;
         const parsed = parseInitialScanEntry(io, root, entry, arena_alloc) catch null;
         if (parsed) |file| {
             results.items.append(arena_alloc, file) catch return;
@@ -108,7 +114,8 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
     if (entries.items.len == 0) return;
     const n_workers = @max(@as(usize, 1), @min(worker_count, entries.items.len));
     if (n_workers == 1) {
-        for (entries.items) |entry| {
+        for (entries.items, 0..) |entry, i| {
+            if (i % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing()) return;
             {
                 var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
                 defer arena.deinit();
@@ -143,8 +150,15 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
     }
     for (threads) |thread| thread.join();
 
+    var committed: usize = 0;
     for (workers) |*worker| {
         for (worker.items.items) |file| {
+            // The commit phase moves parsed content into the explorer's
+            // long-lived indexes — the budget must bound that growth too.
+            // budget.exceeded() is sticky, so once one worker's commit loop
+            // trips it, the remaining workers' loops stop immediately.
+            if (budget.exceeded() or (committed % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing())) break;
+            committed += 1;
             try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
         }
         worker.deinit(allocator);
@@ -311,7 +325,8 @@ fn trigramExtractWorker(io: std.Io, results: *TriExtractResults, root: []const u
     var local = std.AutoHashMap(index_m.Trigram, index_m.PostingMask).init(std.heap.c_allocator);
     defer local.deinit();
     local.ensureTotalCapacity(4096) catch {};
-    for (entries) |entry| {
+    for (entries, 0..) |entry, entry_idx| {
+        if (entry_idx % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing()) return;
         const r = readFileEntry(io, root, entry, alloc) orelse continue;
         if (r.content.len > 64 * 1024) continue;
         local.clearRetainingCapacity();
@@ -372,7 +387,8 @@ pub fn initialScanWithTrigrams(
     tmp_tri.path_to_id.ensureTotalCapacity(@intCast(@min(entries.items.len, 65536))) catch {};
 
     if (n_workers == 1) {
-        for (entries.items) |entry| {
+        for (entries.items, 0..) |entry, i| {
+            if (i % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing()) return tmp_tri;
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
             const parsed = parseInitialScanEntry(io, root, entry, arena.allocator()) catch null;
@@ -441,8 +457,11 @@ pub fn initialScanWithTrigrams(
         }
         for (threads) |thread| thread.join();
 
+        var committed: usize = 0;
         for (workers) |*worker| {
             for (worker.items.items) |file| {
+                if (budget.exceeded() or (committed % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing())) break;
+                committed += 1;
                 explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, true) catch continue;
                 if (file.content.len <= 64 * 1024) {
                     tmp_tri.indexFile(file.path, file.content) catch {};

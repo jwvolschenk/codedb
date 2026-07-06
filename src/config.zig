@@ -36,6 +36,12 @@ pub const Config = struct {
     /// points codedb at a large non-project directory (e.g. ~/repos/ with
     /// dozens of repos). Set to false in .codedbrc to index non-git projects.
     require_git_repo: bool = true,
+    /// Memory budget for bulk indexing, in MB of process RSS. When exceeded
+    /// mid-scan, codedb stops the walk, keeps the partial index, and reports
+    /// `budget_exceeded` in codedb_status / tool responses. A safety backstop
+    /// against indexing the wrong folder or a huge mono-repo. 0 = unlimited.
+    /// Env override: CODEDB_MAX_MEMORY_MB.
+    max_index_memory_mb: u32 = 6144,
 
     pub const default: Config = .{};
 
@@ -69,6 +75,8 @@ pub const Config = struct {
                 cfg.mcp_auto_index = parseBool(val) catch return error.InvalidBool;
             } else if (std.mem.eql(u8, key, "require_git_repo")) {
                 cfg.require_git_repo = parseBool(val) catch return error.InvalidBool;
+            } else if (std.mem.eql(u8, key, "max_index_memory_mb")) {
+                cfg.max_index_memory_mb = std.fmt.parseInt(u32, val, 10) catch return error.InvalidMaxIndexMemoryMb;
             }
         }
         return cfg;
