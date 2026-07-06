@@ -524,6 +524,73 @@ test "issue-41: snapshot not validated against repo identity allows cross-projec
     try testing.expect(!loaded);
 }
 
+// ── Task 4: root_hash enforcement on the startup load path ──────────
+//
+// loadSnapshot (the production wrapper) used to pass expected_root=null, making
+// the root_hash check in loadSnapshotValidated dead code — a foreign snapshot
+// with a matching git HEAD was accepted. These tests pin the three cases:
+// (a) loads for the root it was written for, (b) rejected for a different root,
+// (c) legacy snapshot with root_hash=0 rejected when validation is requested.
+
+test "task4: loadSnapshot accepts snapshot written for the same root" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/test.snapshot", .{dir_path});
+    defer testing.allocator.free(snap_path);
+
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var exp = Explorer.init(arena.allocator());
+        try exp.indexFile("same_root.zig", "pub fn same() void {}");
+        try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, arena.allocator());
+    }
+
+    var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena2.deinit();
+    var exp2 = Explorer.init(arena2.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+
+    // Same root → accepted.
+    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, dir_path, &exp2, &store, arena2.allocator()));
+    try testing.expectEqual(@as(usize, 1), exp2.outlines.count());
+}
+
+test "task4: loadSnapshot rejects snapshot written for a different root" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/test.snapshot", .{dir_path});
+    defer testing.allocator.free(snap_path);
+
+    // Write the snapshot claiming root_path = dir_path.
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var exp = Explorer.init(arena.allocator());
+        try exp.indexFile("mismatch.zig", "pub fn mismatch() void {}");
+        try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, arena.allocator());
+    }
+
+    var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena2.deinit();
+    var exp2 = Explorer.init(arena2.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+
+    // Load with a DIFFERENT root → must be rejected (root_hash mismatch).
+    try testing.expect(!snapshot_mod.loadSnapshot(io, snap_path, "/a/totally/different/root", &exp2, &store, arena2.allocator()));
+    try testing.expectEqual(@as(usize, 0), exp2.outlines.count());
+}
+
 // DISABLED: telemetry test depends on tmpDir file IO which is flaky
 // test "issue-59: telemetry writes session, tool, and codebase stats ndjson" {
 //     var tmp = testing.tmpDir(.{});

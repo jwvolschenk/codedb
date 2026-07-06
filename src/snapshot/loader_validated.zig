@@ -7,6 +7,7 @@ const SymbolKind = explore_mod.SymbolKind;
 const Language = explore_mod.Language;
 const Store = @import("../store.zig").Store;
 const format = @import("format.zig");
+const root_resolve = @import("../root_resolve.zig");
 const loader_fast = @import("loader_fast.zig");
 const SectionId = format.SectionId;
 const readSectionBytes = format.readSectionBytes;
@@ -71,13 +72,17 @@ pub fn loadSnapshotValidated(
         }
     }
 
-    // Validate repo identity if requested (issue-41)
+    // Validate repo identity if requested (issue-41 / Task 4). The hash MUST
+    // be computed via root_resolve.cacheKey to match the writer (Task 2 wired
+    // writer.zig to the same function) — a bare Wyhash here would disagree on
+    // macOS/Windows where cacheKey case-folds.
     if (expected_root) |root| {
-        const expected_hash = std.hash.Wyhash.hash(0, root);
+        const expected_hash = root_resolve.cacheKey(root);
         if (meta_root_hash) |stored_hash| {
             if (stored_hash != expected_hash) return false;
         } else {
-            // No root_hash in snapshot — reject if caller requires validation
+            // No root_hash in snapshot — reject if caller requires validation.
+            // Legacy snapshots → one-time rescan, acceptable per #591 user decision.
             return false;
         }
     }
