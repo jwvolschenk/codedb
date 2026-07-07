@@ -141,7 +141,7 @@ pub fn processRssBytes() ?u64 {
             var pmc: PROCESS_MEMORY_COUNTERS = undefined;
             pmc.cb = @sizeOf(PROCESS_MEMORY_COUNTERS);
             const self = std.os.windows.GetCurrentProcess();
-            if (k32.K32GetProcessMemoryInfo(self, &pmc, pmc.cb) == 0) return null;
+            if (k32.K32GetProcessMemoryInfo(self, &pmc, pmc.cb) == .FALSE) return null;
             return pmc.WorkingSetSize;
         },
         else => return null,
