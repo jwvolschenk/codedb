@@ -15,6 +15,7 @@ const autumn_parser = @import("../autumn_parser.zig");
 const t4_parser = @import("../t4_parser.zig");
 const tsql_parser = @import("../tsql_parser.zig");
 const ssrs_parser = @import("../ssrs_parser.zig");
+const godot_parser = @import("../godot_parser.zig");
 const parse_utils = @import("parse_utils.zig");
 const skip_rules = @import("../watcher/skip_rules.zig");
 const startsWith = parse_utils.startsWith;
@@ -402,6 +403,13 @@ pub fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []co
     var c_brace_depth: u32 = 0;
     var in_razor_code_block: bool = false;
     var razor_brace_depth: u32 = 0;
+    var gd_state: godot_parser.GdState = .{};
+    var godot_project_section: godot_parser.ProjectSection = .none;
+    var gd_pending_decorators: std.ArrayList([]const u8) = .empty;
+    defer {
+        clearDecoratorList(parser.allocator, &gd_pending_decorators);
+        gd_pending_decorators.deinit(parser.allocator);
+    }
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
         line_num += 1;
@@ -708,6 +716,82 @@ pub fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []co
                     const structured = ssrs_parser.extractDetail(trimmed, sym.kind, &detail_buf);
                     const detail = if (structured.len > 0) structured else trimmed;
                     try appendOutlineSymbol(parser.allocator, &outline, sym.name, sk, line_num, detail);
+                },
+                .import => |imp| {
+                    try appendImportSymbol(parser.allocator, &outline, imp.path, line_num, trimmed);
+                },
+            }
+        } else if (outline.language == .gdscript) {
+            // preload()/load() references become dependency edges even when
+            // they appear on a declaration line (const X = preload(...)).
+            // Comments are stripped first so commented-out code adds no edges.
+            if (!gd_state.in_multiline_string) {
+                if (godot_parser.extractResPath(godot_parser.stripGdComment(trimmed))) |res_path| {
+                    try appendImportSymbol(parser.allocator, &outline, res_path, line_num, trimmed);
+                }
+            }
+            const result = godot_parser.parseGdLine(line, trimmed, &gd_state);
+            switch (result) {
+                .none => {},
+                .annotation => |ann| {
+                    const copy = try parser.allocator.dupe(u8, ann.name);
+                    errdefer parser.allocator.free(copy);
+                    try gd_pending_decorators.append(parser.allocator, copy);
+                },
+                .symbol => |sym| {
+                    const sk: SymbolKind = switch (sym.kind) {
+                        .class_name_decl, .inner_class => .class_def,
+                        .function_def => .function,
+                        .method_def => .method,
+                        .signal_decl => .constant,
+                        .variable_decl => .variable,
+                        .constant_decl => .constant,
+                        .enum_decl => .enum_def,
+                        else => unreachable, // scene/project kinds never come from parseGdLine
+                    };
+                    const before_count = outline.symbols.items.len;
+                    try appendOutlineSymbol(parser.allocator, &outline, sym.name, sk, line_num, trimmed);
+                    if (gd_pending_decorators.items.len > 0) {
+                        try attachDecoratorsToSymbols(parser.allocator, &outline, before_count, gd_pending_decorators.items);
+                        clearDecoratorList(parser.allocator, &gd_pending_decorators);
+                    }
+                },
+                .import => |imp| {
+                    try appendImportSymbol(parser.allocator, &outline, imp.path, line_num, trimmed);
+                },
+            }
+        } else if (outline.language == .godot_scene or outline.language == .godot_resource) {
+            const result = godot_parser.parseSceneLine(trimmed);
+            switch (result) {
+                .none => {},
+                .annotation => unreachable, // gdscript-only
+                .symbol => |sym| {
+                    const sk: SymbolKind = switch (sym.kind) {
+                        .node_def, .resource_def => .class_def,
+                        .connection => .variable,
+                        else => unreachable,
+                    };
+                    var detail_buf: [256]u8 = undefined;
+                    const structured = godot_parser.extractDetail(trimmed, sym.kind, &detail_buf);
+                    const detail = if (structured.len > 0) structured else trimmed;
+                    try appendOutlineSymbol(parser.allocator, &outline, sym.name, sk, line_num, detail);
+                },
+                .import => |imp| {
+                    try appendImportSymbol(parser.allocator, &outline, imp.path, line_num, trimmed);
+                },
+            }
+        } else if (outline.language == .godot_project) {
+            const result = godot_parser.parseProjectLine(trimmed, &godot_project_section);
+            switch (result) {
+                .none => {},
+                .annotation => unreachable, // gdscript-only
+                .symbol => |sym| {
+                    const sk: SymbolKind = switch (sym.kind) {
+                        .section_header => .type_alias,
+                        .input_action => .constant,
+                        else => unreachable,
+                    };
+                    try appendOutlineSymbol(parser.allocator, &outline, sym.name, sk, line_num, trimmed);
                 },
                 .import => |imp| {
                     try appendImportSymbol(parser.allocator, &outline, imp.path, line_num, trimmed);

@@ -2,6 +2,9 @@
 const std = @import("std");
 const testing = std.testing;
 const gp = @import("../../godot_parser.zig");
+const Explorer = @import("../../explore.zig").Explorer;
+const explore = @import("../../explore.zig");
+const SymbolKind = explore.SymbolKind;
 
 fn parseGd(line: []const u8, state: *gp.GdState) gp.ParsedLine {
     return gp.parseGdLine(line, std.mem.trim(u8, line, " \t"), state);
@@ -238,4 +241,142 @@ test "project.godot: malformed section header degrades to none" {
     var section: gp.ProjectSection = .none;
     try testing.expect(gp.parseProjectLine("[unclosed", &section) == .none);
     try testing.expect(gp.parseProjectLine("[]", &section) == .none);
+}
+
+fn findSymbol(outline: anytype, name: []const u8) ?explore.Symbol {
+    for (outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, name)) return sym;
+    }
+    return null;
+}
+
+fn hasImport(outline: anytype, path: []const u8) bool {
+    for (outline.imports.items) |imp| {
+        if (std.mem.eql(u8, imp, path)) return true;
+    }
+    return false;
+}
+
+test "e2e: .gd file yields outline symbols and imports" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("TowerManager.gd",
+        \\extends Node
+        \\## TowerManager — autoload singleton.
+        \\
+        \\const TowerScene = preload("res://tower/Tower.tscn")
+        \\
+        \\@export var default_tower_scene: PackedScene
+        \\var lane_count: int = 0
+        \\
+        \\signal tower_placed(tower: Node2D, lane_index: int)
+        \\
+        \\func place_tower(scene: PackedScene, lane_index: int) -> bool:
+        \\    return true
+        \\
+        \\static func reset() -> void:
+        \\    pass
+    );
+
+    const outline = explorer.outlines.get("TowerManager.gd").?;
+    try testing.expectEqual(explore.Language.gdscript, outline.language);
+
+    try testing.expectEqual(SymbolKind.function, findSymbol(outline, "place_tower").?.kind);
+    try testing.expectEqual(SymbolKind.function, findSymbol(outline, "reset").?.kind);
+    try testing.expectEqual(SymbolKind.constant, findSymbol(outline, "tower_placed").?.kind);
+    try testing.expectEqual(SymbolKind.variable, findSymbol(outline, "default_tower_scene").?.kind);
+    try testing.expectEqual(SymbolKind.constant, findSymbol(outline, "TowerScene").?.kind);
+
+    // signal detail carries the full signature (falls back to trimmed line)
+    const sig = findSymbol(outline, "tower_placed").?;
+    try testing.expect(std.mem.startsWith(u8, sig.detail.?, "signal tower_placed"));
+
+    try testing.expect(hasImport(outline, "Node")); // extends
+    try testing.expect(hasImport(outline, "tower/Tower.tscn")); // preload
+}
+
+test "e2e: .tscn yields node tree symbols and script/scene imports" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("Main.tscn",
+        \\[gd_scene format=3]
+        \\
+        \\[ext_resource type="Script" path="res://main.gd" id="ext_1"]
+        \\[ext_resource type="PackedScene" path="res://HUD.tscn" id="ext_4"]
+        \\
+        \\[node name="Main" type="Node2D" id="1"]
+        \\script = ExtResource("ext_1")
+        \\
+        \\[node name="TowerManager" type="Node" id="3" parent="1"]
+        \\
+        \\[connection signal="pressed" from="StartButton" to="." method="_on_start_pressed"]
+    );
+
+    const outline = explorer.outlines.get("Main.tscn").?;
+    try testing.expectEqual(explore.Language.godot_scene, outline.language);
+
+    try testing.expect(hasImport(outline, "main.gd"));
+    try testing.expect(hasImport(outline, "HUD.tscn"));
+
+    try testing.expectEqual(SymbolKind.class_def, findSymbol(outline, "Main").?.kind);
+    const tm = findSymbol(outline, "TowerManager").?;
+    try testing.expectEqualStrings("type=Node parent=1", tm.detail.?);
+
+    const conn = findSymbol(outline, "pressed").?;
+    try testing.expectEqual(SymbolKind.variable, conn.kind);
+    try testing.expectEqualStrings("from=StartButton to=. method=_on_start_pressed", conn.detail.?);
+}
+
+test "e2e: project.godot yields autoload imports and input actions" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("project.godot",
+        \\config_version=5
+        \\
+        \\[application]
+        \\config/name="Lunch Rush"
+        \\
+        \\[autoload]
+        \\GameState="*res://GameState.gd"
+        \\TowerManager="*res://TowerManager.gd"
+        \\
+        \\[input]
+        \\place_tower={
+        \\"deadzone": 0.5,
+        \\"events": []
+        \\}
+    );
+
+    const outline = explorer.outlines.get("project.godot").?;
+    try testing.expectEqual(explore.Language.godot_project, outline.language);
+
+    try testing.expect(hasImport(outline, "GameState.gd"));
+    try testing.expect(hasImport(outline, "TowerManager.gd"));
+    try testing.expectEqual(SymbolKind.constant, findSymbol(outline, "place_tower").?.kind);
+    try testing.expectEqual(SymbolKind.type_alias, findSymbol(outline, "autoload").?.kind);
+}
+
+test "e2e: standalone annotation attaches as decorator to next symbol" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("Net.gd",
+        \\extends Node
+        \\
+        \\@rpc("any_peer")
+        \\func fire_projectile(lane: int) -> void:
+        \\    pass
+    );
+
+    const outline = explorer.outlines.get("Net.gd").?;
+    const f = findSymbol(outline, "fire_projectile").?;
+    try testing.expectEqual(@as(usize, 1), f.decorators.len);
+    try testing.expectEqualStrings("@rpc", f.decorators[0]);
 }
