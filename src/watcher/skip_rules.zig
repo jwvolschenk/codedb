@@ -116,6 +116,8 @@ pub const skip_dirs = [_][]const u8{
     ".cabal-sandbox",
     ".cargo",
     "bower_components",
+    ".godot", // godot 4 editor cache (imported assets, shader cache)
+    ".import", // godot 3 import cache dir
 };
 
 pub fn eqlAsciiIgnoreCase(a: []const u8, b: []const u8) bool {
@@ -184,13 +186,13 @@ pub fn shouldSkipDir(name: []const u8) bool {
 }
 
 const skip_extensions = [_][]const u8{
-    ".png",     ".jpg",  ".jpeg", ".gif",  ".bmp",   ".ico",   ".icns",  ".webp",
-    ".svg",     ".ttf",  ".otf",  ".woff", ".woff2", ".eot",   ".zip",   ".tar",
-    ".gz",      ".bz2",  ".xz",   ".7z",   ".rar",   ".pdf",   ".doc",   ".docx",
-    ".xls",     ".xlsx", ".pptx", ".mp3",  ".mp4",   ".wav",   ".avi",   ".mov",
-    ".flv",     ".ogg",  ".webm", ".exe",  ".dll",   ".so",    ".dylib", ".o",
-    ".a",       ".lib",  ".wasm", ".pyc",  ".pyo",   ".class", ".db",    ".sqlite",
-    ".sqlite3", ".lock", ".sum",
+    ".png",     ".jpg",  ".jpeg", ".gif",  ".bmp",    ".ico",         ".icns",  ".webp",
+    ".svg",     ".ttf",  ".otf",  ".woff", ".woff2",  ".eot",         ".zip",   ".tar",
+    ".gz",      ".bz2",  ".xz",   ".7z",   ".rar",    ".pdf",         ".doc",   ".docx",
+    ".xls",     ".xlsx", ".pptx", ".mp3",  ".mp4",    ".wav",         ".avi",   ".mov",
+    ".flv",     ".ogg",  ".webm", ".exe",  ".dll",    ".so",          ".dylib", ".o",
+    ".a",       ".lib",  ".wasm", ".pyc",  ".pyo",    ".class",       ".db",    ".sqlite",
+    ".sqlite3", ".lock", ".sum",  ".uid",  ".import", ".translation",
 };
 
 /// Lockfile basenames — these are generated, binary-like, and pollute the word index.

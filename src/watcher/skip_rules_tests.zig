@@ -91,3 +91,21 @@ test "generatedSkipEvents increments only on generated paths" {
     const after = skip_rules.generatedSkipEvents();
     try testing.expect(after > before);
 }
+
+test "godot: cache dirs and sidecar files are skipped" {
+    // Godot 4 cache dir and Godot 3 import cache dir
+    try testing.expect(skip_rules.shouldSkipDir(".godot"));
+    try testing.expect(skip_rules.shouldSkipDir(".import"));
+    try testing.expect(skip_rules.shouldSkip("lunch-rush/.godot/imported/icon.png-abc.ctex"));
+
+    // Sidecar files: .uid (Godot 4.4+), .import (per-asset), compiled .translation
+    try testing.expect(skip_rules.shouldSkipFile("TowerManager.gd.uid"));
+    try testing.expect(skip_rules.shouldSkipFile("icon.svg.import"));
+    try testing.expect(skip_rules.shouldSkipFile("locale/en.translation"));
+
+    // Real Godot sources must NOT be skipped
+    try testing.expect(!skip_rules.shouldSkipFile("TowerManager.gd"));
+    try testing.expect(!skip_rules.shouldSkipFile("Main.tscn"));
+    try testing.expect(!skip_rules.shouldSkipFile("CardData.tres"));
+    try testing.expect(!skip_rules.shouldSkipFile("project.godot"));
+}
