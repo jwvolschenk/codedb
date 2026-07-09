@@ -68,6 +68,13 @@ test "gdscript: var, const, enum" {
     try testing.expectEqual(gp.Kind.enum_decl, e.symbol.kind);
 }
 
+test "gdscript: static var is still a variable declaration" {
+    var st: gp.GdState = .{};
+    const r = parseGd("static var counter: int = 0", &st);
+    try testing.expectEqualStrings("counter", r.symbol.name);
+    try testing.expectEqual(gp.Kind.variable_decl, r.symbol.kind);
+}
+
 test "gdscript: inline annotation still yields the declaration" {
     var st: gp.GdState = .{};
     const r = parseGd("@export var default_tower_scene: PackedScene", &st);

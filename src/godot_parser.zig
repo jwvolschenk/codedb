@@ -105,20 +105,20 @@ fn parseGdDecl(line: []const u8, indent: usize, state: *GdState) ParsedLine {
             .function_def;
         return .{ .symbol = .{ .name = name, .kind = kind } };
     }
-    if (std.mem.startsWith(u8, line, "signal ")) {
-        const name = extractIdent(line["signal ".len..]) orelse return .none;
+    if (std.mem.startsWith(u8, rest, "signal ")) {
+        const name = extractIdent(rest["signal ".len..]) orelse return .none;
         return .{ .symbol = .{ .name = name, .kind = .signal_decl } };
     }
-    if (std.mem.startsWith(u8, line, "var ")) {
-        const name = extractIdent(line["var ".len..]) orelse return .none;
+    if (std.mem.startsWith(u8, rest, "var ")) {
+        const name = extractIdent(rest["var ".len..]) orelse return .none;
         return .{ .symbol = .{ .name = name, .kind = .variable_decl } };
     }
-    if (std.mem.startsWith(u8, line, "const ")) {
-        const name = extractIdent(line["const ".len..]) orelse return .none;
+    if (std.mem.startsWith(u8, rest, "const ")) {
+        const name = extractIdent(rest["const ".len..]) orelse return .none;
         return .{ .symbol = .{ .name = name, .kind = .constant_decl } };
     }
-    if (std.mem.startsWith(u8, line, "enum ")) {
-        const name = extractIdent(line["enum ".len..]) orelse "enum";
+    if (std.mem.startsWith(u8, rest, "enum ")) {
+        const name = extractIdent(rest["enum ".len..]) orelse "enum";
         return .{ .symbol = .{ .name = name, .kind = .enum_decl } };
     }
     return .none;
