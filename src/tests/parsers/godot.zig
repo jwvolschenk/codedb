@@ -158,3 +158,84 @@ test "gdscript: stripGdComment respects strings; commented-out preload yields no
     // dispatch) so commented-out preloads don't become dependency edges.
     try testing.expect(gp.extractResPath(gp.stripGdComment("# preload(\"res://x.gd\")")) == null);
 }
+
+test "scene: ext_resource becomes a project-relative import" {
+    const r = gp.parseSceneLine("[ext_resource type=\"Script\" path=\"res://TowerManager.gd\" id=\"ext_12\"]");
+    try testing.expectEqualStrings("TowerManager.gd", r.import.path);
+}
+
+test "scene: node with type and parent" {
+    const r = gp.parseSceneLine("[node name=\"Main\" type=\"Node2D\" id=\"1\"]");
+    try testing.expectEqualStrings("Main", r.symbol.name);
+    try testing.expectEqual(gp.Kind.node_def, r.symbol.kind);
+
+    var buf: [256]u8 = undefined;
+    const detail = gp.extractDetail("[node name=\"HUD\" type=\"CanvasLayer\" parent=\"1\"]", .node_def, &buf);
+    try testing.expectEqualStrings("type=CanvasLayer parent=1", detail);
+}
+
+test "scene: connection captures signal wiring" {
+    const line = "[connection signal=\"pressed\" from=\"StartButton\" to=\".\" method=\"_on_start_pressed\"]";
+    const r = gp.parseSceneLine(line);
+    try testing.expectEqualStrings("pressed", r.symbol.name);
+    try testing.expectEqual(gp.Kind.connection, r.symbol.kind);
+
+    var buf: [256]u8 = undefined;
+    const detail = gp.extractDetail(line, .connection, &buf);
+    try testing.expectEqualStrings("from=StartButton to=. method=_on_start_pressed", detail);
+}
+
+test "scene: gd_resource script_class, sub_resource ignored" {
+    const r = gp.parseSceneLine("[gd_resource type=\"Resource\" script_class=\"CardData\" format=3]");
+    try testing.expectEqualStrings("CardData", r.symbol.name);
+    try testing.expectEqual(gp.Kind.resource_def, r.symbol.kind);
+
+    try testing.expect(gp.parseSceneLine("[sub_resource type=\"RectangleShape2D\" id=\"rect_1\"]") == .none);
+    try testing.expect(gp.parseSceneLine("[gd_scene format=3]") == .none);
+    try testing.expect(gp.parseSceneLine("position = Vector2(100, 200)") == .none);
+}
+
+test "scene: malformed lines degrade to none" {
+    try testing.expect(gp.parseSceneLine("[node name=\"Unterminated") == .none);
+    try testing.expect(gp.parseSceneLine("[ext_resource type=\"Script\"]") == .none); // no path
+    try testing.expect(gp.parseSceneLine("[") == .none);
+}
+
+test "scene: escaped quote inside node name" {
+    const r = gp.parseSceneLine("[node name=\"He said \\\"hi\\\"\" type=\"Label\"]");
+    try testing.expectEqualStrings("He said \\\"hi\\\"", r.symbol.name);
+}
+
+test "scene: attribute name is matched on word boundary" {
+    // "signal" must not match inside a hypothetical attr ending in ...signal
+    const r = gp.parseSceneLine("[connection my_signal=\"nope\" signal=\"hit\" from=\"A\" to=\"B\" method=\"m\"]");
+    try testing.expectEqualStrings("hit", r.symbol.name);
+}
+
+test "project.godot: autoloads become imports, input actions become symbols" {
+    var section: gp.ProjectSection = .none;
+
+    const hdr = gp.parseProjectLine("[autoload]", &section);
+    try testing.expectEqualStrings("autoload", hdr.symbol.name);
+    try testing.expectEqual(gp.Kind.section_header, hdr.symbol.kind);
+
+    const al = gp.parseProjectLine("GameState=\"*res://GameState.gd\"", &section);
+    try testing.expectEqualStrings("GameState.gd", al.import.path);
+
+    _ = gp.parseProjectLine("[input]", &section);
+    const act = gp.parseProjectLine("place_tower={", &section);
+    try testing.expectEqualStrings("place_tower", act.symbol.name);
+    try testing.expectEqual(gp.Kind.input_action, act.symbol.kind);
+
+    // continuation lines inside the action block are not symbols
+    try testing.expect(gp.parseProjectLine("\"deadzone\": 0.5,", &section) == .none);
+
+    _ = gp.parseProjectLine("[application]", &section);
+    try testing.expect(gp.parseProjectLine("config/name=\"Lunch Rush\"", &section) == .none);
+}
+
+test "project.godot: malformed section header degrades to none" {
+    var section: gp.ProjectSection = .none;
+    try testing.expect(gp.parseProjectLine("[unclosed", &section) == .none);
+    try testing.expect(gp.parseProjectLine("[]", &section) == .none);
+}

@@ -233,3 +233,130 @@ fn stripResPrefix(path: []const u8) []const u8 {
     if (std.mem.startsWith(u8, p, "res://")) return p["res://".len..];
     return p;
 }
+
+// ── Scenes (.tscn) and resources (.tres) ───────────────────────────────────
+// Godot's text formats are INI-like: [section key="value" ...] headers
+// followed by key = value property lines. Only headers carry cross-file
+// signal; property lines are ignored.
+
+pub fn parseSceneLine(trimmed: []const u8) ParsedLine {
+    if (trimmed.len == 0 or trimmed[0] != '[') return .none;
+    if (std.mem.startsWith(u8, trimmed, "[ext_resource")) {
+        const path = extractQuotedAttr(trimmed, "path") orelse return .none;
+        return .{ .import = .{ .path = stripResPrefix(path) } };
+    }
+    if (std.mem.startsWith(u8, trimmed, "[node ")) {
+        const name = extractQuotedAttr(trimmed, "name") orelse return .none;
+        return .{ .symbol = .{ .name = name, .kind = .node_def } };
+    }
+    if (std.mem.startsWith(u8, trimmed, "[connection ")) {
+        const sig = extractQuotedAttr(trimmed, "signal") orelse return .none;
+        return .{ .symbol = .{ .name = sig, .kind = .connection } };
+    }
+    if (std.mem.startsWith(u8, trimmed, "[gd_resource")) {
+        const cls = extractQuotedAttr(trimmed, "script_class") orelse return .none;
+        return .{ .symbol = .{ .name = cls, .kind = .resource_def } };
+    }
+    return .none; // [gd_scene], [sub_resource], [resource], [editable ...]
+}
+
+// ── project.godot ──────────────────────────────────────────────────────────
+
+pub fn parseProjectLine(trimmed: []const u8, section: *ProjectSection) ParsedLine {
+    if (trimmed.len == 0) return .none;
+    if (trimmed[0] == '[') {
+        const end = std.mem.indexOfScalar(u8, trimmed, ']') orelse return .none;
+        const name = trimmed[1..end];
+        if (name.len == 0) return .none;
+        section.* = if (std.mem.eql(u8, name, "autoload"))
+            .autoload
+        else if (std.mem.eql(u8, name, "input"))
+            .input
+        else
+            .other;
+        return .{ .symbol = .{ .name = name, .kind = .section_header } };
+    }
+    switch (section.*) {
+        .autoload => {
+            // GameState="*res://GameState.gd" — the '*' marks an autoload node
+            const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse return .none;
+            const value = std.mem.trim(u8, trimmed[eq + 1 ..], " \t");
+            if (value.len < 2 or value[0] != '"') return .none;
+            const inner = value[1..];
+            const close = std.mem.indexOfScalar(u8, inner, '"') orelse return .none;
+            return .{ .import = .{ .path = stripResPrefix(inner[0..close]) } };
+        },
+        .input => {
+            // place_tower={ "deadzone": 0.5, ... } — only the key line matters
+            const brace = std.mem.indexOf(u8, trimmed, "={") orelse return .none;
+            const key = std.mem.trim(u8, trimmed[0..brace], " \t");
+            const name = extractIdent(key) orelse return .none;
+            if (name.len != key.len) return .none; // reject e.g. quoted keys
+            return .{ .symbol = .{ .name = name, .kind = .input_action } };
+        },
+        .none, .other => return .none,
+    }
+}
+
+// ── Detail extraction ──────────────────────────────────────────────────────
+
+/// Structured detail for scene symbols. Returns "" for kinds whose detail is
+/// just the source line (callers fall back to the trimmed line).
+pub fn extractDetail(line: []const u8, kind: Kind, buf: []u8) []const u8 {
+    switch (kind) {
+        .node_def => {
+            var len: usize = 0;
+            len = appendAttrDetail(line, "type", "type=", buf, len);
+            len = appendAttrDetail(line, "parent", if (len == 0) "parent=" else " parent=", buf, len);
+            return buf[0..len];
+        },
+        .connection => {
+            var len: usize = 0;
+            len = appendAttrDetail(line, "from", "from=", buf, len);
+            len = appendAttrDetail(line, "to", if (len == 0) "to=" else " to=", buf, len);
+            len = appendAttrDetail(line, "method", if (len == 0) "method=" else " method=", buf, len);
+            return buf[0..len];
+        },
+        else => return "",
+    }
+}
+
+fn appendAttrDetail(line: []const u8, attr: []const u8, prefix: []const u8, buf: []u8, len_in: usize) usize {
+    var len = len_in;
+    const val = extractQuotedAttr(line, attr) orelse return len;
+    if (len + prefix.len + val.len > buf.len) return len;
+    @memcpy(buf[len .. len + prefix.len], prefix);
+    len += prefix.len;
+    @memcpy(buf[len .. len + val.len], val);
+    len += val.len;
+    return len;
+}
+
+/// Extract attr="value" from a section header, respecting escaped quotes and
+/// requiring a word boundary before the attribute name (so `signal=` does not
+/// match inside `my_signal=`). Returns null on missing or unterminated value.
+fn extractQuotedAttr(line: []const u8, attr: []const u8) ?[]const u8 {
+    var needle_buf: [64]u8 = undefined;
+    if (attr.len + 2 > needle_buf.len) return null;
+    @memcpy(needle_buf[0..attr.len], attr);
+    needle_buf[attr.len] = '=';
+    needle_buf[attr.len + 1] = '"';
+    const needle = needle_buf[0 .. attr.len + 2];
+
+    var search_from: usize = 0;
+    const start = blk: while (std.mem.indexOfPos(u8, line, search_from, needle)) |pos| {
+        if (pos == 0 or line[pos - 1] == ' ' or line[pos - 1] == '[') break :blk pos;
+        search_from = pos + 1;
+    } else return null;
+
+    const vstart = start + needle.len;
+    var i = vstart;
+    while (i < line.len) : (i += 1) {
+        if (line[i] == '\\') {
+            i += 1; // skip escaped char
+        } else if (line[i] == '"') {
+            return line[vstart..i];
+        }
+    }
+    return null; // unterminated value
+}
