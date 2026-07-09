@@ -128,6 +128,10 @@ pub const Language = enum(u8) {
     ssrs_dataset,
     ssrs_datasource,
     ssrs_project,
+    gdscript,
+    godot_scene,
+    godot_resource,
+    godot_project,
 };
 
 pub fn detectLanguage(path: []const u8) Language {
@@ -178,6 +182,10 @@ pub fn detectLanguage(path: []const u8) Language {
     if (std.mem.endsWith(u8, path, ".rsd")) return .ssrs_dataset;
     if (std.mem.endsWith(u8, path, ".rds")) return .ssrs_datasource;
     if (std.mem.endsWith(u8, path, ".rptproj")) return .ssrs_project;
+    if (std.mem.endsWith(u8, path, ".gd")) return .gdscript;
+    if (std.mem.endsWith(u8, path, ".tscn")) return .godot_scene;
+    if (std.mem.endsWith(u8, path, ".tres")) return .godot_resource;
+    if (std.mem.endsWith(u8, path, "project.godot")) return .godot_project;
     return .unknown;
 }
 

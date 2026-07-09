@@ -621,6 +621,11 @@ test "detectLanguage: all supported extensions" {
     try testing.expect(explore.detectLanguage("Page.razor") == .razor);
     try testing.expect(explore.detectLanguage("Model.tt") == .t4_template);
     try testing.expect(explore.detectLanguage("CodeGen.t4") == .t4_template);
+    try testing.expect(explore.detectLanguage("Player.gd") == .gdscript);
+    try testing.expect(explore.detectLanguage("Main.tscn") == .godot_scene);
+    try testing.expect(explore.detectLanguage("CardData.tres") == .godot_resource);
+    try testing.expect(explore.detectLanguage("project.godot") == .godot_project);
+    try testing.expect(explore.detectLanguage("games/lunch-rush/project.godot") == .godot_project);
     try testing.expect(explore.detectLanguage("Makefile") == .unknown);
     try testing.expect(explore.detectLanguage("no_ext") == .unknown);
 }
