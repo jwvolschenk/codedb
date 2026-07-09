@@ -22,6 +22,7 @@ comptime {
     _ = @import("tests/parsers/misc.zig");
     _ = @import("tests/parsers/php.zig");
     _ = @import("tests/parsers/tsql.zig");
+    _ = @import("tests/parsers/godot.zig");
     _ = @import("tests/regex.zig");
     _ = @import("tests/regressions.zig");
     _ = @import("tests/regressions_extra.zig");
