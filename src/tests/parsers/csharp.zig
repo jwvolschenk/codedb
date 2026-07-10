@@ -130,6 +130,7 @@ test "csharp parser: outlines modern declarations and member shapes" {
         \\
         \\[Obsolete] public partial record class Customer<T>(T Value);
         \\public readonly record struct Money(decimal Amount);
+        \\public class Widget(string name, int count) { }
         \\public interface IRepository<T> { }
         \\public interface IQualifiedContracts
         \\{
@@ -180,6 +181,7 @@ test "csharp parser: outlines modern declarations and member shapes" {
     try expectOutlineSymbol(&outline, "Demo.Core", .type_alias);
     try expectOutlineSymbol(&outline, "Customer", .class_def);
     try expectOutlineSymbol(&outline, "Money", .struct_def);
+    try expectOutlineSymbol(&outline, "Widget", .class_def);
     try expectOutlineSymbol(&outline, "IRepository", .interface_def);
     try expectOutlineSymbol(&outline, "IQualifiedContracts", .interface_def);
     try expectOutlineSymbol(&outline, "IExplicitWorker", .interface_def);
@@ -199,8 +201,9 @@ test "csharp parser: outlines modern declarations and member shapes" {
     try expectOutlineSymbol(&outline, "ExecuteExplicitAsync", .method);
     try expectOutlineSymbol(&outline, "operator int", .method);
     // The indexer `public string this[int index]` surfaces as a member named
-    // "this"; the parameter name `index` must never leak as its own symbol.
-    try expectOutlineSymbol(&outline, "this", .variable);
+    // "this[]" (the conventional indexer display name); the parameter name
+    // `index` must never leak as its own symbol.
+    try expectOutlineSymbol(&outline, "this[]", .variable);
 
     var found_service_class = false;
     for (outline.symbols.items) |sym| {
@@ -211,13 +214,40 @@ test "csharp parser: outlines modern declarations and member shapes" {
         }
         // Indexer: return type extracted from the prefix before `this`, and the
         // `[int index]` parameter list yields a single `int` param type.
-        if (std.mem.eql(u8, sym.name, "this") and sym.kind == .variable) {
+        if (std.mem.eql(u8, sym.name, "this[]") and sym.kind == .variable) {
             try testing.expectEqualStrings("string", sym.return_type.?);
             try testing.expectEqual(@as(usize, 1), sym.param_types.len);
             try testing.expectEqualStrings("int", sym.param_types[0]);
         }
     }
     try testing.expect(found_service_class);
+
+    // Primary constructors: positional params are captured on the type symbol's
+    // param_types (record/struct/class forms alike).
+    var found_customer_params = false;
+    var found_money_params = false;
+    var found_widget_params = false;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .class_def and std.mem.eql(u8, sym.name, "Customer")) {
+            try testing.expectEqual(@as(usize, 1), sym.param_types.len);
+            try testing.expectEqualStrings("T", sym.param_types[0]);
+            found_customer_params = true;
+        }
+        if (sym.kind == .struct_def and std.mem.eql(u8, sym.name, "Money")) {
+            try testing.expectEqual(@as(usize, 1), sym.param_types.len);
+            try testing.expectEqualStrings("decimal", sym.param_types[0]);
+            found_money_params = true;
+        }
+        if (sym.kind == .class_def and std.mem.eql(u8, sym.name, "Widget")) {
+            try testing.expectEqual(@as(usize, 2), sym.param_types.len);
+            try testing.expectEqualStrings("string", sym.param_types[0]);
+            try testing.expectEqualStrings("int", sym.param_types[1]);
+            found_widget_params = true;
+        }
+    }
+    try testing.expect(found_customer_params);
+    try testing.expect(found_money_params);
+    try testing.expect(found_widget_params);
 }
 
 test "csharp parser: direct line parsing handles raw strings and operator detail" {
@@ -351,6 +381,189 @@ test "csharp parser: object instantiation is not misclassified as a method" {
         },
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "csharp parser: tuple-return method signatures" {
+    // `(string, int) Parse(string input)` was misparsed before: the return-type
+    // `(` was mistaken for the parameter list, yielding a method named "int"
+    // with garbage return_type and no params.
+    switch (csharp_parser.parseLine("public (string, int) Parse(string input) { }")) {
+        .symbol => |sym| {
+            try testing.expectEqual(csharp_parser.Kind.method, sym.kind);
+            try testing.expectEqualStrings("Parse", sym.name);
+            try testing.expect(sym.return_type != null);
+            try testing.expectEqualStrings("(string, int)", sym.return_type.?);
+            try testing.expectEqual(@as(usize, 1), sym.param_types.len);
+            try testing.expectEqualStrings("string", sym.param_types.buf[0]);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    // Named tuple elements in the return type.
+    switch (csharp_parser.parseLine("public (string Name, int Count) GetMetrics() { }")) {
+        .symbol => |sym| {
+            try testing.expectEqual(csharp_parser.Kind.method, sym.kind);
+            try testing.expectEqualStrings("GetMetrics", sym.name);
+            try testing.expect(sym.return_type != null);
+            try testing.expectEqualStrings("(string Name, int Count)", sym.return_type.?);
+            try testing.expectEqual(@as(usize, 0), sym.param_types.len);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    // Generic tuple return: `findMatchingParen` ignores `<`/`>`, so the tuple's
+    // `)` is found correctly and the real param list is used.
+    switch (csharp_parser.parseLine("public (IEnumerable<T> a, int b) Split<T>(List<T> source) { }")) {
+        .symbol => |sym| {
+            try testing.expectEqual(csharp_parser.Kind.method, sym.kind);
+            try testing.expectEqualStrings("Split", sym.name);
+            try testing.expect(sym.return_type != null);
+            try testing.expectEqualStrings("(IEnumerable<T> a, int b)", sym.return_type.?);
+            try testing.expectEqual(@as(usize, 1), sym.param_types.len);
+            try testing.expectEqualStrings("List<T>", sym.param_types.buf[0]);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    // A cast `(MyType) foo` must NOT be mistaken for a tuple-return method: the
+    // identifier after `)` is not followed by `(`.
+    switch (csharp_parser.parseLine("    var x = (int) value;")) {
+        .none => {},
+        .symbol, .import => return error.TestUnexpectedResult,
+    }
+}
+
+test "csharp parser: preprocessor directive classification" {
+    // Leaf-level classifier (no lifecycle scope state).
+    try testing.expectEqual(csharp_parser.PreprocessorKind.conditional_if, csharp_parser.preprocessorDirective("#if DEBUG").?);
+    try testing.expectEqual(csharp_parser.PreprocessorKind.conditional_if, csharp_parser.preprocessorDirective("  #ifdef LINUX").?);
+    try testing.expectEqual(csharp_parser.PreprocessorKind.conditional_if, csharp_parser.preprocessorDirective("\t# ifndef X").?);
+    try testing.expectEqual(csharp_parser.PreprocessorKind.conditional_endif, csharp_parser.preprocessorDirective("#endif").?);
+    try testing.expectEqual(csharp_parser.PreprocessorKind.conditional_else, csharp_parser.preprocessorDirective("#else").?);
+    try testing.expectEqual(csharp_parser.PreprocessorKind.conditional_elif, csharp_parser.preprocessorDirective("#elif RELEASE").?);
+    try testing.expectEqual(csharp_parser.PreprocessorKind.other, csharp_parser.preprocessorDirective("#region Setup").?);
+    try testing.expectEqual(csharp_parser.PreprocessorKind.other, csharp_parser.preprocessorDirective("#endregion").?);
+    // Word boundary: `#define` is `.other`, not matched by `#if`/`#ifdef`.
+    try testing.expectEqual(csharp_parser.PreprocessorKind.other, csharp_parser.preprocessorDirective("#define TRACE").?);
+    // Non-directive lines return null.
+    try testing.expect(csharp_parser.preprocessorDirective("public class C { }") == null);
+    try testing.expect(csharp_parser.preprocessorDirective("") == null);
+}
+
+test "csharp parser: preprocessor brace reconciliation keeps scope intact" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    // Brace-imbalanced conditional: the `{` opens in `#if DEBUG`, its matching
+    // `}` is in `#else`. Without reconciliation the brace depth stays elevated
+    // for the rest of the file, corrupting scope attribution for `Later`.
+    try explorer.indexFile("src/Cond.cs",
+        \\public class Cond
+        \\{
+        \\#if DEBUG
+        \\    public string DebugField = "x";
+        \\    public void OnlyDebug()
+        \\    {
+        \\#else
+        \\    }
+        \\#endif
+        \\    public void Later() { }
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("src/Cond.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    // The conditional body is over-included by design (search benefits), but
+    // the class must close correctly and `Later` must still parse as a method.
+    var found_class = false;
+    var found_later = false;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .class_def and std.mem.eql(u8, sym.name, "Cond")) {
+            found_class = true;
+            // The class span must end on the final `}`, not run off the file.
+            try testing.expect(sym.line_end > sym.line_start);
+        }
+        if (sym.kind == .method and std.mem.eql(u8, sym.name, "Later")) {
+            found_later = true;
+        }
+    }
+    try testing.expect(found_class);
+    try testing.expect(found_later);
+}
+
+test "csharp parser: unconditional inclusion indexes conditional class" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    // A type declared inside a conditional region is still indexed (over-include
+    // by design — we cannot evaluate `<DefineConstants>`).
+    try explorer.indexFile("src/Platform.cs",
+        \\#if ANDROID
+        \\public class AndroidHandler { }
+        \\#else
+        \\public class DefaultHandler { }
+        \\#endif
+        \\public class Shared { }
+    );
+
+    var outline = (try explorer.getOutline("src/Platform.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    try expectOutlineSymbol(&outline, "AndroidHandler", .class_def);
+    try expectOutlineSymbol(&outline, "DefaultHandler", .class_def);
+    try expectOutlineSymbol(&outline, "Shared", .class_def);
+}
+
+test "csharp parser: unterminated #if does not crash" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    // File ends inside an open `#if` with no matching `#endif`. Must not crash
+    // or hang; the body is indexed as ordinary code.
+    try explorer.indexFile("src/Open.cs",
+        \\public class Outer
+        \\{
+        \\#if DEBUG
+        \\    public void DebugOnly() { }
+        \\    public string Tail;
+    );
+
+    var outline = (try explorer.getOutline("src/Open.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    try expectOutlineSymbol(&outline, "Outer", .class_def);
+    try expectOutlineSymbol(&outline, "DebugOnly", .method);
+}
+
+test "csharp parser: region directives are no-ops" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    try explorer.indexFile("src/Reg.cs",
+        \\public class Reg
+        \\{
+        \\#region Props
+        \\    public string Name { get; set; }
+        \\#endregion
+        \\    public int Count { get; set; }
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("src/Reg.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    try expectOutlineSymbol(&outline, "Reg", .class_def);
+    try expectOutlineSymbol(&outline, "Name", .variable);
+    try expectOutlineSymbol(&outline, "Count", .variable);
 }
 
 test "csharp parser: captures attributes on following symbols" {

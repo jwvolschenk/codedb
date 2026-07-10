@@ -407,6 +407,14 @@ pub fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []co
     var csharp_type_depths: [32]i32 = undefined;
     var csharp_type_depth_count: usize = 0;
     var csharp_type_pending = false;
+    // Preprocessor-conditional brace reconciliation: a snapshot of the C# scope
+    // state is pushed on every `#if*` and popped (with brace-depth clamping) on
+    // `#endif`. This neutralizes drift from brace-imbalanced conditional pairs
+    // (e.g. an opening `{` in `#if DEBUG` whose `}` lives in `#else`). See the
+    // `PreprocessorKind` classifier in `csharp_parser.zig`.
+    const CSharpPpSnapshot = struct { brace_depth: i32, type_depth_count: usize, enum_depth: ?i32 };
+    var csharp_pp_stack: [32]CSharpPpSnapshot = undefined;
+    var csharp_pp_depth: usize = 0;
     var in_go_import_block = false;
     var c_brace_depth: u32 = 0;
     var in_razor_code_block: bool = false;
@@ -610,6 +618,40 @@ pub fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []co
                 if (std.mem.indexOf(u8, after_open, "*/") == null) in_block_comment = true;
                 trimmed = std.mem.trimEnd(u8, trimmed[0..comment_start], " \t");
                 if (trimmed.len == 0) continue;
+            }
+            // Preprocessor directives are brace-neutral and never carry
+            // attributes/decorators: classify and short-circuit before the
+            // symbol/brace machinery. `#if*` snapshots the scope state; `#endif`
+            // pops it and clamps brace depth back to neutralize drift from
+            // brace-imbalanced conditional pairs.
+            if (csharp_parser.preprocessorDirective(trimmed)) |directive| {
+                switch (directive) {
+                    .conditional_if => {
+                        if (csharp_pp_depth < csharp_pp_stack.len) {
+                            csharp_pp_stack[csharp_pp_depth] = .{
+                                .brace_depth = csharp_brace_depth,
+                                .type_depth_count = csharp_type_depth_count,
+                                .enum_depth = csharp_enum_depth,
+                            };
+                            csharp_pp_depth += 1;
+                        }
+                    },
+                    .conditional_endif => {
+                        if (csharp_pp_depth > 0) {
+                            csharp_pp_depth -= 1;
+                            const snap = csharp_pp_stack[csharp_pp_depth];
+                            // Clamp brace depth back to the snapshot. Only brace
+                            // depth is restored: resetting type/enum stacks fully
+                            // risks hiding genuinely structural braces that happen
+                            // to live inside a conditional region.
+                            if (csharp_brace_depth > snap.brace_depth) {
+                                csharp_brace_depth = snap.brace_depth;
+                            }
+                        }
+                    },
+                    .conditional_else, .conditional_elif, .other => {},
+                }
+                continue;
             }
             try collectCSharpDecorators(parser.allocator, trimmed, &csharp_pending_decorators);
             if (csharp_parser.stripAttributeLine(trimmed, &in_csharp_attribute_block)) |after_attrs| {

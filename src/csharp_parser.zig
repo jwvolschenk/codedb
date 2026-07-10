@@ -244,6 +244,60 @@ pub fn rawStringDelimiterLength(line: []const u8, quote_index: usize) ?usize {
     return count;
 }
 
+/// Classification of a C# preprocessor directive line (`#if`, `#endif`, …).
+/// A preprocessor directive is the first non-whitespace token on the line and
+/// cannot appear inside a string, so a plain `trimStart`+token match suffices
+/// (no string-aware scanner needed).
+pub const PreprocessorKind = enum {
+    conditional_if,
+    conditional_endif,
+    conditional_else,
+    conditional_elif,
+    other,
+};
+
+/// Classify a C# line's preprocessor directive, or return null when the line is
+/// not a directive. Matches whole directive tokens with a word boundary so
+/// `#if` does not swallow `#ifdef`/`#ifndef`.
+pub fn preprocessorDirective(line: []const u8) ?PreprocessorKind {
+    const trimmed = std.mem.trimStart(u8, line, " \t");
+    if (trimmed.len == 0 or trimmed[0] != '#') return null;
+    // Skip the `#` and any whitespace between it and the directive word.
+    var i: usize = 1;
+    while (i < trimmed.len and (trimmed[i] == ' ' or trimmed[i] == '\t')) i += 1;
+    const word = trimmed[i..];
+
+    // Longer tokens first so `#if` doesn't match `#ifdef`/`#ifndef`.
+    if (matchDirectiveWord(word, "ifdef") or matchDirectiveWord(word, "ifndef")) return .conditional_if;
+    if (matchDirectiveWord(word, "if")) return .conditional_if;
+    if (matchDirectiveWord(word, "endif")) return .conditional_endif;
+    if (matchDirectiveWord(word, "else")) return .conditional_else;
+    if (matchDirectiveWord(word, "elif")) return .conditional_elif;
+    // Anything else starting with `#` (`#region`, `#endregion`, `#define`,
+    // `#undef`, `#pragma`, `#nullable`, `#line`, …) is brace-neutral.
+    if (matchDirectiveWord(word, "region") or matchDirectiveWord(word, "endregion") or
+        matchDirectiveWord(word, "define") or matchDirectiveWord(word, "undef") or
+        matchDirectiveWord(word, "pragma") or matchDirectiveWord(word, "nullable") or
+        matchDirectiveWord(word, "line") or matchDirectiveWord(word, "error") or
+        matchDirectiveWord(word, "warning") or matchDirectiveWord(word, "checksum"))
+    {
+        return .other;
+    }
+    // Unknown `#...` token: treat as a benign directive rather than code.
+    return .other;
+}
+
+/// True when `s` starts with `word` followed by a non-identifier boundary
+/// (end-of-line, whitespace, or a non-ident char). Ensures `#if` doesn't match
+/// `#ifdef` and `#define` doesn't match `#defined`.
+fn matchDirectiveWord(s: []const u8, word: []const u8) bool {
+    if (!std.mem.startsWith(u8, s, word)) return false;
+    if (s.len == word.len) return true;
+    const next = s[word.len];
+    return next == ' ' or next == '\t' or next == '\r' or
+        !(std.ascii.isAlphanumeric(next) or next == '_');
+}
+
 pub fn updateRawStringState(line: []const u8, raw_quote_count: *usize) void {
     var quote: u8 = 0;
     var verbatim = false;
@@ -468,10 +522,43 @@ fn extractTypeDeclaration(line: []const u8) ?Symbol {
     };
     for (patterns) |pattern| {
         if (extractTypeNameAfterKeyword(line, pattern.keyword)) |name| {
+            // Detect a primary constructor: `Type(params)` or `Type<Gen>(params)`.
+            // The optional `<...>` generic suffix and the `(` must be the next
+            // non-whitespace tokens after the name (before any ` : ` base list).
+            if (extractPrimaryCtorParams(line, name)) |params| {
+                return .{ .name = name, .kind = pattern.kind, .param_types = params };
+            }
             return .{ .name = name, .kind = pattern.kind };
         }
     }
     return null;
+}
+
+/// For a type `name` (a sub-slice of `line`), detect a single-line primary
+/// constructor and return its param types. Returns null when there is no
+/// primary-constructor `(` immediately after the name (and its optional
+/// balanced `<...>` generic suffix). Multiline param lists are out of scope.
+fn extractPrimaryCtorParams(line: []const u8, name: []const u8) ?ParamTypesResult {
+    // `name` is a sub-slice of `line`; recover its end offset.
+    const name_ptr = @intFromPtr(name.ptr);
+    const line_ptr = @intFromPtr(line.ptr);
+    if (name_ptr < line_ptr or name_ptr + name.len > line_ptr + line.len) return null;
+    var i = (name_ptr - line_ptr) + name.len;
+
+    // Skip optional whitespace + a balanced `<...>` generic-argument list.
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    if (i < line.len and line[i] == '<') {
+        const angle_close = matchBracket(line, i, '<', '>') orelse return null;
+        i = angle_close + 1;
+        while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    }
+
+    // The primary-constructor `(` must be the next non-whitespace token after
+    // the name/generic suffix. This rejects base lists and anything else.
+    if (i >= line.len or line[i] != '(') return null;
+    const open = i;
+    const close = findMatchingParen(line, open) orelse return null;
+    return extractParamTypesFromSlice(line[open + 1 .. close]);
 }
 
 fn extractTypeNameAfterKeyword(line: []const u8, keyword: []const u8) ?[]const u8 {
@@ -526,7 +613,11 @@ fn extractMethodSignature(line: []const u8) ?Symbol {
         "fixed ", "fixed(",
     })) return null;
     if (containsAny(line, &.{ " class ", " interface ", " enum ", " struct ", " record ", " delegate " })) return null;
-    const open = findSignatureOpen(line) orelse return null;
+    const first_open = findSignatureOpen(line) orelse return null;
+    // Tuple-return methods (`public (string, int) Parse(string input)`) have
+    // their return type as the *first* `(`. Detect that and use the real
+    // parameter-list `(` instead. Falls through unchanged for normal methods.
+    const open = tupleReturnRealSignatureOpen(line, first_open) orelse first_open;
     // Assignments and initializers can contain arbitrarily declaration-looking
     // nested calls/casts. The only valid callable declaration with `=` before
     // its parameter list is an equality/conversion operator.
@@ -578,6 +669,49 @@ fn findSignatureOpen(line: []const u8) ?usize {
     // last one mistakes nested calls, casts, attributes, and default values for
     // the callable being declared.
     return std.mem.indexOfScalar(u8, line[0..limit], '(');
+}
+
+/// For a method line whose first `(` (per `findSignatureOpen`) is the *return*
+/// type of a tuple-returning method, return the offset of the real parameter
+/// list's `(`. Returns null when the line is not a tuple-return method.
+///
+/// A tuple-return method has the shape `<modifiers> (ret...) Name(...)` — the
+/// leading `(...)` is the return type, immediately followed by whitespace, an
+/// identifier (the method name), whitespace, and the real `(`. The trailing
+/// `(` is what disambiguates this from a cast (`(Type) expr`) or a parenthesized
+/// expression. `line` is the full line and `first_open` is the offset of that
+/// leading `(`.
+fn tupleReturnRealSignatureOpen(line: []const u8, first_open: usize) ?usize {
+    // The leading `(` must open at the start of the modifier-stripped prefix.
+    if (!startsWithTupleReturn(line, first_open)) return null;
+
+    const tuple_close = findMatchingParen(line, first_open) orelse return null;
+
+    // After the tuple's `)`, require `<ws>* <ident> [<gen>] <ws>* (` — the
+    // trailing `(` is the real parameter list. This rejects casts (`(Type) foo`)
+    // where the identifier is not followed by `(`. An optional `<...>` generic
+    // suffix on the method name (`Split<T>(...)`) is skipped first.
+    var i = tuple_close + 1;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    const name_start = i;
+    while (i < line.len and (std.ascii.isAlphanumeric(line[i]) or line[i] == '_' or line[i] == '@')) i += 1;
+    if (i == name_start) return null; // no identifier between `)` and `(`
+    if (i < line.len and line[i] == '<') {
+        const gen_close = matchBracket(line, i, '<', '>') orelse return null;
+        i = gen_close + 1;
+    }
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    if (i >= line.len or line[i] != '(') return null;
+    return i;
+}
+
+/// True when the `(` at `first_open` is a leading tuple return, i.e. after
+/// stripping leading access/modifier keywords the `(` is the first token on
+/// the line.
+fn startsWithTupleReturn(line: []const u8, first_open: usize) bool {
+    const stripped = stripCSharpModifiers(line[0..first_open]);
+    const trimmed = std.mem.trim(u8, stripped, " \t");
+    return trimmed.len == 0;
 }
 
 fn extractEventName(line: []const u8) ?[]const u8 {
@@ -636,10 +770,13 @@ fn extractPropertySymbol(line: []const u8) ?Symbol {
 
 /// Detect a C# indexer declaration: `modifiers Type this[params] { ... }`
 /// (also `... ;` or `... => expr;`). C# indexers have no source name; we
-/// surface them as the conventional `"this"` so `codedb_symbol("this")` and
-/// outlines find them, with the full signature carried in the outline `detail`
-/// (the raw line, set by the outline wrapper). The kind is `.variable`, the
-/// same kind used for properties — there is no dedicated indexer variant.
+/// surface them as the conventional `"this[]"` display name so
+/// `codedb_symbol("this[]")` and outlines find them, with the full signature
+/// carried in the outline `detail` (the raw line, set by the outline wrapper).
+/// Using `"this[]"` instead of `"this"` avoids a cross-class collision in the
+/// symbol index — every class's indexer would otherwise pile into one entry.
+/// The kind is `.variable`, the same kind used for properties — there is no
+/// dedicated indexer variant.
 fn extractIndexerSymbol(line: []const u8) ?Symbol {
     if (std.mem.indexOfScalar(u8, line, '(') != null) return null;
 
@@ -683,7 +820,7 @@ fn extractIndexerSymbol(line: []const u8) ?Symbol {
     const param_types = extractParamTypesFromSlice(params_slice);
 
     return .{
-        .name = "this",
+        .name = "this[]",
         .kind = .variable,
         .return_type = clean_type,
         .param_types = param_types,
