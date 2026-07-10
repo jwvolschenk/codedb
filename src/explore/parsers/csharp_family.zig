@@ -15,18 +15,31 @@ const cSharpSymbolKind = parse_utils.cSharpSymbolKind;
 const fSharpSymbolKind = parse_utils.fSharpSymbolKind;
 
 pub fn parseCSharpLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+    return parseCSharpLineWithOptions(self, raw_line, line_num, outline, .{});
+}
+
+pub fn parseCSharpLineWithOptions(
+    self: *Explorer,
+    raw_line: []const u8,
+    line_num: u32,
+    outline: *FileOutline,
+    options: csharp_parser.ParseOptions,
+) !void {
     const a = self.allocator;
     // Multi-declarator fields (`private int a, b, c;`) emit one symbol per
     // name. Initializer lists bail to the single-field path below.
     var field_names: [csharp_parser.max_field_names][]const u8 = undefined;
-    const field_count = csharp_parser.extractFieldNames(raw_line, &field_names);
+    const field_count = if (options.allow_field_declarations)
+        csharp_parser.extractFieldNames(raw_line, &field_names)
+    else
+        0;
     if (field_count > 1) {
         for (field_names[0..field_count]) |nm| {
             try appendOutlineSymbol(a, outline, nm, .variable, line_num, raw_line);
         }
         return;
     }
-    switch (csharp_parser.parseLine(raw_line)) {
+    switch (csharp_parser.parseLineWithOptions(raw_line, options)) {
         .none => {},
         .import => |imp| try appendImportSymbol(a, outline, imp, line_num, raw_line),
         .symbol => |sym| {
@@ -238,11 +251,11 @@ pub fn parseRazorLine(
 /// declare symbols (if, else, for, foreach, while, switch, etc.).
 pub fn razorIsControlFlow(line: []const u8) bool {
     const keywords = [_][]const u8{
-        "@if",        "@else",     "@for",       "@foreach",
-        "@while",     "@switch",   "@case",      "@default",
-        "@try",       "@catch",    "@finally",   "@lock",
-        "@do",        "@return",   "@throw",     "@break",
-        "@continue",  "@using(",   "@{",
+        "@if",       "@else",   "@for",     "@foreach",
+        "@while",    "@switch", "@case",    "@default",
+        "@try",      "@catch",  "@finally", "@lock",
+        "@do",       "@return", "@throw",   "@break",
+        "@continue", "@using(", "@{",
     };
     for (keywords) |kw| {
         if (std.mem.startsWith(u8, line, kw)) {

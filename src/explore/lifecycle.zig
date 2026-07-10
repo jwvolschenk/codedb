@@ -191,8 +191,10 @@ pub fn findBraceEnd(content: []const u8, line_offsets: []const usize, line_start
         if (c == '\n') {
             current_line += 1;
             in_line_comment = false;
-            // Bail out if no opening brace found within 10 lines
-            if (!found_open and current_line > line_start + 10) return line_start;
+            // Multiline C# constructors and methods commonly have long DI
+            // parameter lists. Keep the tighter cap for other brace languages.
+            const brace_search_lines: u32 = if (language == .c_sharp) 128 else 10;
+            if (!found_open and current_line > line_start + brace_search_lines) return line_start;
             continue;
         }
 
@@ -399,6 +401,12 @@ pub fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []co
     }
     var in_fsharp_attribute_block = false;
     var csharp_raw_string_quotes: usize = 0;
+    var csharp_brace_depth: i32 = 0;
+    var csharp_enum_depth: ?i32 = null;
+    var csharp_enum_pending = false;
+    var csharp_type_depths: [32]i32 = undefined;
+    var csharp_type_depth_count: usize = 0;
+    var csharp_type_pending = false;
     var in_go_import_block = false;
     var c_brace_depth: u32 = 0;
     var in_razor_code_block: bool = false;
@@ -597,15 +605,72 @@ pub fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []co
                 csharp_parser.updateRawStringState(trimmed, &csharp_raw_string_quotes);
                 continue;
             }
+            if (csharp_parser.findBlockCommentStart(trimmed)) |comment_start| {
+                const after_open = trimmed[comment_start + 2 ..];
+                if (std.mem.indexOf(u8, after_open, "*/") == null) in_block_comment = true;
+                trimmed = std.mem.trimEnd(u8, trimmed[0..comment_start], " \t");
+                if (trimmed.len == 0) continue;
+            }
             try collectCSharpDecorators(parser.allocator, trimmed, &csharp_pending_decorators);
             if (csharp_parser.stripAttributeLine(trimmed, &in_csharp_attribute_block)) |after_attrs| {
+                const inside_enum = if (csharp_enum_depth) |depth| csharp_brace_depth >= depth else false;
+                const declares_type = csharp_parser.lineDeclaresType(after_attrs);
+                const declares_enum = declares_type and csharp_parser.lineDeclaresEnum(after_attrs);
+                const at_type_member_scope = if (csharp_type_depth_count > 0)
+                    csharp_brace_depth == csharp_type_depths[csharp_type_depth_count - 1]
+                else
+                    true;
                 const before_count = outline.symbols.items.len;
-                try parser.parseCSharpLine(after_attrs, line_num, &outline);
+                try parser.parseCSharpLineWithOptions(after_attrs, line_num, &outline, .{
+                    .allow_enum_member = inside_enum,
+                    .allow_field_declarations = at_type_member_scope,
+                });
                 if (outline.symbols.items.len > before_count) {
                     try attachDecoratorsToSymbols(parser.allocator, &outline, before_count, csharp_pending_decorators.items);
                     clearDecoratorList(parser.allocator, &csharp_pending_decorators);
                 }
                 csharp_parser.updateRawStringState(after_attrs, &csharp_raw_string_quotes);
+
+                const braces = csharp_parser.countStructuralBraces(after_attrs);
+                const depth_before = csharp_brace_depth;
+                csharp_brace_depth += @as(i32, @intCast(braces.opens));
+                csharp_brace_depth -= @as(i32, @intCast(braces.closes));
+                if (csharp_brace_depth < 0) csharp_brace_depth = 0;
+
+                if (declares_enum) {
+                    if (braces.opens > braces.closes) {
+                        csharp_enum_depth = depth_before + 1;
+                        csharp_enum_pending = false;
+                    } else if (braces.opens == 0) {
+                        csharp_enum_pending = true;
+                    }
+                } else if (csharp_enum_pending and braces.opens > 0) {
+                    csharp_enum_depth = depth_before + 1;
+                    csharp_enum_pending = false;
+                }
+                if (declares_type) {
+                    if (braces.opens > braces.closes) {
+                        if (csharp_type_depth_count < csharp_type_depths.len) {
+                            csharp_type_depths[csharp_type_depth_count] = depth_before + 1;
+                            csharp_type_depth_count += 1;
+                        }
+                        csharp_type_pending = false;
+                    } else if (braces.opens == 0) {
+                        csharp_type_pending = true;
+                    }
+                } else if (csharp_type_pending and braces.opens > 0) {
+                    if (csharp_type_depth_count < csharp_type_depths.len) {
+                        csharp_type_depths[csharp_type_depth_count] = depth_before + 1;
+                        csharp_type_depth_count += 1;
+                    }
+                    csharp_type_pending = false;
+                }
+                if (csharp_enum_depth) |depth| {
+                    if (csharp_brace_depth < depth) csharp_enum_depth = null;
+                }
+                while (csharp_type_depth_count > 0 and csharp_brace_depth < csharp_type_depths[csharp_type_depth_count - 1]) {
+                    csharp_type_depth_count -= 1;
+                }
             }
         } else if (outline.language == .f_sharp) {
             if (fsharp_parser.stripAttributeLine(trimmed, &in_fsharp_attribute_block)) |after_attrs| {
@@ -812,6 +877,10 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
     var parsed_outline = try parseOutlineWithParser(&parser, path, content);
     defer parsed_outline.deinit();
 
+    if (parsed_outline.language == .c_sharp) {
+        try enrichCSharpMultilineSignatures(allocator, &parsed_outline, content);
+    }
+
     // NOTE: consecutive-property collapsing previously ran here, but it
     // mutated the stored outline — discarding every collapsed property's
     // name/type and corrupting symbol lookup, type indexing, type-usage
@@ -833,6 +902,89 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         .content = content,
         .outline = try cloneOutline(&parsed_outline, allocator),
     };
+}
+
+/// The fast parser emits a method as soon as it sees the declaration's first
+/// line. Enrich signatures that continue on following lines so type queries and
+/// outlines expose the full parameter list instead of an empty/truncated one.
+fn enrichCSharpMultilineSignatures(allocator: std.mem.Allocator, outline: *FileOutline, content: []const u8) !void {
+    var has_multiline_signature = false;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind != .method and sym.kind != .function) continue;
+        const detail = sym.detail orelse continue;
+        if (std.mem.indexOfScalar(u8, detail, '(') != null and std.mem.indexOfScalar(u8, detail, ')') == null) {
+            has_multiline_signature = true;
+            break;
+        }
+    }
+    if (!has_multiline_signature) return;
+
+    var line_offsets: std.ArrayList(usize) = .empty;
+    defer line_offsets.deinit(allocator);
+    try line_offsets.append(allocator, 0);
+    for (content, 0..) |ch, i| {
+        if (ch == '\n' and i + 1 < content.len) try line_offsets.append(allocator, i + 1);
+    }
+
+    for (outline.symbols.items) |*sym| {
+        if (sym.kind != .method and sym.kind != .function) continue;
+        const detail = sym.detail orelse continue;
+        if (std.mem.indexOfScalar(u8, detail, '(') == null or std.mem.indexOfScalar(u8, detail, ')') != null) continue;
+        if (sym.line_start == 0 or sym.line_start > line_offsets.items.len) continue;
+
+        const start = line_offsets.items[sym.line_start - 1];
+        const remaining = content[start..@min(content.len, start + 64 * 1024)];
+        const close = csharp_parser.findSignatureClose(remaining) orelse continue;
+
+        var normalized: std.ArrayList(u8) = .empty;
+        defer normalized.deinit(allocator);
+        var previous_space = false;
+        for (remaining[0 .. close + 1]) |ch| {
+            const is_space = ch == ' ' or ch == '\t' or ch == '\r' or ch == '\n';
+            if (is_space) {
+                if (!previous_space) try normalized.append(allocator, ' ');
+            } else {
+                try normalized.append(allocator, ch);
+            }
+            previous_space = is_space;
+        }
+        const joined = std.mem.trim(u8, normalized.items, " \t");
+        const parsed = csharp_parser.parseLine(joined);
+        const parsed_sym = switch (parsed) {
+            .symbol => |candidate| candidate,
+            else => continue,
+        };
+        if (parsed_sym.kind != .method and parsed_sym.kind != .function) continue;
+        if (!std.mem.eql(u8, parsed_sym.name, sym.name)) continue;
+
+        const new_detail = try allocator.dupe(u8, joined);
+        errdefer allocator.free(new_detail);
+        const new_return_type: ?[]const u8 = if (parsed_sym.return_type) |rt| try allocator.dupe(u8, rt) else null;
+        errdefer if (new_return_type) |rt| allocator.free(rt);
+        const parsed_params = parsed_sym.param_types.slice();
+        const new_param_storage: ?[][]const u8 = if (parsed_params.len > 0)
+            try allocator.alloc([]const u8, parsed_params.len)
+        else
+            null;
+        const new_param_types: []const []const u8 = new_param_storage orelse &.{};
+        var copied: usize = 0;
+        errdefer {
+            for (new_param_types[0..copied]) |pt| allocator.free(pt);
+            if (new_param_storage) |storage| allocator.free(storage);
+        }
+        for (parsed_params, 0..) |pt, i| {
+            new_param_storage.?[i] = try allocator.dupe(u8, pt);
+            copied += 1;
+        }
+
+        allocator.free(sym.detail.?);
+        if (sym.return_type) |rt| allocator.free(rt);
+        for (sym.param_types) |pt| allocator.free(pt);
+        if (sym.param_types.len > 0) allocator.free(sym.param_types);
+        sym.detail = new_detail;
+        sym.return_type = new_return_type;
+        sym.param_types = new_param_types;
+    }
 }
 
 pub fn collectCSharpDecorators(allocator: std.mem.Allocator, line: []const u8, pending: *std.ArrayList([]const u8)) !void {

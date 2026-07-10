@@ -631,3 +631,115 @@ test "csharp: multi-field declaration emits a symbol per field" {
     try testing.expectEqualStrings("b", buf[1]);
     try testing.expectEqualStrings("c", buf[2]);
 }
+
+test "csharp parser: enum context and nested calls do not pollute definitions" {
+    switch (csharp_parser.parseLineWithOptions("lower_case = 1,", .{ .allow_enum_member = true })) {
+        .symbol => |sym| try testing.expectEqualStrings("lower_case", sym.name),
+        else => return error.TestUnexpectedResult,
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("src/Noisy.cs",
+        \\public enum wire_state
+        \\{
+        \\    lower_case = 1,
+        \\    Ready,
+        \\}
+        \\public class Noisy
+        \\{
+        \\    public Noisy([FromServices] ILogger logger, string name = "default") { }
+        \\    public Noisy(
+        \\        IService service,
+        \\        [FromKeyedServices("primary")] IRepository repository,
+        \\        CancellationToken cancellationToken
+        \\    ) { }
+        \\    public required List<string> Names { get; init; }
+        \\    public void Run()
+        \\    {
+        \\        if (!roles.ContainsKey(Constants.Admin)) { }
+        \\        foreach (var item in rows.DistinctBy(x => x.Id)) { }
+        \\        vm.SetProperties("", ToolbarConfiguration.GetToolbar(user));
+        \\        var values = new HashSet<string> { "one", "two" };
+        \\        var dto = new Request { OrderUploadId = id, Items = new List<Item> { item } };
+        \\        var result = (await service.LoadAsync(id)).ToList();
+        \\        bool isValid = !((Math.Abs(value) / Math.Round(value, 4)) > 0.1);
+        \\        const int localLimit = 1000;
+        \\        async Task<Item> LocalAsync(Item item) => await Task.FromResult(item);
+        \\        stream.Read(bytes, 0, (int)length);
+        \\    }
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("src/Noisy.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    try expectOutlineSymbol(&outline, "lower_case", .constant);
+    try expectOutlineSymbol(&outline, "Ready", .constant);
+    try expectOutlineSymbol(&outline, "Noisy", .class_def);
+    try expectOutlineSymbol(&outline, "Names", .variable);
+    try expectOutlineSymbol(&outline, "Run", .method);
+
+    var found_constructor = false;
+    var found_multiline_constructor = false;
+    for (outline.symbols.items) |sym| {
+        try testing.expect(!std.mem.eql(u8, sym.name, "ContainsKey"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "DistinctBy"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "GetToolbar"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "string"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "OrderUploadId"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "Items"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "result"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "isValid"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "localLimit"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "0"));
+        if (sym.kind == .method and std.mem.eql(u8, sym.name, "Noisy")) {
+            try testing.expect(sym.return_type == null);
+            if (sym.param_types.len == 2) {
+                found_constructor = true;
+                try testing.expectEqualStrings("ILogger", sym.param_types[0]);
+                try testing.expectEqualStrings("string", sym.param_types[1]);
+            } else if (sym.param_types.len == 3) {
+                found_multiline_constructor = true;
+                try testing.expectEqualStrings("IService", sym.param_types[0]);
+                try testing.expectEqualStrings("IRepository", sym.param_types[1]);
+                try testing.expectEqualStrings("CancellationToken", sym.param_types[2]);
+            }
+        }
+    }
+    try testing.expect(found_constructor);
+    try testing.expect(found_multiline_constructor);
+    try expectOutlineSymbol(&outline, "LocalAsync", .method);
+}
+
+test "csharp parser: malformed input and braces in strings remain bounded" {
+    const counts = csharp_parser.countStructuralBraces(
+        \\public string Json { get; } = "{ not structure }"; // }
+    );
+    try testing.expectEqual(@as(usize, 1), counts.opens);
+    try testing.expectEqual(@as(usize, 1), counts.closes);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    try explorer.indexFile("src/Broken.cs",
+        \\public class Broken
+        \\{
+        \\    public void StillVisible()
+        \\    {
+        \\        const int localOnly = 1;
+        \\        var text = "/* not a comment {";
+        \\        public int InvalidButParsedAsFixture; /* unterminated comment
+        \\        public class Fake { }
+    );
+    var outline = (try explorer.getOutline("src/Broken.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try expectOutlineSymbol(&outline, "Broken", .class_def);
+    try expectOutlineSymbol(&outline, "StillVisible", .method);
+    for (outline.symbols.items) |sym| {
+        try testing.expect(!std.mem.eql(u8, sym.name, "localOnly"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "Fake"));
+    }
+}

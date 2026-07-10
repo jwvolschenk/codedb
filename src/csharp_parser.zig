@@ -26,7 +26,7 @@ pub const ParamTypesResult = struct {
     buf: [max_params][]const u8 = undefined,
     len: usize = 0,
 
-    pub const max_params = 16;
+    pub const max_params = 32;
 
     pub fn push(self: *ParamTypesResult, item: []const u8) void {
         if (self.len < max_params) {
@@ -47,6 +47,21 @@ pub const ParsedLine = union(enum) {
 };
 
 pub fn parseLine(raw_line: []const u8) ParsedLine {
+    return parseLineWithOptions(raw_line, .{});
+}
+
+pub const ParseOptions = struct {
+    /// Bare `Name = value,` lines are only declarations inside an enum body.
+    /// Keeping this off by default prevents object-initializer entries from
+    /// polluting the global symbol/definition index.
+    allow_enum_member: bool = false,
+    /// Field declarations are only valid at type-member scope (except in C#
+    /// scripts). Lifecycle parsing disables this inside method/local-function
+    /// bodies so local `const` values do not become global definitions.
+    allow_field_declarations: bool = true,
+};
+
+pub fn parseLineWithOptions(raw_line: []const u8, options: ParseOptions) ParsedLine {
     const line_with_comments_removed = stripLineComment(raw_line);
     const line = stripAttributePrefix(line_with_comments_removed) orelse return .none;
     if (line.len == 0 or startsWith(line, "#")) return .none;
@@ -58,9 +73,150 @@ pub fn parseLine(raw_line: []const u8) ParsedLine {
     if (extractMethodSignature(line)) |sym| return .{ .symbol = sym };
     if (extractEventName(line)) |name| return .{ .symbol = .{ .name = name, .kind = .variable } };
     if (extractPropertySymbol(line)) |sym| return .{ .symbol = sym };
-    if (extractFieldName(line)) |field| return .{ .symbol = field };
-    if (extractEnumMember(line)) |name| return .{ .symbol = .{ .name = name, .kind = .constant } };
+    if (options.allow_field_declarations) {
+        if (extractFieldName(line)) |field| return .{ .symbol = field };
+    }
+    if (options.allow_enum_member) {
+        if (extractEnumMemberContextual(line)) |name| return .{ .symbol = .{ .name = name, .kind = .constant } };
+    }
     return .none;
+}
+
+pub fn lineDeclaresEnum(raw_line: []const u8) bool {
+    const line = stripAttributePrefix(stripLineComment(raw_line)) orelse return false;
+    const decl = extractTypeDeclaration(line) orelse return false;
+    return decl.kind == .enum_def;
+}
+
+pub fn lineDeclaresType(raw_line: []const u8) bool {
+    const line = stripAttributePrefix(stripLineComment(raw_line)) orelse return false;
+    return extractTypeDeclaration(line) != null;
+}
+
+pub const BraceCounts = struct {
+    opens: usize = 0,
+    closes: usize = 0,
+};
+
+/// Count structural braces on one C# line, excluding comments and all string
+/// forms. This is deliberately allocation-free because it runs on every line.
+pub fn countStructuralBraces(raw_line: []const u8) BraceCounts {
+    const line = stripLineComment(raw_line);
+    var result: BraceCounts = .{};
+    var quote: u8 = 0;
+    var verbatim = false;
+    var raw_quote_count: usize = 0;
+    var in_block_comment = false;
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        const ch = line[i];
+        if (in_block_comment) {
+            if (ch == '*' and i + 1 < line.len and line[i + 1] == '/') {
+                in_block_comment = false;
+                i += 1;
+            }
+            continue;
+        }
+        if (raw_quote_count != 0) {
+            if (ch == '"') {
+                const count = countConsecutiveQuotes(line, i);
+                if (count >= raw_quote_count) {
+                    i += raw_quote_count - 1;
+                    raw_quote_count = 0;
+                }
+            }
+            continue;
+        }
+        if (quote != 0) {
+            if (quote == '"' and verbatim and ch == '"' and i + 1 < line.len and line[i + 1] == '"') {
+                i += 1;
+                continue;
+            }
+            if (!verbatim and ch == '\\' and i + 1 < line.len) {
+                i += 1;
+                continue;
+            }
+            if (ch == quote) {
+                quote = 0;
+                verbatim = false;
+            }
+            continue;
+        }
+        if (ch == '/' and i + 1 < line.len and line[i + 1] == '*') {
+            in_block_comment = true;
+            i += 1;
+            continue;
+        }
+        if (ch == '"') {
+            if (rawStringDelimiterLength(line, i)) |count| {
+                raw_quote_count = count;
+                i += count - 1;
+                continue;
+            }
+        }
+        if (ch == '"' or ch == '\'') {
+            quote = ch;
+            verbatim = ch == '"' and isVerbatimStringStart(line, i);
+            continue;
+        }
+        if (ch == '{') result.opens += 1;
+        if (ch == '}') result.closes += 1;
+    }
+    return result;
+}
+
+/// Return the first block-comment opener that is outside C# strings and a
+/// trailing line comment. Used by lifecycle parsing to carry inline `/* ...`
+/// state onto following lines.
+pub fn findBlockCommentStart(line: []const u8) ?usize {
+    var quote: u8 = 0;
+    var verbatim = false;
+    var raw_quote_count: usize = 0;
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        const ch = line[i];
+        if (raw_quote_count != 0) {
+            if (ch == '"') {
+                const count = countConsecutiveQuotes(line, i);
+                if (count >= raw_quote_count) {
+                    i += raw_quote_count - 1;
+                    raw_quote_count = 0;
+                }
+            }
+            continue;
+        }
+        if (quote != 0) {
+            if (quote == '"' and verbatim and ch == '"' and i + 1 < line.len and line[i + 1] == '"') {
+                i += 1;
+                continue;
+            }
+            if (!verbatim and ch == '\\' and i + 1 < line.len) {
+                i += 1;
+                continue;
+            }
+            if (ch == quote) {
+                quote = 0;
+                verbatim = false;
+            }
+            continue;
+        }
+        if (ch == '/' and i + 1 < line.len) {
+            if (line[i + 1] == '/') return null;
+            if (line[i + 1] == '*') return i;
+        }
+        if (ch == '"') {
+            if (rawStringDelimiterLength(line, i)) |count| {
+                raw_quote_count = count;
+                i += count - 1;
+                continue;
+            }
+        }
+        if (ch == '"' or ch == '\'') {
+            quote = ch;
+            verbatim = ch == '"' and isVerbatimStringStart(line, i);
+        }
+    }
+    return null;
 }
 
 pub fn isVerbatimStringStart(line: []const u8, quote_index: usize) bool {
@@ -360,9 +516,18 @@ fn extractDelegateSymbol(line: []const u8) ?Symbol {
 }
 
 fn extractMethodSignature(line: []const u8) ?Symbol {
-    if (startsWithAny(line, &.{ "using ", "namespace ", "return ", "throw ", "new ", "case ", "where " })) return null;
+    if (startsWithAny(line, &.{
+        "using ", "namespace ", "return ", "throw ", "new ",     "case ",    "where ",
+        "if ",    "if(",        "for ",    "for(",   "foreach ", "foreach(", "while ",
+        "while(", "switch ",    "switch(", "catch ", "catch(",   "lock ",    "lock(",
+        "fixed ", "fixed(",
+    })) return null;
     if (containsAny(line, &.{ " class ", " interface ", " enum ", " struct ", " record ", " delegate " })) return null;
     const open = findSignatureOpen(line) orelse return null;
+    // Assignments and initializers can contain arbitrarily declaration-looking
+    // nested calls/casts. The only valid callable declaration with `=` before
+    // its parameter list is an equality/conversion operator.
+    if (std.mem.indexOfScalar(u8, line[0..open], '=') != null and extractOperatorName(line[0..open]) == null) return null;
     const name = extractCallableName(line[0..open]) orelse return null;
     if (isControlKeyword(name)) return null;
     if (!hasDeclarationPrefix(line[0..open], name)) return null;
@@ -389,8 +554,8 @@ fn extractMethodSignature(line: []const u8) ?Symbol {
     }
 
     // Extract parameter types
-    const close = std.mem.indexOfScalar(u8, line[open..], ')');
-    const param_result = if (close) |c| extractParamTypesFromSlice(line[open + 1 .. open + c]) else ParamTypesResult{};
+    const close = findMatchingParen(line, open);
+    const param_result = if (close) |c| extractParamTypesFromSlice(line[open + 1 .. c]) else ParamTypesResult{};
 
     return .{
         .name = name,
@@ -406,7 +571,10 @@ fn findSignatureOpen(line: []const u8) ?usize {
     if (std.mem.indexOf(u8, line, "=>")) |pos| limit = @min(limit, pos);
     if (std.mem.indexOfScalar(u8, line, ';')) |pos| limit = @min(limit, pos);
     if (std.mem.indexOf(u8, line[0..limit], " where ")) |pos| limit = @min(limit, pos);
-    return std.mem.lastIndexOfScalar(u8, line[0..limit], '(');
+    // The first parenthesis is the declaration's parameter list. Choosing the
+    // last one mistakes nested calls, casts, attributes, and default values for
+    // the callable being declared.
+    return std.mem.indexOfScalar(u8, line[0..limit], '(');
 }
 
 fn extractEventName(line: []const u8) ?[]const u8 {
@@ -433,6 +601,10 @@ fn extractPropertyName(line: []const u8) ?[]const u8 {
 fn extractPropertySymbol(line: []const u8) ?Symbol {
     if (std.mem.indexOfScalar(u8, line, '(') != null) return null;
     const body_end = findPropertyBodyStart(line) orelse return null;
+    // `Items = new List<T> { ... }` is an object/collection initializer, not a
+    // property declaration. A real property initializer has its accessor body
+    // before the assignment (`public T Items { get; } = ...`).
+    if (std.mem.indexOfScalar(u8, line[0..body_end], '=') != null) return null;
     const before = std.mem.trimEnd(u8, line[0..body_end], " \t");
     if (std.mem.indexOf(u8, before, " this[") != null or std.mem.endsWith(u8, before, " this")) return null;
     const span = extractLastIdentSpan(before) orelse return null;
@@ -789,15 +961,48 @@ fn extractParamTypesFromSlice(params_slice: []const u8) ParamTypesResult {
 
     var result: ParamTypesResult = .{};
 
-    // Split on commas, respecting nested angle brackets
-    var depth: i32 = 0;
+    // Split on commas while respecting generic types, tuples, attributes,
+    // array/index expressions, strings, and default-value expressions.
+    var angle_depth: i32 = 0;
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+    var quote: u8 = 0;
+    var verbatim = false;
     var param_start: usize = 0;
     for (trimmed, 0..) |ch, i| {
+        if (quote != 0) {
+            if (quote == '"' and verbatim and ch == '"' and i + 1 < trimmed.len and trimmed[i + 1] == '"') continue;
+            if (ch == quote and (i == 0 or trimmed[i - 1] != '\\')) {
+                quote = 0;
+                verbatim = false;
+            }
+            continue;
+        }
+        if (ch == '"' or ch == '\'') {
+            quote = ch;
+            verbatim = ch == '"' and isVerbatimStringStart(trimmed, i);
+            continue;
+        }
         switch (ch) {
-            '<' => depth += 1,
-            '>' => depth -= 1,
+            '<' => angle_depth += 1,
+            '>' => if (angle_depth > 0) {
+                angle_depth -= 1;
+            },
+            '(' => paren_depth += 1,
+            ')' => if (paren_depth > 0) {
+                paren_depth -= 1;
+            },
+            '[' => bracket_depth += 1,
+            ']' => if (bracket_depth > 0) {
+                bracket_depth -= 1;
+            },
+            '{' => brace_depth += 1,
+            '}' => if (brace_depth > 0) {
+                brace_depth -= 1;
+            },
             ',' => {
-                if (depth == 0) {
+                if (angle_depth == 0 and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
                     if (extractParamType(trimmed[param_start..i])) |pt| {
                         result.push(pt);
                     }
@@ -824,19 +1029,31 @@ fn extractParamType(param: []const u8) ?[]const u8 {
 
     // Handle `this` prefix (extension methods): "this int id" -> "int"
     var rest = trimmed;
-    if (startsWith(rest, "this ")) {
-        rest = std.mem.trimStart(u8, rest["this ".len..], " \t");
+    while (startsWith(rest, "[")) {
+        const close = findAttributeClose(rest) orelse return null;
+        rest = std.mem.trimStart(u8, rest[close + 1 ..], " \t");
     }
-    // Handle `out`/`ref`/`in`/`params` modifiers: "out int id" -> "int"
-    const param_modifiers = [_][]const u8{ "out ", "ref ", "in ", "params " };
-    for (param_modifiers) |mod| {
-        if (startsWith(rest, mod)) {
-            rest = std.mem.trimStart(u8, rest[mod.len..], " \t");
-            break;
+    // Handle extension/ref-safety modifiers, including combinations such as
+    // `this scoped in T value` and `ref readonly T value`.
+    const param_modifiers = [_][]const u8{ "this", "scoped", "out", "ref", "readonly", "in", "params" };
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (param_modifiers) |modifier| {
+            if (consumeLeadingWord(rest, modifier)) |after| {
+                rest = after;
+                changed = true;
+                break;
+            }
         }
     }
 
     if (rest.len == 0) return null;
+
+    // Defaults belong to the parameter, not its type (`string name = "x"`).
+    if (findTopLevelAssignment(rest)) |eq| {
+        rest = std.mem.trimEnd(u8, rest[0..eq], " \t");
+    }
 
     // Find where the type ends and the parameter name begins.
     // Strategy: the last identifier is the parameter name, everything before is the type.
@@ -864,18 +1081,19 @@ fn extractParamType(param: []const u8) ?[]const u8 {
 fn stripCSharpModifiers(s: []const u8) []const u8 {
     var result = std.mem.trim(u8, s, " \t");
     const modifiers = [_][]const u8{
-        "public ", "private ", "protected ", "internal ",
-        "static ", "virtual ", "override ", "abstract ",
-        "async ", "extern ", "partial ", "sealed ",
-        "new ", "unsafe ", "volatile ", "readonly ",
+        "public",   "private", "protected", "internal",
+        "static",   "virtual", "override",  "abstract",
+        "async",    "extern",  "partial",   "sealed",
+        "new",      "unsafe",  "volatile",  "readonly",
+        "required", "file",
     };
     // Strip modifiers iteratively (e.g. "public async static")
     var changed = true;
     while (changed and result.len > 0) {
         changed = false;
-        for (modifiers) |mod| {
-            if (startsWith(result, mod)) {
-                result = std.mem.trimStart(u8, result[mod.len..], " \t");
+        for (modifiers) |modifier| {
+            if (consumeLeadingWord(result, modifier)) |after| {
+                result = after;
                 changed = true;
                 break;
             }
@@ -893,6 +1111,11 @@ fn stripCSharpModifiers(s: []const u8) []const u8 {
 /// Conservative: only matches PascalCase identifiers to avoid false positives
 /// in method bodies where bare identifiers might appear.
 pub fn extractEnumMember(line: []const u8) ?[]const u8 {
+    const member = extractEnumMemberContextual(line) orelse return null;
+    return if (member.len > 0 and std.ascii.isUpper(member[0])) member else null;
+}
+
+fn extractEnumMemberContextual(line: []const u8) ?[]const u8 {
     const trimmed = std.mem.trim(u8, line, " \t");
     if (trimmed.len == 0) return null;
 
@@ -902,12 +1125,8 @@ pub fn extractEnumMember(line: []const u8) ?[]const u8 {
     if (trimmed.len > 1 and trimmed[0] == '@') ident_start = 1;
     if (!std.ascii.isAlphabetic(trimmed[ident_start]) and trimmed[ident_start] != '_') return null;
 
-    // Enum members are PascalCase by C# convention — first char of actual name must be uppercase
-    // This avoids false positives with local variables or labels in method bodies
-    if (!std.ascii.isUpper(trimmed[ident_start])) return null;
-
     // Reject lines with access modifiers, type keywords, or other declaration prefixes
-    if (containsAny(trimmed, &.{ "public ", "private ", "protected ", "internal ", "static ", "const ", "readonly ", "volatile ", "class ", "interface ", "struct ", "enum ", "record ", "delegate ", "event ", "namespace ", "using ", "return ", "throw ", "new ", "case ", "where ", "abstract ", "sealed ", "override ", "virtual ", "extern ", "unsafe ", "async ", "partial " })) return null;
+    if (startsWithAny(trimmed, &.{ "public ", "private ", "protected ", "internal ", "static ", "const ", "readonly ", "volatile ", "class ", "interface ", "struct ", "enum ", "record ", "delegate ", "event ", "namespace ", "using ", "return ", "throw ", "new ", "case ", "where ", "abstract ", "sealed ", "override ", "virtual ", "extern ", "unsafe ", "async ", "partial " })) return null;
 
     // Reject lines with parens (method calls/declarations), braces, semicolons
     if (std.mem.indexOfScalar(u8, trimmed, '(') != null) return null;
@@ -939,5 +1158,103 @@ pub fn extractEnumMember(line: []const u8) ?[]const u8 {
         return name;
     }
     // Something else follows — not an enum member
+    return null;
+}
+
+fn findMatchingParen(line: []const u8, open: usize) ?usize {
+    if (open >= line.len or line[open] != '(') return null;
+    var depth: usize = 0;
+    var quote: u8 = 0;
+    var verbatim = false;
+    var i = open;
+    while (i < line.len) : (i += 1) {
+        const ch = line[i];
+        if (quote != 0) {
+            if (quote == '"' and verbatim and ch == '"' and i + 1 < line.len and line[i + 1] == '"') {
+                i += 1;
+                continue;
+            }
+            if (!verbatim and ch == '\\' and i + 1 < line.len) {
+                i += 1;
+                continue;
+            }
+            if (ch == quote) {
+                quote = 0;
+                verbatim = false;
+            }
+            continue;
+        }
+        if (ch == '"' or ch == '\'') {
+            quote = ch;
+            verbatim = ch == '"' and isVerbatimStringStart(line, i);
+            continue;
+        }
+        if (ch == '(') depth += 1;
+        if (ch == ')') {
+            if (depth == 0) return null;
+            depth -= 1;
+            if (depth == 0) return i;
+        }
+    }
+    return null;
+}
+
+/// Locate the closing parenthesis for the first callable signature in `text`.
+/// `text` may span lines; callers use this to enrich line-oriented outlines.
+pub fn findSignatureClose(text: []const u8) ?usize {
+    const open = std.mem.indexOfScalar(u8, text, '(') orelse return null;
+    return findMatchingParen(text, open);
+}
+
+fn consumeLeadingWord(s: []const u8, word: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trimStart(u8, s, " \t");
+    if (!std.mem.startsWith(u8, trimmed, word)) return null;
+    if (trimmed.len == word.len) return trimmed[word.len..];
+    if (trimmed[word.len] != ' ' and trimmed[word.len] != '\t') return null;
+    return std.mem.trimStart(u8, trimmed[word.len..], " \t");
+}
+
+fn findTopLevelAssignment(s: []const u8) ?usize {
+    var angle_depth: i32 = 0;
+    var paren_depth: i32 = 0;
+    var bracket_depth: i32 = 0;
+    var brace_depth: i32 = 0;
+    var quote: u8 = 0;
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        const ch = s[i];
+        if (quote != 0) {
+            if (ch == '\\' and i + 1 < s.len) {
+                i += 1;
+            } else if (ch == quote) {
+                quote = 0;
+            }
+            continue;
+        }
+        if (ch == '"' or ch == '\'') {
+            quote = ch;
+            continue;
+        }
+        switch (ch) {
+            '<' => angle_depth += 1,
+            '>' => if (angle_depth > 0) {
+                angle_depth -= 1;
+            },
+            '(' => paren_depth += 1,
+            ')' => if (paren_depth > 0) {
+                paren_depth -= 1;
+            },
+            '[' => bracket_depth += 1,
+            ']' => if (bracket_depth > 0) {
+                bracket_depth -= 1;
+            },
+            '{' => brace_depth += 1,
+            '}' => if (brace_depth > 0) {
+                brace_depth -= 1;
+            },
+            '=' => if (angle_depth == 0 and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) return i,
+            else => {},
+        }
+    }
     return null;
 }

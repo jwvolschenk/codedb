@@ -302,6 +302,7 @@ pub const Explorer = struct {
     pub const parseKotlinLine = @import("explore/parsers/jvm.zig").parseKotlinLine;
 
     pub const parseCSharpLine = @import("explore/parsers/csharp_family.zig").parseCSharpLine;
+    pub const parseCSharpLineWithOptions = @import("explore/parsers/csharp_family.zig").parseCSharpLineWithOptions;
 
     pub const extractCSharpEnumValue = @import("explore/parsers/csharp_family.zig").extractCSharpEnumValue;
 
