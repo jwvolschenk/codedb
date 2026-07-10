@@ -72,6 +72,9 @@ pub fn parseLineWithOptions(raw_line: []const u8, options: ParseOptions) ParsedL
     if (extractDelegateSymbol(line)) |sym| return .{ .symbol = sym };
     if (extractMethodSignature(line)) |sym| return .{ .symbol = sym };
     if (extractEventName(line)) |name| return .{ .symbol = .{ .name = name, .kind = .variable } };
+    // Indexers (`Type this[...] { ... }`) are checked before properties: their
+    // `[...]` param list trips the property/field extractors otherwise.
+    if (extractIndexerSymbol(line)) |sym| return .{ .symbol = sym };
     if (extractPropertySymbol(line)) |sym| return .{ .symbol = sym };
     if (options.allow_field_declarations) {
         if (extractFieldName(line)) |field| return .{ .symbol = field };
@@ -606,6 +609,9 @@ fn extractPropertySymbol(line: []const u8) ?Symbol {
     // before the assignment (`public T Items { get; } = ...`).
     if (std.mem.indexOfScalar(u8, line[0..body_end], '=') != null) return null;
     const before = std.mem.trimEnd(u8, line[0..body_end], " \t");
+    // Indexers (`Type this[...]`) are handled by extractIndexerSymbol upstream
+    // in parseLineWithOptions; bail here so the indexer line is never misread
+    // as a property named after its return type.
     if (std.mem.indexOf(u8, before, " this[") != null or std.mem.endsWith(u8, before, " this")) return null;
     const span = extractLastIdentSpan(before) orelse return null;
     const name = span.text;
@@ -626,6 +632,103 @@ fn extractPropertySymbol(line: []const u8) ?Symbol {
         .kind = .variable,
         .return_type = ret_type,
     };
+}
+
+/// Detect a C# indexer declaration: `modifiers Type this[params] { ... }`
+/// (also `... ;` or `... => expr;`). C# indexers have no source name; we
+/// surface them as the conventional `"this"` so `codedb_symbol("this")` and
+/// outlines find them, with the full signature carried in the outline `detail`
+/// (the raw line, set by the outline wrapper). The kind is `.variable`, the
+/// same kind used for properties — there is no dedicated indexer variant.
+fn extractIndexerSymbol(line: []const u8) ?Symbol {
+    if (std.mem.indexOfScalar(u8, line, '(') != null) return null;
+
+    // Locate the `this[` token. Anchor on the opening bracket to avoid matching
+    // a substring like `fothis`. The `[` must belong to `this[` and be followed
+    // by its matching `]` (the parameter list) — not an attribute `[Foo]`,
+    // which never trails an identifier directly like `this[`.
+    var search_from: usize = 0;
+    var this_pos: ?usize = null;
+    while (std.mem.indexOfPos(u8, line, search_from, "this[")) |pos| {
+        // `this[` must be a standalone token: preceded by whitespace or start.
+        const ok_before = pos == 0 or line[pos - 1] == ' ' or line[pos - 1] == '\t';
+        if (ok_before) {
+            this_pos = pos;
+            break;
+        }
+        search_from = pos + 5;
+    }
+    const tp = this_pos orelse return null;
+    const bracket_open = tp + 4; // index of '['
+
+    // Find the matching ']' for the parameter list, respecting strings.
+    const bracket_close = matchBracket(line, bracket_open, '[', ']') orelse return null;
+    const params_slice = line[bracket_open + 1 .. bracket_close];
+
+    // After the parameter list there must be an accessor body or an expression
+    // body — otherwise this is a stray `[...]`, not an indexer.
+    var i = bracket_close + 1;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    if (i >= line.len) return null;
+    const has_body = line[i] == '{' or line[i] == ';' or
+        (line[i] == '=' and i + 1 < line.len and line[i + 1] == '>');
+    if (!has_body) return null;
+
+    // Return type: everything before `this`, after stripping access/modifier
+    // keywords (`public`, `static`, …). An indexer must have a type prefix.
+    const raw_prefix = std.mem.trim(u8, line[0..tp], " \t");
+    const clean_type = stripCSharpModifiers(raw_prefix);
+    if (clean_type.len == 0 or !looksLikeReturnTypePrefix(clean_type)) return null;
+
+    const param_types = extractParamTypesFromSlice(params_slice);
+
+    return .{
+        .name = "this",
+        .kind = .variable,
+        .return_type = clean_type,
+        .param_types = param_types,
+    };
+}
+
+/// Return the index of the bracket matching `open` at `start`, scanning the
+/// line while skipping string and char literals (regular and verbatim forms),
+/// mirroring the string-awareness of `findPropertyBodyStart`. `open`/`close`
+/// are a matched pair like `[`/`]`.
+fn matchBracket(line: []const u8, start: usize, open: u8, close: u8) ?usize {
+    var depth: i32 = 0;
+    var quote: u8 = 0;
+    var verbatim = false;
+    var i = start;
+    while (i < line.len) : (i += 1) {
+        const ch = line[i];
+        if (quote != 0) {
+            if (quote == '"' and verbatim and ch == '"' and i + 1 < line.len and line[i + 1] == '"') {
+                i += 1;
+                continue;
+            }
+            if (!verbatim and ch == '\\' and i + 1 < line.len) {
+                i += 1;
+                continue;
+            }
+            if (ch == quote) {
+                quote = 0;
+                verbatim = false;
+            }
+            continue;
+        }
+        if (ch == '"' or ch == '\'') {
+            quote = ch;
+            verbatim = ch == '"' and isVerbatimStringStart(line, i);
+            continue;
+        }
+        if (ch == open) {
+            depth += 1;
+        } else if (ch == close) {
+            depth -= 1;
+            if (depth == 0) return i;
+        }
+    }
+    return null;
 }
 
 fn findPropertyBodyStart(line: []const u8) ?usize {

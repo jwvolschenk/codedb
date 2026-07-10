@@ -372,7 +372,11 @@ pub const Explorer = struct {
 
     pub const rebuildTypeIndexes = @import("explore/deps.zig").rebuildTypeIndexes;
 
+    pub const rebuildTypeIndexesLocked = @import("explore/deps.zig").rebuildTypeIndexesLocked;
+
     pub const rebuildTypeUsageDeps = @import("explore/deps.zig").rebuildTypeUsageDeps;
+
+    pub const rebuildTypeUsageDepsLocked = @import("explore/deps.zig").rebuildTypeUsageDepsLocked;
 
     pub const buildTypeGraphForFile = @import("explore/deps.zig").buildTypeGraphForFile;
 

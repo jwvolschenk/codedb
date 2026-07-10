@@ -453,17 +453,41 @@ pub fn rebuildSymbolIndexFor(self: *Explorer, path: []const u8, outline: *FileOu
 
 /// Rebuild TypeIndex and TypeGraph from all loaded outlines.
 /// Called after snapshot loading to populate type query indexes.
+///
+/// This iterates `self.outlines` and so MUST hold `self.mu` exclusively —
+/// otherwise a concurrent indexer (e.g. the watcher's seed sweep calling
+/// `commitParsedFileOwnedOutline`) can rehash the `outlines` StringHashMap
+/// mid-iteration, dangling the `entry.value_ptr` pointers used below and
+/// crashing with a general-protection fault (the warm-snapshot scenario-1
+/// abort at the `for (outline.imports.items)` site). Callers go through the
+/// public `rebuildTypeIndexes`, which takes the lock; the per-entry helpers
+/// (`rebuildSymbolIndexFor`/`indexFileSymbols`/`buildTypeGraphForFile`/
+/// `rebuildDepsFor`) are themselves lock-free and rely on this caller-held
+/// lock, the same convention as `commitParsedFileOwnedOutline`.
 pub fn rebuildTypeIndexes(self: *Explorer) void {
+    self.mu.lock();
+    defer self.mu.unlock();
+    self.rebuildTypeIndexesLocked();
+}
+
+pub fn rebuildTypeIndexesLocked(self: *Explorer) void {
     var iter = self.outlines.iterator();
     while (iter.next()) |entry| {
         self.rebuildSymbolIndexFor(entry.key_ptr.*, entry.value_ptr);
         self.type_index.indexFileSymbols(entry.key_ptr.*, entry.value_ptr.symbols.items) catch {};
         self.buildTypeGraphForFile(entry.key_ptr.*, entry.value_ptr);
     }
-    self.rebuildTypeUsageDeps();
+    self.rebuildTypeUsageDepsLocked();
 }
 
+/// Locking wrapper — see `rebuildTypeUsageDepsLocked`.
 pub fn rebuildTypeUsageDeps(self: *Explorer) void {
+    self.mu.lock();
+    defer self.mu.unlock();
+    self.rebuildTypeUsageDepsLocked();
+}
+
+pub fn rebuildTypeUsageDepsLocked(self: *Explorer) void {
     var iter = self.outlines.iterator();
     while (iter.next()) |entry| {
         self.rebuildDepsFor(entry.key_ptr.*, entry.value_ptr) catch {};

@@ -198,15 +198,26 @@ test "csharp parser: outlines modern declarations and member shapes" {
     try expectOutlineSymbol(&outline, "DisposeWork", .method);
     try expectOutlineSymbol(&outline, "ExecuteExplicitAsync", .method);
     try expectOutlineSymbol(&outline, "operator int", .method);
+    // The indexer `public string this[int index]` surfaces as a member named
+    // "this"; the parameter name `index` must never leak as its own symbol.
+    try expectOutlineSymbol(&outline, "this", .variable);
 
+    var found_service_class = false;
     for (outline.symbols.items) |sym| {
         try testing.expect(!std.mem.eql(u8, sym.name, "index"));
         if (sym.kind == .class_def and std.mem.eql(u8, sym.name, "Service")) {
             try testing.expect(sym.line_end > sym.line_start);
-            return;
+            found_service_class = true;
+        }
+        // Indexer: return type extracted from the prefix before `this`, and the
+        // `[int index]` parameter list yields a single `int` param type.
+        if (std.mem.eql(u8, sym.name, "this") and sym.kind == .variable) {
+            try testing.expectEqualStrings("string", sym.return_type.?);
+            try testing.expectEqual(@as(usize, 1), sym.param_types.len);
+            try testing.expectEqualStrings("int", sym.param_types[0]);
         }
     }
-    return error.TestUnexpectedResult;
+    try testing.expect(found_service_class);
 }
 
 test "csharp parser: direct line parsing handles raw strings and operator detail" {
@@ -742,4 +753,65 @@ test "csharp parser: malformed input and braces in strings remain bounded" {
         try testing.expect(!std.mem.eql(u8, sym.name, "localOnly"));
         try testing.expect(!std.mem.eql(u8, sym.name, "Fake"));
     }
+}
+
+test "csharp parser: multiline base list is rejoined into the declaration detail" {
+    // A base list spread across lines used to truncate the type symbol's detail
+    // to the first line, so `IAuthorizeFilter` / `IDisposable` dropped out of
+    // the type graph. The detail must now carry the full base list.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("src/Dashboard.cs",
+        \\public class DashboardController : BaseController,
+        \\    IAuthorizeFilter,
+        \\    IDisposable
+        \\{
+        \\    public void Render() { }
+        \\}
+        \\
+        \\public class SingleLine : Base { }
+    );
+
+    var outline = (try explorer.getOutline("src/Dashboard.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    var dashboard_detail: ?[]const u8 = null;
+    var singleline_detail: ?[]const u8 = null;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .class_def and std.mem.eql(u8, sym.name, "DashboardController")) {
+            dashboard_detail = sym.detail;
+        }
+        if (sym.kind == .class_def and std.mem.eql(u8, sym.name, "SingleLine")) {
+            singleline_detail = sym.detail;
+        }
+    }
+
+    const dd = dashboard_detail orelse return error.TestUnexpectedResult;
+    try testing.expect(std.mem.indexOf(u8, dd, "BaseController") != null);
+    try testing.expect(std.mem.indexOf(u8, dd, "IAuthorizeFilter") != null);
+    try testing.expect(std.mem.indexOf(u8, dd, "IDisposable") != null);
+    // The body brace terminates the declaration and must be present too.
+    try testing.expect(std.mem.indexOfScalar(u8, dd, '{') != null);
+
+    // Single-line declarations keep their brace, so the enrichment must be a
+    // no-op for them (no double-processing, no truncation).
+    const sd = singleline_detail orelse return error.TestUnexpectedResult;
+    try testing.expect(std.mem.indexOf(u8, sd, "Base") != null);
+    try testing.expect(std.mem.indexOfScalar(u8, sd, '{') != null);
+
+    // The type graph (populated during indexing) must reflect every base name.
+    const bases = explorer.type_graph.getBases("DashboardController");
+    var found_base_controller = false;
+    var found_authorize = false;
+    var found_disposable = false;
+    for (bases) |base| {
+        if (std.mem.eql(u8, base, "BaseController")) found_base_controller = true;
+        if (std.mem.eql(u8, base, "IAuthorizeFilter")) found_authorize = true;
+        if (std.mem.eql(u8, base, "IDisposable")) found_disposable = true;
+    }
+    try testing.expect(found_base_controller);
+    try testing.expect(found_authorize);
+    try testing.expect(found_disposable);
 }

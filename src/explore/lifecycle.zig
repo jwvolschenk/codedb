@@ -879,6 +879,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
 
     if (parsed_outline.language == .c_sharp) {
         try enrichCSharpMultilineSignatures(allocator, &parsed_outline, content);
+        try enrichCSharpMultilineBaseLists(allocator, &parsed_outline, content);
     }
 
     // NOTE: consecutive-property collapsing previously ran here, but it
@@ -984,6 +985,86 @@ fn enrichCSharpMultilineSignatures(allocator: std.mem.Allocator, outline: *FileO
         sym.detail = new_detail;
         sym.return_type = new_return_type;
         sym.param_types = new_param_types;
+    }
+}
+
+/// The fast parser records a type declaration's `detail` from its first line
+/// only, so a base list spread across lines (e.g. `class C : Base,\n  IFoo,\n
+/// IBar\n{`) is truncated to `class C : Base,` — and `extractAndRecordBases`
+/// then records only `Base`, losing `IFoo`/`IBar` from the type graph and from
+/// structural type-reference search. Re-join the declaration up to its opening
+/// brace so the full base list survives in `detail`.
+fn enrichCSharpMultilineBaseLists(allocator: std.mem.Allocator, outline: *FileOutline, content: []const u8) !void {
+    var has_multiline_base_list = false;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind != .class_def and sym.kind != .interface_def and sym.kind != .struct_def) continue;
+        const detail = sym.detail orelse continue;
+        if (std.mem.indexOf(u8, detail, " : ") != null and std.mem.indexOfScalar(u8, detail, '{') == null) {
+            has_multiline_base_list = true;
+            break;
+        }
+    }
+    if (!has_multiline_base_list) return;
+
+    var line_offsets: std.ArrayList(usize) = .empty;
+    defer line_offsets.deinit(allocator);
+    try line_offsets.append(allocator, 0);
+    for (content, 0..) |ch, i| {
+        if (ch == '\n' and i + 1 < content.len) try line_offsets.append(allocator, i + 1);
+    }
+
+    for (outline.symbols.items) |*sym| {
+        if (sym.kind != .class_def and sym.kind != .interface_def and sym.kind != .struct_def) continue;
+        const detail = sym.detail orelse continue;
+        // Only the multiline case: a base list is present but the body brace
+        // (which terminates the declaration) is not on this first line. A
+        // single-line declaration already carries its brace; a brace-on-next-
+        // line declaration with no base list has no ` : ` — both are skipped.
+        if (std.mem.indexOf(u8, detail, " : ") == null) continue;
+        if (std.mem.indexOfScalar(u8, detail, '{') != null) continue;
+        if (sym.line_start == 0 or sym.line_start > line_offsets.items.len) continue;
+
+        const start = line_offsets.items[sym.line_start - 1];
+        const remaining = content[start..@min(content.len, start + 64 * 1024)];
+
+        // Accumulate up to and including the line that opens the type body. The
+        // brace marks the end of the base list; everything from `start` to it
+        // is the complete declaration. (We include the `{` so downstream
+        // `findBasePortion`, which keys on ` : `, simply ignores it.)
+        var brace_off: ?usize = null;
+        var scan_i: usize = 0;
+        while (scan_i < remaining.len) : (scan_i += 1) {
+            if (remaining[scan_i] == '{') {
+                brace_off = scan_i;
+                break;
+            }
+            // Stop at the next declaration if the brace never appears (defensive
+            // against malformed/truncated content) — bound by a sane window.
+            if (remaining[scan_i] == ';') {
+                brace_off = scan_i;
+                break;
+            }
+        }
+        const end = (brace_off orelse continue) + 1;
+
+        var normalized: std.ArrayList(u8) = .empty;
+        defer normalized.deinit(allocator);
+        var previous_space = false;
+        for (remaining[0..end]) |ch| {
+            const is_space = ch == ' ' or ch == '\t' or ch == '\r' or ch == '\n';
+            if (is_space) {
+                if (!previous_space) try normalized.append(allocator, ' ');
+            } else {
+                try normalized.append(allocator, ch);
+            }
+            previous_space = is_space;
+        }
+        const joined = std.mem.trim(u8, normalized.items, " \t");
+        if (joined.len == 0) continue;
+
+        const new_detail = try allocator.dupe(u8, joined);
+        allocator.free(sym.detail.?);
+        sym.detail = new_detail;
     }
 }
 
