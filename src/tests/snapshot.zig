@@ -297,6 +297,47 @@ test "issue-46: empty-repo snapshot rejected on load" {
     try testing.expect(exp2.outlines.count() == 0);
 }
 
+test "snapshot records semantic index version for parser cache invalidation" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/versioned.codedb", .{dir_path});
+    defer testing.allocator.free(snap_path);
+
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+    try exp.indexFile("src/model.cs", "public class Model {}");
+    try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, testing.allocator);
+
+    try testing.expectEqual(
+        snapshot_mod.INDEX_VERSION,
+        snapshot_mod.readSnapshotIndexVersion(io, snap_path, testing.allocator).?,
+    );
+
+    // Keep the binary layout intact but mark the semantic index stale. The
+    // loader must reject it even though the source/git state is unchanged.
+    const stale_path = try std.fmt.allocPrint(testing.allocator, "{s}/stale.codedb", .{dir_path});
+    defer testing.allocator.free(stale_path);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, snap_path, testing.allocator, .limited(16 * 1024 * 1024));
+    defer testing.allocator.free(bytes);
+    const marker = try std.fmt.allocPrint(testing.allocator, "\"index_version\":{d}", .{snapshot_mod.INDEX_VERSION});
+    defer testing.allocator.free(marker);
+    const marker_pos = std.mem.indexOf(u8, bytes, marker) orelse return error.TestUnexpectedResult;
+    const value_start = marker_pos + "\"index_version\":".len;
+    @memset(bytes[value_start .. marker_pos + marker.len], '0');
+    const stale_file = try std.Io.Dir.cwd().createFile(io, stale_path, .{});
+    defer stale_file.close(io);
+    try stale_file.writeStreamingAll(io, bytes);
+
+    var stale_exp = Explorer.init(testing.allocator);
+    defer stale_exp.deinit();
+    var stale_store = Store.init(testing.allocator);
+    defer stale_store.deinit();
+    try testing.expect(!snapshot_mod.loadSnapshot(io, stale_path, dir_path, &stale_exp, &stale_store, testing.allocator));
+}
+
 test "snapshot: writer streams uncached file contents for large repos" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

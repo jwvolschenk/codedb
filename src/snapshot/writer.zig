@@ -13,6 +13,7 @@ const sensitive = @import("sensitive.zig");
 const root_resolve = @import("../root_resolve.zig");
 const MAGIC = format.MAGIC;
 const FORMAT_VERSION = format.FORMAT_VERSION;
+const INDEX_VERSION = format.INDEX_VERSION;
 const SectionId = format.SectionId;
 const SectionEntry = format.SectionEntry;
 const isSensitivePath = sensitive.isSensitivePath;
@@ -75,12 +76,13 @@ pub fn writeSnapshot(
         const root_hash = root_resolve.cacheKey(root_path);
         const cbi_hash = explorer.codedbignore_hash orelse @as(u64, 0);
         try writer.print(
-            \\{{"file_count":{d},"total_bytes":{d},"indexed_at":{d},"format_version":{d},"root_hash":{d},"codedbignore_hash":{d}
+            \\{{"file_count":{d},"total_bytes":{d},"indexed_at":{d},"format_version":{d},"index_version":{d},"root_hash":{d},"codedbignore_hash":{d}
         , .{
             file_count_meta,
             total_bytes,
             @divTrunc(cio.nanoTimestamp(), 1_000_000_000),
             FORMAT_VERSION,
+            INDEX_VERSION,
             root_hash,
             cbi_hash,
         });

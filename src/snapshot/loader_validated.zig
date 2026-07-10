@@ -54,6 +54,7 @@ pub fn loadSnapshotValidated(
     // Parse META section to get expected file_count and root_hash
     var expected_file_count: ?u32 = null;
     var meta_root_hash: ?u64 = null;
+    var index_version_matches = false;
     if (sections.get(@intFromEnum(SectionId.meta))) |meta_entry| {
         if (meta_entry.length <= 256 * 1024 * 1024) blk: {
             const mb = allocator.alloc(u8, @intCast(meta_entry.length)) catch break :blk;
@@ -66,11 +67,19 @@ pub fn loadSnapshotValidated(
             if (parseJsonU64(mb, "root_hash")) |rh| {
                 meta_root_hash = rh;
             }
+            if (parseJsonU32(mb, "index_version")) |version| {
+                index_version_matches = version == format.INDEX_VERSION;
+            }
             if (parseJsonU64(mb, "codedbignore_hash")) |cbi| {
                 explorer.codedbignore_hash = cbi;
             }
         }
     }
+
+    // A binary upgrade can change parser semantics without changing the
+    // repository's git HEAD. Legacy or mismatched snapshots must therefore be
+    // rescanned instead of silently serving stale outlines indefinitely.
+    if (!index_version_matches) return false;
 
     // Validate repo identity if requested (issue-41 / Task 4). The hash MUST
     // be computed via root_resolve.cacheKey to match the writer (Task 2 wired

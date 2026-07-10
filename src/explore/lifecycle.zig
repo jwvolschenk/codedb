@@ -393,7 +393,7 @@ pub fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []co
     var in_py_docstring = false;
     var in_block_comment = false;
     var fsharp_comment_depth: usize = 0;
-    var in_csharp_attribute_block = false;
+    var csharp_attribute_state: csharp_parser.AttributeState = .{};
     var csharp_pending_decorators: std.ArrayList([]const u8) = .empty;
     defer {
         clearDecoratorList(parser.allocator, &csharp_pending_decorators);
@@ -404,17 +404,24 @@ pub fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []co
     var csharp_brace_depth: i32 = 0;
     var csharp_enum_depth: ?i32 = null;
     var csharp_enum_pending = false;
-    var csharp_type_depths: [32]i32 = undefined;
+    var csharp_type_depths = [_]i32{0} ** 32;
     var csharp_type_depth_count: usize = 0;
     var csharp_type_pending = false;
-    // Preprocessor-conditional brace reconciliation: a snapshot of the C# scope
-    // state is pushed on every `#if*` and popped (with brace-depth clamping) on
-    // `#endif`. This neutralizes drift from brace-imbalanced conditional pairs
-    // (e.g. an opening `{` in `#if DEBUG` whose `}` lives in `#else`). See the
-    // `PreprocessorKind` classifier in `csharp_parser.zig`.
-    const CSharpPpSnapshot = struct { brace_depth: i32, type_depth_count: usize, enum_depth: ?i32 };
+    // Each preprocessor branch is parsed from the same scope snapshot. We
+    // intentionally over-include symbols from all branches, but branch-local
+    // braces must not corrupt the scope used by the next branch or by code
+    // after `#endif`.
+    const CSharpPpSnapshot = struct {
+        brace_depth: i32,
+        enum_depth: ?i32,
+        enum_pending: bool,
+        type_depths: [32]i32,
+        type_depth_count: usize,
+        type_pending: bool,
+    };
     var csharp_pp_stack: [32]CSharpPpSnapshot = undefined;
     var csharp_pp_depth: usize = 0;
+    var csharp_pp_overflow_depth: usize = 0;
     var in_go_import_block = false;
     var c_brace_depth: u32 = 0;
     var in_razor_code_block: bool = false;
@@ -620,41 +627,60 @@ pub fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []co
                 if (trimmed.len == 0) continue;
             }
             // Preprocessor directives are brace-neutral and never carry
-            // attributes/decorators: classify and short-circuit before the
-            // symbol/brace machinery. `#if*` snapshots the scope state; `#endif`
-            // pops it and clamps brace depth back to neutralize drift from
-            // brace-imbalanced conditional pairs.
+            // declarations. Alternate branches restart from the `#if` scope;
+            // `#endif` restores that scope and pops the snapshot.
             if (csharp_parser.preprocessorDirective(trimmed)) |directive| {
                 switch (directive) {
                     .conditional_if => {
                         if (csharp_pp_depth < csharp_pp_stack.len) {
                             csharp_pp_stack[csharp_pp_depth] = .{
                                 .brace_depth = csharp_brace_depth,
-                                .type_depth_count = csharp_type_depth_count,
                                 .enum_depth = csharp_enum_depth,
+                                .enum_pending = csharp_enum_pending,
+                                .type_depths = csharp_type_depths,
+                                .type_depth_count = csharp_type_depth_count,
+                                .type_pending = csharp_type_pending,
                             };
                             csharp_pp_depth += 1;
+                        } else csharp_pp_overflow_depth += 1;
+                    },
+                    .conditional_else, .conditional_elif => {
+                        if (csharp_pp_overflow_depth == 0 and csharp_pp_depth > 0) {
+                            const snap = csharp_pp_stack[csharp_pp_depth - 1];
+                            restoreCSharpPreprocessorScope(
+                                snap,
+                                &csharp_brace_depth,
+                                &csharp_enum_depth,
+                                &csharp_enum_pending,
+                                &csharp_type_depths,
+                                &csharp_type_depth_count,
+                                &csharp_type_pending,
+                            );
                         }
                     },
                     .conditional_endif => {
-                        if (csharp_pp_depth > 0) {
+                        if (csharp_pp_overflow_depth > 0) {
+                            csharp_pp_overflow_depth -= 1;
+                        } else if (csharp_pp_depth > 0) {
                             csharp_pp_depth -= 1;
                             const snap = csharp_pp_stack[csharp_pp_depth];
-                            // Clamp brace depth back to the snapshot. Only brace
-                            // depth is restored: resetting type/enum stacks fully
-                            // risks hiding genuinely structural braces that happen
-                            // to live inside a conditional region.
-                            if (csharp_brace_depth > snap.brace_depth) {
-                                csharp_brace_depth = snap.brace_depth;
-                            }
+                            restoreCSharpPreprocessorScope(
+                                snap,
+                                &csharp_brace_depth,
+                                &csharp_enum_depth,
+                                &csharp_enum_pending,
+                                &csharp_type_depths,
+                                &csharp_type_depth_count,
+                                &csharp_type_pending,
+                            );
                         }
                     },
-                    .conditional_else, .conditional_elif, .other => {},
+                    .other => {},
                 }
                 continue;
             }
             try collectCSharpDecorators(parser.allocator, trimmed, &csharp_pending_decorators);
-            if (csharp_parser.stripAttributeLine(trimmed, &in_csharp_attribute_block)) |after_attrs| {
+            if (csharp_parser.stripAttributeLine(trimmed, &csharp_attribute_state)) |after_attrs| {
                 const inside_enum = if (csharp_enum_depth) |depth| csharp_brace_depth >= depth else false;
                 const declares_type = csharp_parser.lineDeclaresType(after_attrs);
                 const declares_enum = declares_type and csharp_parser.lineDeclaresEnum(after_attrs);
@@ -666,6 +692,7 @@ pub fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []co
                 try parser.parseCSharpLineWithOptions(after_attrs, line_num, &outline, .{
                     .allow_enum_member = inside_enum,
                     .allow_field_declarations = at_type_member_scope,
+                    .allow_type_member_declarations = at_type_member_scope,
                 });
                 if (outline.symbols.items.len > before_count) {
                     try attachDecoratorsToSymbols(parser.allocator, &outline, before_count, csharp_pending_decorators.items);
@@ -953,9 +980,9 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
 fn enrichCSharpMultilineSignatures(allocator: std.mem.Allocator, outline: *FileOutline, content: []const u8) !void {
     var has_multiline_signature = false;
     for (outline.symbols.items) |sym| {
-        if (sym.kind != .method and sym.kind != .function) continue;
+        if (!isCSharpSignatureKind(sym.kind)) continue;
         const detail = sym.detail orelse continue;
-        if (std.mem.indexOfScalar(u8, detail, '(') != null and std.mem.indexOfScalar(u8, detail, ')') == null) {
+        if (std.mem.indexOfScalar(u8, detail, '(') != null and csharp_parser.findSignatureClose(detail) == null) {
             has_multiline_signature = true;
             break;
         }
@@ -970,9 +997,9 @@ fn enrichCSharpMultilineSignatures(allocator: std.mem.Allocator, outline: *FileO
     }
 
     for (outline.symbols.items) |*sym| {
-        if (sym.kind != .method and sym.kind != .function) continue;
+        if (!isCSharpSignatureKind(sym.kind)) continue;
         const detail = sym.detail orelse continue;
-        if (std.mem.indexOfScalar(u8, detail, '(') == null or std.mem.indexOfScalar(u8, detail, ')') != null) continue;
+        if (std.mem.indexOfScalar(u8, detail, '(') == null or csharp_parser.findSignatureClose(detail) != null) continue;
         if (sym.line_start == 0 or sym.line_start > line_offsets.items.len) continue;
 
         const start = line_offsets.items[sym.line_start - 1];
@@ -997,7 +1024,7 @@ fn enrichCSharpMultilineSignatures(allocator: std.mem.Allocator, outline: *FileO
             .symbol => |candidate| candidate,
             else => continue,
         };
-        if (parsed_sym.kind != .method and parsed_sym.kind != .function) continue;
+        if (cSharpSymbolKindForParser(parsed_sym.kind) != sym.kind) continue;
         if (!std.mem.eql(u8, parsed_sym.name, sym.name)) continue;
 
         const new_detail = try allocator.dupe(u8, joined);
@@ -1028,6 +1055,41 @@ fn enrichCSharpMultilineSignatures(allocator: std.mem.Allocator, outline: *FileO
         sym.return_type = new_return_type;
         sym.param_types = new_param_types;
     }
+}
+
+fn isCSharpSignatureKind(kind: SymbolKind) bool {
+    return kind == .method or kind == .function or kind == .class_def or kind == .struct_def;
+}
+
+fn cSharpSymbolKindForParser(kind: csharp_parser.Kind) SymbolKind {
+    return switch (kind) {
+        .class_def => .class_def,
+        .interface_def => .interface_def,
+        .enum_def => .enum_def,
+        .struct_def => .struct_def,
+        .function => .function,
+        .method => .method,
+        .variable => .variable,
+        .constant => .constant,
+        .type_alias => .type_alias,
+    };
+}
+
+fn restoreCSharpPreprocessorScope(
+    snap: anytype,
+    brace_depth: *i32,
+    enum_depth: *?i32,
+    enum_pending: *bool,
+    type_depths: *[32]i32,
+    type_depth_count: *usize,
+    type_pending: *bool,
+) void {
+    brace_depth.* = snap.brace_depth;
+    enum_depth.* = snap.enum_depth;
+    enum_pending.* = snap.enum_pending;
+    type_depths.* = snap.type_depths;
+    type_depth_count.* = snap.type_depth_count;
+    type_pending.* = snap.type_pending;
 }
 
 /// The fast parser records a type declaration's `detail` from its first line

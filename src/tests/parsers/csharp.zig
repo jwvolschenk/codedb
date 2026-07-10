@@ -433,6 +433,49 @@ test "csharp parser: tuple-return method signatures" {
     }
 }
 
+test "csharp parser: multiline tuple returns and primary constructors are enriched" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("src/Signatures.cs",
+        \\public class Handler(
+        \\    IService service,
+        \\    string name)
+        \\{
+        \\    public (string Name, int Count) Parse(
+        \\        string value,
+        \\        int count)
+        \\    {
+        \\        return (value, count);
+        \\    }
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("src/Signatures.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    var found_handler = false;
+    var found_parse = false;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .class_def and std.mem.eql(u8, sym.name, "Handler")) {
+            try testing.expectEqual(@as(usize, 2), sym.param_types.len);
+            try testing.expectEqualStrings("IService", sym.param_types[0]);
+            try testing.expectEqualStrings("string", sym.param_types[1]);
+            found_handler = true;
+        }
+        if (sym.kind == .method and std.mem.eql(u8, sym.name, "Parse")) {
+            try testing.expectEqualStrings("(string Name, int Count)", sym.return_type.?);
+            try testing.expectEqual(@as(usize, 2), sym.param_types.len);
+            try testing.expectEqualStrings("string", sym.param_types[0]);
+            try testing.expectEqualStrings("int", sym.param_types[1]);
+            found_parse = true;
+        }
+    }
+    try testing.expect(found_handler);
+    try testing.expect(found_parse);
+}
+
 test "csharp parser: preprocessor directive classification" {
     // Leaf-level classifier (no lifecycle scope state).
     try testing.expectEqual(csharp_parser.PreprocessorKind.conditional_if, csharp_parser.preprocessorDirective("#if DEBUG").?);
@@ -594,6 +637,31 @@ test "csharp parser: captures attributes on following symbols" {
         }
     }
     try testing.expect(found_save);
+}
+
+test "csharp parser: multiline attribute strings do not hide following members" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("src/Generated.cs",
+        \\public class Generated
+        \\{
+        \\    [Display(Description = @"First line
+        \\second line", Order = 0)]
+        \\    public string @Value { get; set; }
+        \\    [Matrix(new[] { 1, 2 })]
+        \\    public int After { get; set; }
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("src/Generated.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try expectOutlineSymbol(&outline, "Value", .variable);
+    try expectOutlineSymbol(&outline, "After", .variable);
+    for (outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "Value")) try testing.expectEqualStrings("string", sym.return_type.?);
+    }
 }
 
 test "csharp parser: ignores comments attributes and declarations inside strings" {
@@ -936,6 +1004,83 @@ test "csharp parser: enum context and nested calls do not pollute definitions" {
     try testing.expect(found_constructor);
     try testing.expect(found_multiline_constructor);
     try expectOutlineSymbol(&outline, "LocalAsync", .method);
+}
+
+test "csharp parser: initialized properties and multiline fields remain visible without switch-arm noise" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("src/Model.cs",
+        \\public class Model
+        \\{
+        \\    private static List<string> Values = new List<string>()
+        \\    {
+        \\        "one",
+        \\    };
+        \\    public Collection<string> Roles { get; private set; } = new Collection<string>();
+        \\    public string @event { get; set; }
+        \\    public string Color(string value)
+        \\    {
+        \\        return value switch
+        \\        {
+        \\            "Ready" or "Active" => "green",
+        \\            _ => "gray",
+        \\        };
+        \\    }
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("src/Model.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    try expectOutlineSymbol(&outline, "Values", .variable);
+    try expectOutlineSymbol(&outline, "Roles", .variable);
+    try expectOutlineSymbol(&outline, "event", .variable);
+    for (outline.symbols.items) |sym| {
+        try testing.expect(!std.mem.eql(u8, sym.name, "Active"));
+        try testing.expect(!std.mem.eql(u8, sym.name, "Ready"));
+        if (std.mem.eql(u8, sym.name, "Roles")) {
+            try testing.expectEqualStrings("Collection<string>", sym.return_type.?);
+        }
+        if (std.mem.eql(u8, sym.name, "event")) {
+            try testing.expectEqualStrings("string", sym.return_type.?);
+        }
+    }
+}
+
+test "csharp parser: preprocessor branches restore full member scope" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("src/Branches.cs",
+        \\public class Branches
+        \\{
+        \\#if FIRST
+        \\}
+        \\#else
+        \\    {
+        \\#endif
+        \\    public void Run()
+        \\    {
+        \\        return value switch
+        \\        {
+        \\            "Wrong" => "noise",
+        \\            _ => "ok",
+        \\        };
+        \\    }
+        \\    public List<string> After { get; } = new List<string>();
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("src/Branches.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try expectOutlineSymbol(&outline, "Run", .method);
+    try expectOutlineSymbol(&outline, "After", .variable);
+    for (outline.symbols.items) |sym| {
+        try testing.expect(!std.mem.eql(u8, sym.name, "Wrong"));
+    }
 }
 
 test "csharp parser: malformed input and braces in strings remain bounded" {

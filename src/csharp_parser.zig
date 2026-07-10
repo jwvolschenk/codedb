@@ -59,6 +59,10 @@ pub const ParseOptions = struct {
     /// scripts). Lifecycle parsing disables this inside method/local-function
     /// bodies so local `const` values do not become global definitions.
     allow_field_declarations: bool = true,
+    /// Properties, events, and indexers are only declarations at type-member
+    /// scope. Disabling them inside executable bodies prevents switch-expression
+    /// arms such as `"Ready" => 1` from becoming fake property symbols.
+    allow_type_member_declarations: bool = true,
 };
 
 pub fn parseLineWithOptions(raw_line: []const u8, options: ParseOptions) ParsedLine {
@@ -71,11 +75,13 @@ pub fn parseLineWithOptions(raw_line: []const u8, options: ParseOptions) ParsedL
     if (extractTypeDeclaration(line)) |decl| return .{ .symbol = decl };
     if (extractDelegateSymbol(line)) |sym| return .{ .symbol = sym };
     if (extractMethodSignature(line)) |sym| return .{ .symbol = sym };
-    if (extractEventName(line)) |name| return .{ .symbol = .{ .name = name, .kind = .variable } };
-    // Indexers (`Type this[...] { ... }`) are checked before properties: their
-    // `[...]` param list trips the property/field extractors otherwise.
-    if (extractIndexerSymbol(line)) |sym| return .{ .symbol = sym };
-    if (extractPropertySymbol(line)) |sym| return .{ .symbol = sym };
+    if (options.allow_type_member_declarations) {
+        if (extractEventName(line)) |name| return .{ .symbol = .{ .name = name, .kind = .variable } };
+        // Indexers (`Type this[...] { ... }`) are checked before properties:
+        // their `[...]` param list trips the property/field extractors otherwise.
+        if (extractIndexerSymbol(line)) |sym| return .{ .symbol = sym };
+        if (extractPropertySymbol(line)) |sym| return .{ .symbol = sym };
+    }
     if (options.allow_field_declarations) {
         if (extractFieldName(line)) |field| return .{ .symbol = field };
     }
@@ -344,23 +350,86 @@ pub fn updateRawStringState(line: []const u8, raw_quote_count: *usize) void {
     }
 }
 
-pub fn stripAttributeLine(line: []const u8, in_attribute_block: *bool) ?[]const u8 {
+pub const AttributeState = struct {
+    in_block: bool = false,
+    quote: u8 = 0,
+    verbatim: bool = false,
+    raw_quote_count: usize = 0,
+    bracket_depth: usize = 0,
+};
+
+/// Strip one or more leading C# attributes while carrying strings and nested
+/// brackets across lines. Generated attributes commonly contain multiline
+/// verbatim descriptions; a boolean-only state mistakes the closing quote on
+/// the continuation line for a new opener and can hide the rest of the file.
+pub fn stripAttributeLine(line: []const u8, state: *AttributeState) ?[]const u8 {
     var rest = std.mem.trimStart(u8, line, " \t");
-    if (in_attribute_block.*) {
-        const close = findAttributeClose(rest) orelse return null;
-        in_attribute_block.* = false;
+    if (state.in_block) {
+        const close = findAttributeCloseStateful(rest, 0, state) orelse return null;
+        state.* = .{};
         rest = std.mem.trimStart(u8, rest[close + 1 ..], " \t");
         if (rest.len == 0) return null;
     }
     while (startsWith(rest, "[")) {
-        const close = findAttributeClose(rest) orelse {
-            in_attribute_block.* = true;
-            return null;
-        };
+        state.* = .{ .in_block = true, .bracket_depth = 1 };
+        const close = findAttributeCloseStateful(rest, 1, state) orelse return null;
+        state.* = .{};
         rest = std.mem.trimStart(u8, rest[close + 1 ..], " \t");
         if (rest.len == 0) return null;
     }
     return rest;
+}
+
+fn findAttributeCloseStateful(line: []const u8, start: usize, state: *AttributeState) ?usize {
+    var i = start;
+    while (i < line.len) : (i += 1) {
+        const ch = line[i];
+        if (state.raw_quote_count != 0) {
+            if (ch == '"') {
+                const count = countConsecutiveQuotes(line, i);
+                if (count >= state.raw_quote_count) {
+                    i += state.raw_quote_count - 1;
+                    state.raw_quote_count = 0;
+                }
+            }
+            continue;
+        }
+        if (state.quote != 0) {
+            if (state.quote == '"' and state.verbatim and ch == '"' and i + 1 < line.len and line[i + 1] == '"') {
+                i += 1;
+                continue;
+            }
+            if (!state.verbatim and ch == '\\' and i + 1 < line.len) {
+                i += 1;
+                continue;
+            }
+            if (ch == state.quote) {
+                state.quote = 0;
+                state.verbatim = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            if (rawStringDelimiterLength(line, i)) |count| {
+                state.raw_quote_count = count;
+                i += count - 1;
+                continue;
+            }
+        }
+        if (ch == '"' or ch == '\'') {
+            state.quote = ch;
+            state.verbatim = ch == '"' and isVerbatimStringStart(line, i);
+            continue;
+        }
+        if (ch == '[') {
+            state.bracket_depth += 1;
+        } else if (ch == ']') {
+            if (state.bracket_depth == 0) return null;
+            state.bracket_depth -= 1;
+            if (state.bracket_depth == 0) return i;
+        }
+    }
+    return null;
 }
 
 fn stripLineComment(raw_line: []const u8) []const u8 {
@@ -592,10 +661,11 @@ fn extractDelegateSymbol(line: []const u8) ?Symbol {
     if (std.mem.endsWith(u8, stripped, ">")) stripped = stripTrailingGenericSuffix(stripped);
     const span = extractLastIdentSpan(stripped) orelse return .{ .name = name, .kind = .function };
     // Use raw prefix to preserve generics like Task<Result>
-    const ret_end = if (span.start > 0 and before_open[span.start - 1] == ' ')
-        span.start - 1
+    const name_start = cSharpIdentifierStart(before_open, span.start);
+    const ret_end = if (name_start > 0 and before_open[name_start - 1] == ' ')
+        name_start - 1
     else
-        span.start;
+        name_start;
     const ret_type_raw = std.mem.trim(u8, before_open[0..ret_end], " \t");
     const clean_type = stripCSharpModifiers(ret_type_raw);
     return .{
@@ -635,10 +705,11 @@ fn extractMethodSignature(line: []const u8) ?Symbol {
     if (std.mem.endsWith(u8, stripped, ">")) stripped = stripTrailingGenericSuffix(stripped);
     const span = extractLastIdentSpan(stripped) orelse return .{ .name = name, .kind = .method };
     // Use the raw prefix to get the full return type including generics
-    const ret_end = if (span.start > 0 and before_open[span.start - 1] == ' ')
-        span.start - 1
+    const name_start = cSharpIdentifierStart(before_open, span.start);
+    const ret_end = if (name_start > 0 and before_open[name_start - 1] == ' ')
+        name_start - 1
     else
-        span.start;
+        name_start;
     const raw_prefix = before_open[0..ret_end];
     // Strip C# modifiers (public, async, static, etc.) to get just the type
     const clean_type = stripCSharpModifiers(raw_prefix);
@@ -721,8 +792,10 @@ fn extractEventName(line: []const u8) ?[]const u8 {
 }
 
 fn extractPropertyName(line: []const u8) ?[]const u8 {
-    if (std.mem.indexOfScalar(u8, line, '(') != null) return null;
     const body_end = findPropertyBodyStart(line) orelse return null;
+    // Calls are valid in an initializer/accessor/expression body. Only a `(`
+    // before the property body means this is a method-like declaration.
+    if (std.mem.indexOfScalar(u8, line[0..body_end], '(') != null) return null;
     const before = std.mem.trimEnd(u8, line[0..body_end], " \t");
     if (std.mem.indexOf(u8, before, " this[") != null or std.mem.endsWith(u8, before, " this")) return null;
     const span = extractLastIdentSpan(before) orelse return null;
@@ -736,8 +809,10 @@ fn extractPropertyName(line: []const u8) ?[]const u8 {
 }
 
 fn extractPropertySymbol(line: []const u8) ?Symbol {
-    if (std.mem.indexOfScalar(u8, line, '(') != null) return null;
     const body_end = findPropertyBodyStart(line) orelse return null;
+    // Calls are valid after `{`/`=>`, for example
+    // `public List<T> Items { get; } = new List<T>()`.
+    if (std.mem.indexOfScalar(u8, line[0..body_end], '(') != null) return null;
     // `Items = new List<T> { ... }` is an object/collection initializer, not a
     // property declaration. A real property initializer has its accessor body
     // before the assignment (`public T Items { get; } = ...`).
@@ -750,12 +825,13 @@ fn extractPropertySymbol(line: []const u8) ?Symbol {
     const span = extractLastIdentSpan(before) orelse return null;
     const name = span.text;
     if (isNonMemberName(name)) return null;
-    const before_name = std.mem.trim(u8, before[0..span.start], " \t");
+    const name_start = cSharpIdentifierStart(before, span.start);
+    const before_name = std.mem.trim(u8, before[0..name_start], " \t");
     if (before_name.len == 0 or std.mem.endsWith(u8, before_name, ".") or
         std.mem.endsWith(u8, before_name, "="))
         return null;
     // Extract property type: the prefix before the property name, after stripping modifiers
-    const raw_prefix = std.mem.trim(u8, before[0..span.start], " \t");
+    const raw_prefix = std.mem.trim(u8, before[0..name_start], " \t");
     const clean_type = stripCSharpModifiers(raw_prefix);
     var ret_type: ?[]const u8 = null;
     if (clean_type.len > 0 and looksLikeReturnTypePrefix(clean_type)) {
@@ -903,10 +979,10 @@ fn findPropertyBodyStart(line: []const u8) ?usize {
 fn extractFieldName(line: []const u8) ?Symbol {
     const semi = std.mem.indexOfScalar(u8, line, ';');
     const eq = std.mem.indexOfScalar(u8, line, '=') orelse semi orelse return null;
-    const end = semi orelse blk: {
-        if (findRawStringStart(line[eq + 1 ..])) |_| break :blk line.len;
-        return null;
-    };
+    // Member-scope tracking supplies the structural context, so an assignment
+    // does not need to finish on this line. This preserves fields initialized
+    // by multiline collections, object initializers, or concatenated strings.
+    const end = semi orelse line.len;
     if (std.mem.indexOfScalar(u8, line[0..eq], '(') != null) return null;
     const has_member_modifier = containsAny(line, &.{ "public ", "private ", "protected ", "internal ", "static ", "const ", "readonly ", "volatile " });
     if (!has_member_modifier) return null;
@@ -916,7 +992,8 @@ fn extractFieldName(line: []const u8) ?Symbol {
     if (isNonMemberName(name)) return null;
     // Extract field type: prefix before the field name
     const span = extractLastIdentSpan(before) orelse return .{ .name = name, .kind = if (containsAny(line, &.{"const "})) .constant else .variable };
-    const raw_prefix = std.mem.trim(u8, before[0..span.start], " \t");
+    const name_start = cSharpIdentifierStart(before, span.start);
+    const raw_prefix = std.mem.trim(u8, before[0..name_start], " \t");
     const clean_type = stripCSharpModifiers(raw_prefix);
     var ret_type: ?[]const u8 = null;
     if (clean_type.len > 0 and extractLastTypeIdent(clean_type) != null) {
@@ -1172,6 +1249,13 @@ const extractLastIdent = ident.extractLastIdent;
 const isIdentChar = ident.isIdentChar;
 
 const isControlKeyword = ident.isControlKeyword;
+
+/// C# verbatim identifiers include an `@` source prefix, but the indexed name
+/// omits it. Return the prefix boundary before that marker so it does not leak
+/// into the symbol's return/field type.
+fn cSharpIdentifierStart(s: []const u8, ident_start: usize) usize {
+    return if (ident_start > 0 and s[ident_start - 1] == '@') ident_start - 1 else ident_start;
+}
 
 fn isNonMemberName(name: []const u8) bool {
     const keywords = [_][]const u8{ "get", "set", "init", "add", "remove", "value", "if", "for", "while", "switch", "catch", "return", "throw", "new" };
@@ -1442,7 +1526,11 @@ fn findMatchingParen(line: []const u8, open: usize) ?usize {
 /// Locate the closing parenthesis for the first callable signature in `text`.
 /// `text` may span lines; callers use this to enrich line-oriented outlines.
 pub fn findSignatureClose(text: []const u8) ?usize {
-    const open = std.mem.indexOfScalar(u8, text, '(') orelse return null;
+    const first_open = std.mem.indexOfScalar(u8, text, '(') orelse return null;
+    // Tuple-return methods have a return-type tuple before their actual
+    // parameter list. Use the same disambiguation as the line parser so a
+    // multiline parameter list is not mistaken for a complete signature.
+    const open = tupleReturnRealSignatureOpen(text, first_open) orelse first_open;
     return findMatchingParen(text, open);
 }
 

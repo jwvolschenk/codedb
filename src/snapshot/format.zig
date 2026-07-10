@@ -28,6 +28,11 @@ const path_safety = @import("../path_safety.zig");
 
 pub const MAGIC = [4]u8{ 'C', 'D', 'B', 0x01 };
 pub const FORMAT_VERSION: u16 = 3;
+/// Semantic version of indexed outline/search data. Increment this whenever a
+/// parser or indexing rule changes in a way that requires unchanged source
+/// files to be parsed again. Unlike FORMAT_VERSION, this does not describe the
+/// binary container layout.
+pub const INDEX_VERSION: u32 = 1;
 
 pub const SectionId = enum(u32) {
     tree = 1,
@@ -153,6 +158,15 @@ pub fn readSnapshotCodedbIgnoreHash(io: std.Io, path: []const u8, allocator: std
     if (nr != mb.len) return null;
 
     return parseJsonU64(mb, "codedbignore_hash");
+}
+
+/// Read the semantic index version stored in META. Missing means the snapshot
+/// predates parser-aware cache invalidation and must be rebuilt.
+pub fn readSnapshotIndexVersion(io: std.Io, path: []const u8, allocator: std.mem.Allocator) ?u32 {
+    const meta = readSectionBytes(io, path, .meta, allocator) catch return null;
+    const mb = meta orelse return null;
+    defer allocator.free(mb);
+    return parseJsonU32(mb, "index_version");
 }
 
 /// Read the `dirty_paths` array from a snapshot's META section — the list of
