@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # publish-codedb.sh — Build codedb from local source and publish as a GitHub Release
 # Interactive version prompt — suggests the next semver based on the latest tag,
-# then creates/pushes the tag, builds cross-platform binaries, and uploads to
-# GitHub Releases.
+# then records that version in Git, creates/pushes a tag for that commit,
+# builds cross-platform binaries, and uploads to GitHub Releases.
 #
 # Builds from the repo's own source tree (includes custom C#/F# parsers).
 #
@@ -261,6 +261,52 @@ inject_version() {
     info "Injected version ${semver} into release_info.zig"
 }
 
+# ── Record the release version before tagging ─────────────────────────────
+# release_info.zig is compiled into the binary for `codedb --version`, update
+# checks, and telemetry.  The tag must therefore point at the commit which
+# contains the matching version, rather than at the preceding commit.
+record_release_version() {
+    local tag="$1"
+    local branch semver
+    branch="$(git branch --show-current)"
+    [ -n "$branch" ] || die "Release publishing requires a checked-out branch"
+
+    inject_version "$tag"
+    semver="${tag#v}"
+    semver="${semver#V}"
+
+    if git diff --quiet -- src/release_info.zig; then
+        info "release_info.zig already contains version ${semver}"
+    else
+        git add src/release_info.zig
+        git commit -m "release: ${tag}" \
+            -m "Record ${semver} in the source used by published binaries."
+        ok "Committed release version ${semver}"
+    fi
+
+    git push origin "HEAD:refs/heads/${branch}" || die "Failed to push release commit to origin/${branch}"
+    ok "Release commit pushed"
+}
+
+# ── Create a tag that points at the release-version commit ───────────────
+create_and_push_tag() {
+    local tag="$1"
+    local tag_commit
+
+    if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+        tag_commit="$(git rev-list -n 1 "$tag")"
+        [ "$tag_commit" = "$(git rev-parse HEAD)" ] || \
+            die "Existing tag ${tag} does not point at the release-version commit"
+        warn "Tag ${tag} already exists locally and points at HEAD"
+    else
+        git tag -a "$tag" -m "Release ${tag}"
+        ok "Created tag ${tag}"
+    fi
+
+    git push origin "$tag" || die "Failed to push tag ${tag} to origin"
+    ok "Tag ${tag} pushed"
+}
+
 # ── Resolve which targets to build ───────────────────────────────────────
 resolve_targets() {
     # If PLATFORMS env var is set, use it (space-separated friendly names)
@@ -326,6 +372,11 @@ main() {
 
     check_prereqs
 
+    cd "$REPO_DIR"
+    if [ -n "$(git status --porcelain)" ]; then
+        die "Working tree is not clean. Commit or stash changes before publishing."
+    fi
+
     # 1. Determine version tag
     local tag="${1:-}"
     if [ -z "$tag" ]; then
@@ -338,38 +389,27 @@ main() {
     # 2. Confirm before proceeding
     echo ""
     printf "  ${W}This will:${N}\n"
-    printf "    ${D}1.${N} Create and push git tag ${C}${tag}${N}\n"
-    printf "    ${D}2.${N} Build binaries for ${#ALL_TARGETS[@]} platforms\n"
-    printf "    ${D}3.${N} Upload to https://github.com/${FORK_REPO}/releases\n"
+    printf "    ${D}1.${N} Commit and push ${C}src/release_info.zig${N} for ${C}${tag}${N}\n"
+    printf "    ${D}2.${N} Create and push git tag ${C}${tag}${N} at that commit\n"
+    printf "    ${D}3.${N} Build binaries for ${#ALL_TARGETS[@]} platforms\n"
+    printf "    ${D}4.${N} Upload to https://github.com/${FORK_REPO}/releases\n"
     echo ""
     printf "  Continue? [y/N] "
     read -r confirm
     [[ "$confirm" =~ ^[Yy]$ ]] || { printf "\n  ${D}Aborted.${N}\n\n"; exit 0; }
 
-    # 3. Create and push tag
+    # 3. Update and push the versioned source, then tag that exact commit.
     echo ""
+    info "Recording version ${tag} before tagging..."
+    record_release_version "$tag"
     info "Creating tag ${tag}..."
-    cd "$REPO_DIR"
-    git tag -a "$tag" -m "Release ${tag}" 2>/dev/null || {
-        warn "Tag ${tag} already exists locally"
-    }
-    git push origin "$tag" 2>/dev/null || {
-        if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
-            warn "Tag ${tag} already exists on remote"
-        else
-            die "Failed to push tag ${tag} to origin"
-        fi
-    }
-    ok "Tag ${tag} pushed"
+    create_and_push_tag "$tag"
 
-    # 4. Inject version into source before building
-    inject_version "$tag"
-
-    # 5. Clean release dir for fresh build
+    # 4. Clean release dir for fresh build
     rm -rf "$RELEASE_DIR"
     mkdir -p "$RELEASE_DIR"
 
-    # 6. Resolve target list
+    # 5. Resolve target list
     local targets_str
     targets_str="$(resolve_targets)"
     read -ra targets <<< "$targets_str"
@@ -381,7 +421,7 @@ main() {
     done
     echo ""
 
-    # 7. Build and package each target
+    # 6. Build and package each target
     local built=0 failed=0
     for target in "${targets[@]}"; do
         printf "\n  ${W}[${built}+${failed}/${#targets[@]}]${N} Building ${target}...\n"
