@@ -1110,10 +1110,69 @@ pub fn hasWholeWordMatch(haystack: []const u8, needle: []const u8) bool {
 
 pub fn callerLineMatches(line: []const u8, name: []const u8, lang: explore_mod.Language, match_mode: []const u8) bool {
     if (std.mem.eql(u8, match_mode, "text")) return hasWholeWordMatch(line, name);
+    if (lang == .dax or lang == .tmdl or lang == .ssas_tabular or
+        lang == .mdx or lang == .ssas_cube)
+    {
+        const semantic = isSsasReference(line, name, lang);
+        if (std.mem.eql(u8, match_mode, "both")) return semantic or hasWholeWordMatch(line, name);
+        return semantic;
+    }
     if (std.mem.eql(u8, match_mode, "references")) return isLikelyTypeReference(line, name, lang);
     if (std.mem.eql(u8, match_mode, "both")) return hasWholeWordMatch(line, name) or isLikelyCallSite(line, name, lang);
     // Default/unknown: prefer high-signal invocation-looking matches.
     return isLikelyCallSite(line, name, lang);
+}
+
+fn isSsasReference(line: []const u8, name: []const u8, lang: explore_mod.Language) bool {
+    if (name.len == 0 or line.len < name.len) return false;
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, line, from, name)) |pos| {
+        const end = pos + name.len;
+        const before_ok = pos == 0 or !isIdentChar(line[pos - 1]);
+        const after_ok = end == line.len or !isIdentChar(line[end]);
+        const bracketed = pos > 0 and end < line.len and line[pos - 1] == '[' and line[end] == ']';
+        const quoted_table = pos > 0 and end < line.len and line[pos - 1] == '\'' and line[end] == '\'';
+        const embedded = lang == .ssas_tabular or lang == .ssas_cube;
+        if ((bracketed or quoted_table or (before_ok and after_ok)) and
+            (embedded or !isInsideSsasStringOrComment(line, pos, lang)))
+        {
+            return true;
+        }
+        from = pos + 1;
+    }
+    return false;
+}
+
+fn isInsideSsasStringOrComment(line: []const u8, pos: usize, lang: explore_mod.Language) bool {
+    var quote: u8 = 0;
+    var block_comment = false;
+    var i: usize = 0;
+    while (i < pos and i < line.len) : (i += 1) {
+        if (block_comment) {
+            if (i + 1 < pos and line[i] == '*' and line[i + 1] == '/') {
+                block_comment = false;
+                i += 1;
+            }
+            continue;
+        }
+        if (quote != 0) {
+            if (line[i] == quote) {
+                if (i + 1 < pos and line[i + 1] == quote) {
+                    i += 1;
+                } else quote = 0;
+            }
+            continue;
+        }
+        if (i + 1 < pos and line[i] == '/' and line[i + 1] == '*') {
+            block_comment = true;
+            i += 1;
+            continue;
+        }
+        if (i + 1 < pos and ((line[i] == '/' and line[i + 1] == '/') or
+            (line[i] == '-' and line[i + 1] == '-'))) return true;
+        if (line[i] == '"' or (lang == .mdx and line[i] == '\'')) quote = line[i];
+    }
+    return quote != 0 or block_comment;
 }
 
 /// Type-definition symbol kinds. For these, a "caller" is really a
@@ -1257,7 +1316,7 @@ fn isInsideStringOrComment(line: []const u8, pos: usize, lang: explore_mod.Langu
 /// inside these are mentions in prose or config, not real invocations.
 pub fn langHasCallSites(lang: explore_mod.Language) bool {
     return switch (lang) {
-        .markdown, .json, .yaml, .css, .scss, .protobuf, .unknown => false,
+        .markdown, .json, .yaml, .css, .scss, .protobuf, .unknown, .ssas_project => false,
         else => true,
     };
 }

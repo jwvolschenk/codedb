@@ -8,6 +8,7 @@ const explore_mod = @import("../explore.zig");
 const FilteredWalker = @import("filtered_walker.zig").FilteredWalker;
 const skip_rules = @import("skip_rules.zig");
 const budget = @import("budget.zig");
+const ssas_security = @import("../ssas_security.zig");
 
 const InitialScanEntry = struct {
     path: []u8,
@@ -57,6 +58,16 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, explorer: *Explorer, dir
         // Memory budget (#591 Task 8): stop the walk, keep what we have.
         if (file_count % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing()) break;
         const stat = dir.statFile(io, entry.path, .{}) catch continue;
+        // SSAS source/deployment files can contain credentials despite having
+        // ordinary project extensions. Reject them before even recording the
+        // initial Store snapshot metadata; workers repeat the check as a
+        // defense-in-depth guard before parsing/index construction.
+        if (ssas_security.isSsasContentPath(entry.path) and stat.size <= skip_rules.max_indexed_file_bytes) {
+            const security_content = dir.readFileAlloc(io, entry.path, allocator, .limited(skip_rules.max_indexed_file_bytes)) catch continue;
+            const contains_secret = ssas_security.containsSensitiveContent(entry.path, security_content);
+            allocator.free(security_content);
+            if (contains_secret) continue;
+        }
         _ = try store.recordSnapshot(entry.path, stat.size, 0);
         file_count += 1;
         try entries.append(allocator, .{
@@ -74,6 +85,7 @@ fn parseInitialScanEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, 
     const stat = try dir.statFile(io, entry.path, .{});
     if (stat.size > skip_rules.max_indexed_file_bytes) return null;
     const content = try dir.readFileAlloc(io, entry.path, arena_alloc, .limited(skip_rules.max_indexed_file_bytes));
+    if (ssas_security.containsSensitiveContent(entry.path, content)) return null;
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {
         if (c == 0) return null;
@@ -173,6 +185,7 @@ fn readFileEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, arena_al
     const stat = dir.statFile(io, entry.path, .{}) catch return null;
     if (stat.size > skip_rules.max_indexed_file_bytes) return null;
     const c = dir.readFileAlloc(io, entry.path, arena_alloc, .limited(skip_rules.max_indexed_file_bytes)) catch return null;
+    if (ssas_security.containsSensitiveContent(entry.path, c)) return null;
     const check_len = @min(c.len, 512);
     for (c[0..check_len]) |ch| {
         if (ch == 0) return null;

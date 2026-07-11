@@ -7,6 +7,7 @@ const git_mod = @import("../git.zig");
 const FilteredWalker = @import("filtered_walker.zig").FilteredWalker;
 const skip_rules = @import("skip_rules.zig");
 const budget = @import("budget.zig");
+const ssas_security = @import("../ssas_security.zig");
 
 pub const EventKind = enum(u8) {
     created,
@@ -345,14 +346,18 @@ fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
             old.hash = hash;
             const stable_path = known_entry.key_ptr.*;
             if (FsEvent.init(stable_path, .modified, seq)) |ev| pushEventOrWait(queue, ev);
-            indexFileContent(io, explorer, dir, stable_path, tmp, false) catch {};
+            indexFileContent(io, explorer, dir, stable_path, tmp, false) catch |err| {
+                if (err == error.SensitiveContent) _ = store.recordDelete(stable_path, 0) catch {};
+            };
         } else {
             const duped = try persistent.dupe(u8, entry.path);
             errdefer persistent.free(duped);
             const seq = try store.recordSnapshot(duped, stat.size, 0);
             try known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = true });
             if (FsEvent.init(duped, .created, seq)) |ev| pushEventOrWait(queue, ev);
-            indexFileContent(io, explorer, dir, duped, tmp, false) catch {};
+            indexFileContent(io, explorer, dir, duped, tmp, false) catch |err| {
+                if (err == error.SensitiveContent) _ = store.recordDelete(duped, 0) catch {};
+            };
         }
     }
 
@@ -387,6 +392,10 @@ pub fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: 
     var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer content_arena.deinit();
     const content = try dir.readFileAlloc(io, path, content_arena.allocator(), .limited(skip_rules.max_indexed_file_bytes));
+    if (ssas_security.containsSensitiveContent(path, content)) {
+        explorer.removeFile(path);
+        return error.SensitiveContent;
+    }
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {
         if (c == 0) return;
@@ -461,7 +470,10 @@ fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
             if (existing.mtime == mtime and existing.size == stat.size) continue;
         }
 
-        indexFileContent(io, explorer, dir, rel, alloc, false) catch continue;
+        indexFileContent(io, explorer, dir, rel, alloc, false) catch |err| {
+            if (err == error.SensitiveContent) _ = store.recordDelete(rel, 0) catch {};
+            continue;
+        };
 
         const hash = hashFile(io, dir, rel, stat.size) catch continue;
         if (known.getPtr(rel)) |existing| {

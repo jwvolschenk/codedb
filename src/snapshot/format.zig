@@ -32,7 +32,7 @@ pub const FORMAT_VERSION: u16 = 3;
 /// parser or indexing rule changes in a way that requires unchanged source
 /// files to be parsed again. Unlike FORMAT_VERSION, this does not describe the
 /// binary container layout.
-pub const INDEX_VERSION: u32 = 1;
+pub const INDEX_VERSION: u32 = 2;
 
 pub const SectionId = enum(u32) {
     tree = 1,

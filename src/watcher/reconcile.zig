@@ -76,7 +76,10 @@ pub fn reconcileWorkingTree(
         };
         if (stat.kind == .directory) continue;
 
-        incremental.indexFileContent(io, explorer, dir, path, alloc, false) catch continue;
+        incremental.indexFileContent(io, explorer, dir, path, alloc, false) catch |err| {
+            if (err == error.SensitiveContent) _ = store.recordDelete(path, 0) catch {};
+            continue;
+        };
         _ = store.recordSnapshot(path, stat.size, 0) catch {};
         reindexed += 1;
     }

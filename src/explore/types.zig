@@ -132,6 +132,12 @@ pub const Language = enum(u8) {
     godot_scene,
     godot_resource,
     godot_project,
+    dax,
+    mdx,
+    tmdl,
+    ssas_tabular,
+    ssas_cube,
+    ssas_project,
 };
 
 pub fn detectLanguage(path: []const u8) Language {
@@ -186,7 +192,21 @@ pub fn detectLanguage(path: []const u8) Language {
     if (std.mem.endsWith(u8, path, ".tscn")) return .godot_scene;
     if (std.mem.endsWith(u8, path, ".tres")) return .godot_resource;
     if (std.mem.endsWith(u8, path, "project.godot")) return .godot_project;
+    if (endsWithIgnoreCase(path, ".bim")) return .ssas_tabular;
+    if (endsWithIgnoreCase(path, ".tmdl")) return .tmdl;
+    if (endsWithIgnoreCase(path, ".dax")) return .dax;
+    if (endsWithIgnoreCase(path, ".mdx")) return .mdx;
+    if (endsWithIgnoreCase(path, ".cube") or endsWithIgnoreCase(path, ".xmla")) return .ssas_cube;
+    if (endsWithIgnoreCase(path, ".smproj") or endsWithIgnoreCase(path, ".dwproj")) return .ssas_project;
     return .unknown;
+}
+
+fn endsWithIgnoreCase(path: []const u8, suffix: []const u8) bool {
+    if (path.len < suffix.len) return false;
+    for (path[path.len - suffix.len ..], suffix) |a, b| {
+        if (std.ascii.toLower(a) != std.ascii.toLower(b)) return false;
+    }
+    return true;
 }
 
 /// Returns true for languages whose content is primarily prose / data /

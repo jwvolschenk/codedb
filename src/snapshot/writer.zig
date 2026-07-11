@@ -17,6 +17,7 @@ const INDEX_VERSION = format.INDEX_VERSION;
 const SectionId = format.SectionId;
 const SectionEntry = format.SectionEntry;
 const isSensitivePath = sensitive.isSensitivePath;
+const ssas_security = @import("../ssas_security.zig");
 
 pub fn writeSnapshot(
     io: std.Io,
@@ -272,6 +273,7 @@ pub fn writeSnapshot(
             if (isSensitivePath(path)) continue;
             const cached_content = explorer.contents.get(path);
             if (cached_content) |content| {
+                if (ssas_security.containsSensitiveContent(path, content)) continue;
                 var pl_buf: [2]u8 = undefined;
                 std.mem.writeInt(u16, &pl_buf, @intCast(path.len), .little);
                 try fw.writeAll(&pl_buf);
@@ -283,6 +285,10 @@ pub fn writeSnapshot(
             } else if (root_dir) |*dir| {
                 const disk_content = dir.readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024)) catch continue;
                 errdefer allocator.free(disk_content);
+                if (ssas_security.containsSensitiveContent(path, disk_content)) {
+                    allocator.free(disk_content);
+                    continue;
+                }
 
                 var pl_buf: [2]u8 = undefined;
                 std.mem.writeInt(u16, &pl_buf, @intCast(path.len), .little);

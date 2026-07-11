@@ -4,6 +4,7 @@ const AgentRegistry = @import("agent.zig").AgentRegistry;
 const AgentId = @import("agent.zig").AgentId;
 const Explorer = @import("explore.zig").Explorer;
 const Op = @import("version.zig").Op;
+const ssas_security = @import("ssas_security.zig");
 
 pub const EditRequest = struct {
     path: []const u8,
@@ -47,6 +48,7 @@ pub fn applyEdit(
 
     const source = try std.Io.Dir.cwd().readFileAlloc(io, req.path, allocator, .limited(10 * 1024 * 1024));
     defer allocator.free(source);
+    if (ssas_security.containsSensitiveContent(req.path, source)) return error.SensitiveContent;
 
     if (req.if_hash) |expected_hex| {
         const actual = std.hash.Wyhash.hash(0, source);
@@ -120,6 +122,8 @@ pub fn applyEdit(
     else
         try std.mem.join(allocator, sep, lines.items);
     defer allocator.free(result);
+
+    if (ssas_security.containsSensitiveContent(req.path, result)) return error.SensitiveContent;
 
     const hash: u64 = std.hash.Wyhash.hash(0, result);
 

@@ -5,6 +5,7 @@ pub const budget = @import("watcher/budget.zig");
 
 pub const skip_dirs = skip_rules.skip_dirs;
 pub const isSensitivePath = skip_rules.isSensitivePath;
+pub const containsSensitiveContent = @import("ssas_security.zig").containsSensitiveContent;
 pub const isGeneratedPath = skip_rules.isGeneratedPath;
 pub const setIncludeGenerated = skip_rules.setIncludeGenerated;
 pub const shouldIncludeGenerated = skip_rules.shouldIncludeGenerated;

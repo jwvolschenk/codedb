@@ -30,6 +30,12 @@ const getScanState = mcp.getScanState;
 const pathglob = @import("pathglob.zig");
 const isPathSafe = pathglob.isPathSafe;
 
+fn readProjectFile(io: std.Io, project_root: []const u8, path: []const u8, alloc: std.mem.Allocator) ![]u8 {
+    var dir = try std.Io.Dir.cwd().openDir(io, project_root, .{});
+    defer dir.close(io);
+    return dir.readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024));
+}
+
 pub fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, project_root: []const u8) void {
     const path_arg = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path' argument") catch {};
@@ -55,7 +61,7 @@ pub fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Ob
         owned_content
     else blk: {
         // Fall back to disk read
-        break :blk std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024)) catch {
+        break :blk readProjectFile(io, project_root, path, alloc) catch {
             out.appendSlice(alloc, "error: failed to read file: ") catch {};
             out.appendSlice(alloc, path) catch {};
             // Issue #356-p3: fuzzy fallback so a mistyped path is recoverable
@@ -66,6 +72,12 @@ pub fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Ob
         };
     };
     defer alloc.free(content);
+
+    if (watcher.containsSensitiveContent(path, content)) {
+        explorer.removeFile(path);
+        out.appendSlice(alloc, "error: access to sensitive file blocked") catch {};
+        return;
+    }
 
     // Bug 5: detect binary content (NUL byte in first 8KB) and stub the
     // response — dumping raw bytes corrupts JSON consumers and leaks tokens
@@ -160,6 +172,22 @@ pub fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Ob
         out.appendSlice(alloc, "error: access to sensitive file blocked") catch {};
         return;
     }
+    // Content-sensitive SSAS files are intentionally absent from the index,
+    // so editing must inspect the on-disk project file before applyEdit. Use
+    // project_root rather than the process cwd (explicit-root MCP mode may be
+    // spawned from `/`).
+    if (std.Io.Dir.cwd().openDir(io, project_root, .{})) |dir_value| {
+        var dir = dir_value;
+        defer dir.close(io);
+        if (dir.readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024))) |existing| {
+            defer alloc.free(existing);
+            if (watcher.containsSensitiveContent(path, existing)) {
+                explorer.removeFile(path);
+                out.appendSlice(alloc, "error: access to sensitive file blocked") catch {};
+                return;
+            }
+        } else |_| {}
+    } else |_| {}
     const op_str = getStr(args, "op") orelse "replace";
     const op: @import("../version.zig").Op = if (eql(op_str, "insert"))
         .insert
@@ -173,6 +201,12 @@ pub fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Ob
     };
 
     const content = getStr(args, "content");
+    if (content) |proposed| {
+        if (watcher.containsSensitiveContent(path, proposed)) {
+            out.appendSlice(alloc, "error: edit would introduce sensitive content") catch {};
+            return;
+        }
+    }
     const range_start = getInt(args, "range_start");
     const range_end = getInt(args, "range_end");
     const after = getInt(args, "after");
@@ -210,7 +244,7 @@ pub fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Ob
         if (err == error.HashMismatch) {
             // Include the file's current hex hash so the agent can re-read with if_hash
             // to verify it has the latest content, then retry the edit.
-            if (std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024))) |bytes| {
+            if (readProjectFile(io, project_root, path, alloc)) |bytes| {
                 defer alloc.free(bytes);
                 const w = cio.listWriter(out, alloc);
                 w.print(" (current hash: {x})", .{std.hash.Wyhash.hash(0, bytes)}) catch {};

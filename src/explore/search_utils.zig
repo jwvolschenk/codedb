@@ -41,6 +41,8 @@ pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
         .css => std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
         .scss => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
         .sql => std.mem.startsWith(u8, trimmed, "--") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .dax, .mdx => std.mem.startsWith(u8, trimmed, "--") or std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .tmdl => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
         .fortran => std.mem.startsWith(u8, trimmed, "!"),
         .llvm_ir => std.mem.startsWith(u8, trimmed, ";"),
         else => false,

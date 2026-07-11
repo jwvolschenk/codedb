@@ -15,6 +15,8 @@ const autumn_parser = @import("../autumn_parser.zig");
 const t4_parser = @import("../t4_parser.zig");
 const tsql_parser = @import("../tsql_parser.zig");
 const ssrs_parser = @import("../ssrs_parser.zig");
+const ssas_parser = @import("../ssas_parser.zig");
+const ssas_security = @import("../ssas_security.zig");
 const godot_parser = @import("../godot_parser.zig");
 const parse_utils = @import("parse_utils.zig");
 const skip_rules = @import("../watcher/skip_rules.zig");
@@ -52,6 +54,11 @@ pub fn indexFileSkipTrigram(self: *Explorer, path: []const u8, content: []const 
 
 pub fn commitParsedFileOwnedOutline(self: *Explorer, path: []const u8, content: []const u8, outline: FileOutline, full_index: bool, skip_trigram: bool) !void {
     var owned_outline = outline;
+    if (ssas_security.containsSensitiveContent(path, content)) {
+        owned_outline.deinit();
+        self.removeFile(path);
+        return;
+    }
     // #594: one deinit only. Stacking an errdefer here with the defer below
     // would double-free the parsed outline (every symbol name) on any post-
     // clone error. Clean up owned_outline by hand on the clone-failure path.
@@ -386,6 +393,14 @@ pub fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []co
     var outline = FileOutline.init(parser.allocator, path);
     errdefer outline.deinit();
     outline.byte_size = content.len;
+
+    switch (outline.language) {
+        .dax, .mdx, .tmdl, .ssas_tabular, .ssas_cube, .ssas_project => {
+            try ssas_parser.parse(parser.allocator, path, content, &outline);
+            return outline;
+        },
+        else => {},
+    }
 
     var line_num: u32 = 0;
     var prev_line_trimmed: []const u8 = "";
@@ -1227,6 +1242,10 @@ pub fn clearDecoratorList(allocator: std.mem.Allocator, pending: *std.ArrayList(
 }
 
 pub fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_index: bool, skip_trigram: bool) !void {
+    if (ssas_security.containsSensitiveContent(path, content)) {
+        self.removeFile(path);
+        return;
+    }
     const parsed = try parseContentForIndexing(self.allocator, path, content);
     return self.commitParsedFileOwnedOutline(path, parsed.content, parsed.outline, full_index, skip_trigram);
 }
