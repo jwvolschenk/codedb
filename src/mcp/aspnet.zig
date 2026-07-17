@@ -73,7 +73,7 @@ pub const ConfigReadHit = struct {
     line: u32,
 };
 
-pub fn handleConfigXref(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+pub fn handleConfigXref(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, project_root: []const u8) void {
     const framework = getStr(args, "framework") orelse "aspnet";
     if (!std.mem.eql(u8, framework, "aspnet")) {
         out.appendSlice(alloc, "error: unsupported framework; currently supported: aspnet") catch {};
@@ -126,9 +126,41 @@ pub fn handleConfigXref(alloc: std.mem.Allocator, args: *const std.json.ObjectMa
         }
     }
 
+    // appsettings*.json is normally EXCLUDED from the index (it can hold
+    // secrets), so the loop above finds no definitions in real projects.
+    // Parse key paths on demand from disk instead — keys only, the parsed
+    // values never reach the output or any index. Candidate dirs: the
+    // project root plus every indexed dir holding a Program.cs/Startup.cs.
+    var ondemand_sources: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (ondemand_sources.items) |s| alloc.free(s);
+        ondemand_sources.deinit(alloc);
+    }
+    if (definitions.count() == 0 and project_root.len > 0) {
+        var candidate_dirs = std.StringHashMap(void).init(alloc);
+        defer candidate_dirs.deinit();
+        candidate_dirs.put("", {}) catch {};
+        for (paths.items) |path| {
+            const base = std.fs.path.basename(path);
+            if (!std.mem.eql(u8, base, "Program.cs") and !std.mem.eql(u8, base, "Startup.cs")) continue;
+            const dir = std.fs.path.dirname(path) orelse "";
+            candidate_dirs.put(dir, {}) catch {};
+        }
+        var dir_iter = candidate_dirs.keyIterator();
+        while (dir_iter.next()) |rel_dir| {
+            collectOnDemandConfigDefinitions(io, alloc, project_root, rel_dir.*, &definitions, &ondemand_sources) catch {};
+        }
+    }
+
     const w = cio.listWriter(out, alloc);
     w.writeAll("ASP.NET config xref:\n") catch {};
     w.print("  definitions: {d}\n", .{definitions.count()}) catch {};
+    if (ondemand_sources.items.len > 0) {
+        w.writeAll("  definitions_source: parsed on demand (keys only; appsettings files stay excluded from the index):\n") catch {};
+        for (ondemand_sources.items) |s| {
+            w.print("    {s}\n", .{s}) catch {};
+        }
+    }
     w.print("  reads: {d}\n", .{read_hits.items.len}) catch {};
 
     w.writeAll("  read_sites:\n") catch {};
@@ -177,6 +209,42 @@ fn sortedMapKeys(alloc: std.mem.Allocator, map: *const std.StringHashMap(usize))
     return keys.toOwnedSlice(alloc);
 }
 
+/// Read `appsettings*.json` files in `<project_root>/<rel_dir>` and merge
+/// their KEY PATHS into `definitions`. Values are parsed transiently and
+/// discarded — they must never be indexed, cached, or printed.
+fn collectOnDemandConfigDefinitions(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    project_root: []const u8,
+    rel_dir: []const u8,
+    definitions: *std.StringHashMap(usize),
+    sources: *std.ArrayList([]const u8),
+) !void {
+    const dir_path = if (rel_dir.len == 0)
+        try alloc.dupe(u8, project_root)
+    else
+        try std.fs.path.join(alloc, &.{ project_root, rel_dir });
+    defer alloc.free(dir_path);
+
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    var iter = dir.iterate();
+    while (iter.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.startsWith(u8, entry.name, "appsettings")) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
+        const content = dir.readFileAlloc(io, entry.name, alloc, .limited(4 * 1024 * 1024)) catch continue;
+        defer alloc.free(content);
+        collectJsonConfigDefinitions(alloc, entry.name, content, definitions) catch continue;
+        const rel = if (rel_dir.len == 0)
+            try alloc.dupe(u8, entry.name)
+        else
+            try std.fs.path.join(alloc, &.{ rel_dir, entry.name });
+        try sources.append(alloc, rel);
+    }
+}
+
 fn isAspNetConfigJsonPath(path: []const u8, language: explore_mod.Language) bool {
     if (language != .json) return false;
     const base = std.fs.path.basename(path);
@@ -185,12 +253,62 @@ fn isAspNetConfigJsonPath(path: []const u8, language: explore_mod.Language) bool
 
 fn collectJsonConfigDefinitions(alloc: std.mem.Allocator, path: []const u8, content: []const u8, definitions: *std.StringHashMap(usize)) !void {
     _ = path;
-    var parsed = std.json.parseFromSlice(std.json.Value, alloc, content, .{}) catch return;
+    // ASP.NET tooling writes JSONC — appsettings files routinely carry
+    // `//` and `/* */` comments that std.json rejects. Strip them (outside
+    // strings) so real-world files parse.
+    const stripped = stripJsoncComments(alloc, content) catch content;
+    defer if (stripped.ptr != content.ptr) alloc.free(stripped);
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, stripped, .{}) catch return;
     defer parsed.deinit();
 
     var stack: std.ArrayList([]const u8) = .empty;
     defer stack.deinit(alloc);
     try walkJsonConfigValue(alloc, &parsed.value, &stack, definitions);
+}
+
+/// Replace `//` line comments and `/* */` block comments (outside strings)
+/// with spaces, preserving offsets and newlines.
+fn stripJsoncComments(alloc: std.mem.Allocator, content: []const u8) ![]const u8 {
+    var out = try alloc.dupe(u8, content);
+    var in_string = false;
+    var escaped = false;
+    var i: usize = 0;
+    while (i < out.len) : (i += 1) {
+        const c = out[i];
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+            continue;
+        }
+        if (c == '/' and i + 1 < out.len and out[i + 1] == '/') {
+            while (i < out.len and out[i] != '\n') : (i += 1) out[i] = ' ';
+            continue;
+        }
+        if (c == '/' and i + 1 < out.len and out[i + 1] == '*') {
+            out[i] = ' ';
+            out[i + 1] = ' ';
+            i += 2;
+            while (i + 1 < out.len and !(out[i] == '*' and out[i + 1] == '/')) : (i += 1) {
+                if (out[i] != '\n') out[i] = ' ';
+            }
+            if (i + 1 < out.len) {
+                out[i] = ' ';
+                out[i + 1] = ' ';
+                i += 1;
+            }
+            continue;
+        }
+    }
+    return out;
 }
 
 fn walkJsonConfigValue(alloc: std.mem.Allocator, value: *const std.json.Value, stack: *std.ArrayList([]const u8), definitions: *std.StringHashMap(usize)) !void {

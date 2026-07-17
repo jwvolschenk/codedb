@@ -27,12 +27,14 @@ const cio = @import("../cio.zig");
 const path_safety = @import("../path_safety.zig");
 
 pub const MAGIC = [4]u8{ 'C', 'D', 'B', 0x01 };
-pub const FORMAT_VERSION: u16 = 3;
+pub const FORMAT_VERSION: u16 = 4;
 /// Semantic version of indexed outline/search data. Increment this whenever a
 /// parser or indexing rule changes in a way that requires unchanged source
 /// files to be parsed again. Unlike FORMAT_VERSION, this does not describe the
 /// binary container layout.
-pub const INDEX_VERSION: u32 = 2;
+/// v3: OUTLINE_STATE now persists symbol decorators — older snapshots restored
+/// outlines without them, so they must be rescanned, not warm-loaded.
+pub const INDEX_VERSION: u32 = 3;
 
 pub const SectionId = enum(u32) {
     tree = 1,

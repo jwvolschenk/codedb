@@ -809,7 +809,12 @@ pub fn getScanState() ScanState {
     return @enumFromInt(scan_state_atomic.load(.acquire));
 }
 
-pub var scan_wait_timeout_ms: u64 = 2000;
+// Accuracy over latency (#issue-bug2): a query that races the initial scan
+// can silently return a partial answer, which an agent cannot distinguish
+// from an authoritative one. Wait long enough that virtually every scan
+// completes; if it still hasn't, dispatch refuses the query explicitly
+// instead of serving mid-scan results.
+pub var scan_wait_timeout_ms: u64 = 30_000;
 
 pub var slow_dispatch_log_ms: u64 = 100;
 
@@ -1263,6 +1268,28 @@ pub fn dispatch(
 
     if (toolDependsOnScannedIndex(tool) and project_path == null) {
         waitForScanReady(scan_wait_timeout_ms);
+        const scan_state = getScanState();
+        if (!scanStateIsTerminal(scan_state)) {
+            // Refuse rather than answer from a half-built index: a mid-scan
+            // result is indistinguishable from an authoritative one to the
+            // caller (issue-bug2). budget_exceeded is terminal and still
+            // serves its partial index — that case is disclosed via the
+            // scan-progress hint instead.
+            out.print(alloc, "error: index scan still in progress (state={s}) — refusing to answer from an incomplete index. Retry shortly, or poll codedb_status.", .{scan_state.name()}) catch {};
+            return;
+        }
+        if (scan_state == .lazy) {
+            // lazy is terminal: no scan is coming. An empty index would make
+            // every query a well-formed "0 results", which reads as "does not
+            // exist" — answer honestly instead.
+            ctx.explorer.mu.lockShared();
+            const indexed_files = ctx.explorer.outlines.count();
+            ctx.explorer.mu.unlockShared();
+            if (indexed_files == 0) {
+                out.appendSlice(alloc, "error: no project indexed — the server is in lazy mode and has scanned nothing. Call codedb_index with the project folder, or pass project=<absolute path> on this call.") catch {};
+                return;
+            }
+        }
     }
 
     // #629: the project root used to rescope absolute read/edit paths. Must be
@@ -1297,7 +1324,7 @@ pub fn dispatch(
         .codedb_symbol => handleSymbol(alloc, args, out, ctx.explorer),
         .codedb_hierarchy => handleHierarchy(alloc, args, out, ctx.explorer),
         .codedb_routes => handleRoutes(alloc, args, out, ctx.explorer),
-        .codedb_config_xref => handleConfigXref(alloc, args, out, ctx.explorer),
+        .codedb_config_xref => handleConfigXref(io, alloc, args, out, ctx.explorer, project_root),
         .codedb_search => handleSearch(alloc, args, out, ctx.explorer),
         .codedb_word => handleWord(alloc, args, out, ctx.explorer),
         .codedb_callers => handleCallers(alloc, args, out, ctx.explorer),

@@ -1015,3 +1015,67 @@ test "issue-591: codedb_search marks global-cap truncation" {
         try testing.expect(std.mem.indexOf(u8, out.items, "\"truncated\":true") != null);
     }
 }
+
+test "callers: semantic match finds calls in expression-bodied and single-line members" {
+    // A call site on the same line as its enclosing member declaration
+    // (`=> expr;` expression bodies, single-line `{ ... }` bodies) is still a
+    // call site. The declaration-prefix veto must only suppress the declared
+    // member's own header, not everything to the right of `=>` or `{`.
+    try testing.expect(mcp_tools.callerLineMatches("    public Task<int> Fast(UserController u) => u.UpdateUserDetails(null);", "UpdateUserDetails", .c_sharp, "semantic"));
+    try testing.expect(mcp_tools.callerLineMatches("    public void Go(UserController u) { u.UpdateUserDetails(null); }", "UpdateUserDetails", .c_sharp, "semantic"));
+    // The declared member's own header name is still not a call site.
+    try testing.expect(!mcp_tools.callerLineMatches("    public async Task<StorageResponse> WriteBytesAsync(string path, string fileName)", "WriteBytesAsync", .c_sharp, "semantic"));
+    try testing.expect(!mcp_tools.callerLineMatches("    public Task<int> Fast(UserController u) => u.Update(null);", "Fast", .c_sharp, "semantic"));
+}
+
+test "callers: definition line with an extra same-name occurrence stays in references" {
+    // `public MyCredoProUser.UserEntityPermission UserEntityPermission { get; set; }`
+    // defines a property named like the type AND references the type. Excluding
+    // the whole line as "a definition" hides a genuine usage — renaming the
+    // type with that blast radius misses the property's type token.
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    try explorer.indexFile("Models/Entities.cs",
+        \\namespace M {
+        \\    public partial class UserEntityPermission
+        \\    {
+        \\        public int Id { get; set; }
+        \\    }
+        \\}
+        \\
+    );
+    try explorer.indexFile("Models/ViewModels.cs",
+        \\namespace M {
+        \\    public class UserSettingsViewModel
+        \\    {
+        \\        public MyCredoProUser.UserEntityPermission UserEntityPermission { get; set; }
+        \\    }
+        \\}
+        \\
+    );
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    const args_json =
+        \\{"name":"UserEntityPermission"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // The property line is BOTH a definition (of the property) and a reference
+    // (to the type) — it must be reported.
+    try testing.expect(std.mem.indexOf(u8, out.items, "Models/ViewModels.cs:4") != null);
+    // The class definition line itself has only the defining occurrence — excluded.
+    try testing.expect(std.mem.indexOf(u8, out.items, "Models/Entities.cs:2") == null);
+}

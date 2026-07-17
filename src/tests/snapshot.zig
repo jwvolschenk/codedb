@@ -875,3 +875,74 @@ test "issue-625: in-tree snapshot is added to .git/info/exclude" {
     defer testing.allocator.free(exclude2);
     try testing.expectEqual(exclude1.len, exclude2.len);
 }
+
+test "snapshot: symbol decorators survive OUTLINE_STATE round-trip" {
+    // C# attributes ([HttpPost], [Route(...)]) are captured as Symbol.decorators
+    // and drive codedb_routes, decorator_filter, and tree route annotations.
+    // The fast OUTLINE_STATE restore path skips re-parsing, so decorators must
+    // be serialized — otherwise every snapshot-backed session loses them and
+    // codedb_routes returns "(none)" on real projects.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    const controller_src =
+        \\using Microsoft.AspNetCore.Mvc;
+        \\namespace Mini.Controllers
+        \\{
+        \\    public class UserController : MyBaseController
+        \\    {
+        \\        [HttpPost]
+        \\        [ValidateAntiForgeryToken]
+        \\        public async Task<ActionResult> UpdateUserDetails(UserDetailsViewModel details)
+        \\        {
+        \\            return View();
+        \\        }
+        \\    }
+        \\}
+        \\
+    ;
+
+    var exp = Explorer.init(aa);
+    try exp.indexFile("Controllers/UserController.cs", controller_src);
+
+    // Sanity: the parser attached the attributes as decorators.
+    {
+        const outline = exp.outlines.get("Controllers/UserController.cs").?;
+        var found = false;
+        for (outline.symbols.items) |sym| {
+            if (std.mem.eql(u8, sym.name, "UpdateUserDetails")) {
+                try testing.expectEqual(@as(usize, 2), sym.decorators.len);
+                try testing.expectEqualStrings("[HttpPost]", sym.decorators[0]);
+                found = true;
+            }
+        }
+        try testing.expect(found);
+    }
+
+    const snap_path = try std.fs.path.join(aa, &.{ dir_path, "snap.codedb" });
+    try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, aa);
+
+    // OUTLINE_STATE is what warm restores rebuild outlines from — read it back
+    // directly so the CONTENT-section re-parse fallback can't mask a loss here.
+    const loader_validated = @import("../snapshot/loader_validated.zig");
+    var states = try loader_validated.loadOutlineStateMap(io, snap_path, testing.allocator);
+    defer loader_validated.deinitOutlineStateMap(&states, testing.allocator);
+    const restored = states.get("Controllers/UserController.cs").?;
+    var restored_found = false;
+    for (restored.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "UpdateUserDetails")) {
+            try testing.expectEqual(@as(usize, 2), sym.decorators.len);
+            try testing.expectEqualStrings("[HttpPost]", sym.decorators[0]);
+            try testing.expectEqualStrings("[ValidateAntiForgeryToken]", sym.decorators[1]);
+            restored_found = true;
+        }
+    }
+    try testing.expect(restored_found);
+}

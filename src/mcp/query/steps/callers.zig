@@ -69,10 +69,8 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
         fn isCallSite(r: explore_mod.Explorer.ScopedSearchResult, definition_list: []const explore_mod.SymbolResult, nm: []const u8, mode: []const u8) bool {
             const lang = explore_mod.detectLanguage(r.path);
             if (!mcp.langHasCallSites(lang)) return false;
-            for (definition_list) |d| {
-                if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path))
-                    return false;
-            }
+            if (mcp.excludeAsDefinitionLine(r.path, r.line_num, r.line_text, nm, definition_list))
+                return false;
             return mcp.callerLineMatches(r.line_text, nm, lang, mode);
         }
     };

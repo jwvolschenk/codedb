@@ -529,7 +529,12 @@ test "issue-367-dx: tty summary surfaces received keys on missing-arg error" {
     try testing.expect(std.mem.indexOf(u8, summary.items, "file_path") != null);
 }
 
-test "issue-bug2: tool calls during scan-in-progress hint at scan state" {
+test "issue-bug2: index-dependent tools refuse to answer while scan is in progress" {
+    // Old behavior: a query issued mid-scan ran anyway; "0 results" got a hint
+    // note appended, but a PARTIAL non-empty result carried no warning at all —
+    // an agent could not distinguish "doesn't exist" from "not indexed yet".
+    // New contract: after a bounded wait, an in-progress scan yields an
+    // explicit refusal instead of a silently incomplete answer.
     var explorer = Explorer.init(testing.allocator);
     defer explorer.deinit();
     var store = Store.init(testing.allocator);
@@ -540,6 +545,11 @@ test "issue-bug2: tool calls during scan-in-progress hint at scan state" {
 
     var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
     defer bench_ctx.deinit();
+
+    const mcp_server = @import("../mcp/server.zig");
+    const prev_timeout = mcp_server.scan_wait_timeout_ms;
+    defer mcp_server.scan_wait_timeout_ms = prev_timeout;
+    mcp_server.scan_wait_timeout_ms = 100;
 
     const prev_state = mcp_mod.getScanState();
     defer mcp_mod.setScanState(prev_state);
@@ -555,8 +565,43 @@ test "issue-bug2: tool calls during scan-in-progress hint at scan state" {
     defer out.deinit(testing.allocator);
     bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &parsed.value.object, &out, &store, &explorer, &agents);
 
-    try testing.expect(std.mem.indexOf(u8, out.items, "0 results") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "scan still in progress") != null);
+    // The query must NOT have run — a mid-scan "0 results" is indistinguishable
+    // from an authoritative empty answer.
+    try testing.expect(std.mem.indexOf(u8, out.items, "0 results") == null);
+}
+
+test "issue-bug2b: lazy server with empty index returns explicit error, not empty results" {
+    // scan=lazy is terminal — no scan is coming. Serving a well-formed
+    // "0 results" from a zero-file index reads as "symbol does not exist";
+    // the honest answer is an explicit no-project-indexed error.
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    const prev_state = mcp_mod.getScanState();
+    defer mcp_mod.setScanState(prev_state);
+    mcp_mod.setScanState(.lazy);
+
+    const args_json =
+        \\{"query":"anything"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "no project indexed") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "0 results") == null);
 }
 
 test "issue-389: FilteredWalker yields symlinked source files" {
@@ -1082,4 +1127,237 @@ test "issue-208: content cache evicts cold entries under pressure" {
     // Evictions must have fired.
     const s = cache.stats();
     try testing.expect(s.evictions > 0);
+}
+
+test "deps: DI registration generic args create type-usage edges" {
+    // `services.AddTransient<IReportStorageService, ReportAzureStorageService>()`
+    // in Startup.cs is a hard compile-time dependency on both type args, but
+    // lives in a method body — return/param type extraction never sees it.
+    // Renaming the interface with codedb's blast radius then misses the DI
+    // registration and the build breaks.
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("Services/IStorageService.cs",
+        \\namespace M {
+        \\    public interface IReportStorageService
+        \\    {
+        \\        void Save();
+        \\    }
+        \\}
+        \\
+    );
+    try explorer.indexFile("Startup.cs",
+        \\namespace M {
+        \\    public class Startup
+        \\    {
+        \\        public void ConfigureServices(IServiceCollection services)
+        \\        {
+        \\            services.AddTransient<IReportStorageService, ReportAzureStorageService>();
+        \\        }
+        \\    }
+        \\}
+        \\
+    );
+
+    explorer.mu.lockShared();
+    const fwd_opt = explorer.dep_graph.getForwardDeps("Startup.cs");
+    explorer.mu.unlockShared();
+    try testing.expect(fwd_opt != null);
+    var found = false;
+    for (fwd_opt.?) |dep| {
+        if (std.mem.eql(u8, dep, "Services/IStorageService.cs")) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "deps: razor @model and generic helper args create edges to the model's file" {
+    // A .cshtml view whose only link to its viewmodel is `@model Ns.Type` (or a
+    // `Html.Kendo().Form<Ns.Type>()` helper call) breaks at runtime when the
+    // type is renamed — the dependency graph must include the view in the
+    // model file's blast radius.
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("Models/ViewModels.cs",
+        \\namespace M.Models {
+        \\    public class ModelSessionViewModel
+        \\    {
+        \\        public int Id { get; set; }
+        \\    }
+        \\}
+        \\
+    );
+    try explorer.indexFile("Views/ModelSessions/Index.cshtml",
+        \\@model M.Models.ModelSessionViewModel
+        \\<div>hi</div>
+        \\
+    );
+    try explorer.indexFile("Views/ModelSessions/Balance.cshtml",
+        \\@using Kendo.Mvc.UI
+        \\<div>
+        \\@(Html.Kendo().Form<M.Models.ModelSessionViewModel>()
+        \\    .Name("f"))
+        \\</div>
+        \\
+    );
+
+    explorer.mu.lockShared();
+    const model_view = explorer.dep_graph.getForwardDeps("Views/ModelSessions/Index.cshtml");
+    const form_view = explorer.dep_graph.getForwardDeps("Views/ModelSessions/Balance.cshtml");
+    explorer.mu.unlockShared();
+
+    try testing.expect(model_view != null);
+    var found_model = false;
+    for (model_view.?) |dep| {
+        if (std.mem.eql(u8, dep, "Models/ViewModels.cs")) found_model = true;
+    }
+    try testing.expect(found_model);
+
+    try testing.expect(form_view != null);
+    var found_form = false;
+    for (form_view.?) |dep| {
+        if (std.mem.eql(u8, dep, "Models/ViewModels.cs")) found_form = true;
+    }
+    try testing.expect(found_form);
+}
+
+test "callers references: @model-only razor view is reported as a reference" {
+    // 5 of 12 views referencing ModelSessionViewModel in a real project were
+    // dropped because their only reference is the `@model` directive — content
+    // search crowded them out and the structural set had no razor edges.
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    try explorer.indexFile("Models/ViewModels.cs",
+        \\namespace M.Models {
+        \\    public class ModelSessionViewModel
+        \\    {
+        \\        public int Id { get; set; }
+        \\    }
+        \\}
+        \\
+    );
+    try explorer.indexFile("Views/ModelSessions/Index.cshtml",
+        \\@model M.Models.ModelSessionViewModel
+        \\<div>hi</div>
+        \\
+    );
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    const args_json =
+        \\{"name":"ModelSessionViewModel","match_mode":"references"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "Views/ModelSessions/Index.cshtml:1") != null);
+}
+
+test "issue-bug5: search under max_results returns all matches despite tier per-file caps" {
+    // 9 whole-word hits across 5 files with max_results=10: the tier-0
+    // per-file cap (max_results/5 = 2) silently dropped the 3rd hit in the
+    // dense files even though the budget had room. "8 results" with no
+    // truncation marker reads as complete when it is not — under-budget
+    // searches must return every match.
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("a.zig",
+        \\fn target_token_use1() void { target_token(); }
+        \\const target_token_a = 1;
+        \\var target_token_b = 2;
+    );
+    try explorer.indexFile("b.zig",
+        \\fn target_token_use2() void { target_token(); }
+        \\const target_token_c = 1;
+        \\var target_token_d = 2;
+    );
+    try explorer.indexFile("c.zig", "fn target_token() void {}");
+    try explorer.indexFile("d.zig", "const x = target_token;");
+    try explorer.indexFile("e.zig", "const y = target_token;");
+
+    const results = try explorer.searchContent("target_token", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expectEqual(@as(usize, 9), results.len);
+}
+
+test "issue-bug6: config_xref parses excluded appsettings keys on demand, values never leak" {
+    // appsettings*.json is excluded from the index by security policy, so
+    // config_xref used to report definitions: 0 and flag every read as
+    // missing_definitions — misleading. The tool must parse KEY PATHS on
+    // demand from disk (values must never appear in output).
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const root = path_buf[0..root_len];
+
+    // ASP.NET appsettings files routinely carry JSONC line comments — the
+    // on-demand parser must tolerate them (std.json alone rejects the file).
+    try tmp.dir.writeFile(io, .{ .sub_path = "appsettings.json", .data =
+    \\{
+    \\  "KeyVault": {
+    \\    //MenuItemId=112 comment like real-world appsettings
+    \\    "DirectoryId": "SECRETVALUE123",
+    \\    "ClientSecret": "SECRETVALUE456"
+    \\  }
+    \\}
+    });
+
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    try explorer.indexFile("Program.cs",
+        \\namespace M {
+        \\    public class Program
+        \\    {
+        \\        public void Setup(IConfiguration Configuration)
+        \\        {
+        \\            var id = Configuration["KeyVault:DirectoryId"];
+        \\        }
+        \\    }
+        \\}
+        \\
+    );
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, root);
+    defer bench_ctx.deinit();
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{}", .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_config_xref, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "definitions: 2") != null);
+    // The read is defined — it must not be flagged missing.
+    try testing.expect(std.mem.indexOf(u8, out.items, "missing_definitions:\n    (none)") != null);
+    // Values from the excluded file must never appear anywhere in output.
+    try testing.expect(std.mem.indexOf(u8, out.items, "SECRETVALUE123") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "SECRETVALUE456") == null);
 }

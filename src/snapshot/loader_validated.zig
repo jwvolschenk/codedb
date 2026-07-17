@@ -296,6 +296,18 @@ pub fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std
                 errdefer for (param_types[0..pi]) |pt| allocator.free(pt);
             }
 
+            // v4: decorators
+            const decorators_count = try readSectionInt(u32, bytes, &cursor);
+            const decorators: [][]const u8 = if (decorators_count > 0)
+                try allocator.alloc([]const u8, decorators_count)
+            else
+                &.{};
+            errdefer if (decorators.len > 0) allocator.free(decorators);
+            for (0..decorators_count) |di| {
+                decorators[di] = try readSectionString(bytes, &cursor, allocator, std.math.maxInt(u16));
+                errdefer for (decorators[0..di]) |dec| allocator.free(dec);
+            }
+
             try outline.symbols.append(allocator, Symbol{
                 .name = name,
                 .kind = kind,
@@ -304,6 +316,7 @@ pub fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std
                 .detail = detail,
                 .return_type = return_type,
                 .param_types = param_types,
+                .decorators = decorators,
             });
         }
 

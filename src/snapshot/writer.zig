@@ -252,6 +252,21 @@ pub fn writeSnapshot(
                     try writer.writeAll(&pt_len_buf);
                     try writer.writeAll(pt[0..write_pt_len]);
                 }
+
+                // ── v4: decorators ──
+                // Without these, a warm restore loses every [HttpGet]/[Route]
+                // attribute and codedb_routes/decorator_filter go dark for the
+                // whole session.
+                var dec_count_buf: [4]u8 = undefined;
+                std.mem.writeInt(u32, &dec_count_buf, @intCast(sym.decorators.len), .little);
+                try writer.writeAll(&dec_count_buf);
+                for (sym.decorators) |dec| {
+                    const write_dec_len = @min(dec.len, std.math.maxInt(u16));
+                    var dec_len_buf: [2]u8 = undefined;
+                    std.mem.writeInt(u16, &dec_len_buf, @intCast(write_dec_len), .little);
+                    try writer.writeAll(&dec_len_buf);
+                    try writer.writeAll(dec[0..write_dec_len]);
+                }
             }
         }
 

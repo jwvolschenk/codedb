@@ -1044,14 +1044,7 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
     var shown: usize = 0;
     for (results) |r| {
         if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
-        var is_def = false;
-        for (defs) |d| {
-            if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
-                is_def = true;
-                break;
-            }
-        }
-        if (is_def) continue;
+        if (excludeAsDefinitionLine(r.path, r.line_num, r.line_text, name, defs)) continue;
         if (!callerLineMatches(r.line_text, name, explore_mod.detectLanguage(r.path), match_mode)) continue;
         shown += 1;
     }
@@ -1071,14 +1064,7 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
     w.print("{d} {s} for '{s}':\n", .{ shown, noun, name }) catch {};
     for (results) |r| {
         if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
-        var is_def = false;
-        for (defs) |d| {
-            if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
-                is_def = true;
-                break;
-            }
-        }
-        if (is_def) continue;
+        if (excludeAsDefinitionLine(r.path, r.line_num, r.line_text, name, defs)) continue;
         if (!callerLineMatches(r.line_text, name, explore_mod.detectLanguage(r.path), match_mode)) continue;
         if (r.scope_name) |sn| {
             w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
@@ -1267,6 +1253,12 @@ fn hasInvocationSuffix(line: []const u8, start: usize) bool {
 fn looksLikeDeclarationPrefix(prefix: []const u8) bool {
     const trimmed = std.mem.trim(u8, prefix, " \t");
     if (trimmed.len == 0) return false;
+    // Anything right of `=>` (expression body) or `{` (inline block body) is
+    // body code on the declaration line, not the declaration header — the
+    // veto must not swallow call sites in `public Task Fast() => u.Update();`
+    // or `public void Go() { u.Update(); }`.
+    if (std.mem.indexOf(u8, trimmed, "=>") != null) return false;
+    if (std.mem.indexOfScalar(u8, trimmed, '{') != null) return false;
     const starters = [_][]const u8{
         "public ",  "private ",  "protected ", "internal ", "static ", "async ",
         "virtual ", "override ", "abstract ",  "sealed ",   "extern ", "partial ",
@@ -1551,7 +1543,7 @@ fn writeRelationsText(
     var shown: usize = 0;
     for (callers) |r| {
         const lang = explore_mod.detectLanguage(r.path);
-        if (isDefinitionHit(r.path, r.line_num, defs)) continue;
+        if (excludeAsDefinitionLine(r.path, r.line_num, r.line_text, name, defs)) continue;
         if (!callerLineMatches(r.line_text, name, lang, match_mode)) continue;
         shown += 1;
     }
@@ -1565,7 +1557,7 @@ fn writeRelationsText(
         w.print("{s}:\n", .{callers_noun}) catch {};
         for (callers) |r| {
             const lang = explore_mod.detectLanguage(r.path);
-            if (isDefinitionHit(r.path, r.line_num, defs)) continue;
+            if (excludeAsDefinitionLine(r.path, r.line_num, r.line_text, name, defs)) continue;
             if (!callerLineMatches(r.line_text, name, lang, match_mode)) continue;
             if (r.scope_name) |sn| {
                 w.print("  {s}:{d}: {s} [in {s}]\n", .{ r.path, r.line_num, r.line_text, sn }) catch {};
@@ -1634,7 +1626,7 @@ fn writeRelationsJson(
     var first = true;
     for (callers) |r| {
         const lang = explore_mod.detectLanguage(r.path);
-        if (isDefinitionHit(r.path, r.line_num, defs)) continue;
+        if (excludeAsDefinitionLine(r.path, r.line_num, r.line_text, name, defs)) continue;
         if (!callerLineMatches(r.line_text, name, lang, match_mode)) continue;
         if (!first) w.writeAll(",") catch {};
         first = false;
@@ -1895,7 +1887,7 @@ fn writeCallersJson(
     for (results) |r| {
         const lang = explore_mod.detectLanguage(r.path);
         if (!langHasCallSites(lang)) continue;
-        if (isDefinitionHit(r.path, r.line_num, defs)) continue;
+        if (excludeAsDefinitionLine(r.path, r.line_num, r.line_text, name, defs)) continue;
         if (!callerLineMatches(r.line_text, name, lang, match_mode)) continue;
         if (!first) w.writeAll(",") catch {};
         first = false;
@@ -1946,9 +1938,38 @@ fn writeSearchHitJson(
 
 fn isDefinitionHit(path: []const u8, line_num: u32, defs: []const explore_mod.SymbolResult) bool {
     for (defs) |d| {
+        // Razor `@model`/`@inherits`/`@inject` aliases are type USAGES that
+        // findAllSymbols surfaces via dotted-suffix matching — treating them
+        // as definitions would exclude the very lines a rename must touch.
+        if (explore_mod.isRazorDirectiveAlias(d.symbol)) continue;
         if (line_num == d.symbol.line_start and std.mem.eql(u8, path, d.path)) return true;
     }
     return false;
+}
+
+/// Whole-word occurrence count of `needle` in `haystack`.
+fn countWholeWordMatches(haystack: []const u8, needle: []const u8) usize {
+    if (needle.len == 0 or haystack.len < needle.len) return 0;
+    var count: usize = 0;
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, from, needle)) |pos| {
+        const before_ok = pos == 0 or !isIdentChar(haystack[pos - 1]);
+        const after_idx = pos + needle.len;
+        const after_ok = after_idx >= haystack.len or !isIdentChar(haystack[after_idx]);
+        if (before_ok and after_ok) count += 1;
+        from = pos + 1;
+    }
+    return count;
+}
+
+/// True when (path, line) is a definition of `name` AND the line text holds no
+/// additional whole-word occurrence beyond the defining token itself. A line
+/// like `public MyCredoProUser.UserEntityPermission UserEntityPermission { get; set; }`
+/// defines a property AND references the type — excluding it from
+/// caller/reference output hides a genuine usage from rename blast radius.
+pub fn excludeAsDefinitionLine(path: []const u8, line_num: u32, line_text: []const u8, name: []const u8, defs: []const explore_mod.SymbolResult) bool {
+    if (!isDefinitionHit(path, line_num, defs)) return false;
+    return countWholeWordMatches(line_text, name) < 2;
 }
 
 fn writeJsonStringArray(out: *std.ArrayList(u8), alloc: std.mem.Allocator, items: []const []const u8, why: []const u8, kind: []const u8) void {

@@ -51,6 +51,7 @@ pub const hasWholeWordMatch = explore_tools.hasWholeWordMatch;
 pub const langHasCallSites = explore_tools.langHasCallSites;
 pub const callerLineMatches = explore_tools.callerLineMatches;
 pub const effectiveMatchMode = explore_tools.effectiveMatchMode;
+pub const excludeAsDefinitionLine = explore_tools.excludeAsDefinitionLine;
 
 // ── mutation tool handlers (extracted to mcp/mutation_tools.zig) ──
 const mutation_tools = @import("mcp/mutation_tools.zig");

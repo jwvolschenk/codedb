@@ -27,6 +27,7 @@ pub const ParsedFile = types.ParsedFile;
 pub const PhpParseState = types.PhpParseState;
 pub const Language = types.Language;
 pub const detectLanguage = types.detectLanguage;
+pub const isRazorDirectiveAlias = @import("explore/search.zig").isRazorDirectiveAlias;
 pub const isDocLanguage = types.isDocLanguage;
 pub const SymbolResult = types.SymbolResult;
 pub const SearchResult = types.SearchResult;

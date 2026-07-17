@@ -242,7 +242,82 @@ pub fn searchContent(self: *Explorer, query: []const u8, allocator: std.mem.Allo
             if (result_list.items.len >= max_results) break;
         }
     }
+
+    // Refill: Tiers 0/1 cap hits per file to spread the budget across files.
+    // When budget remains after every tier, those caps dropped real matches —
+    // re-scan the same files uncapped so an under-budget result is COMPLETE.
+    // A result set below max_results with no truncation marker reads as
+    // "that's everything"; silently dropping a hit to a per-file cap breaks
+    // that contract (issue-bug5).
+    if (result_list.items.len < max_results) {
+        refillCappedFiles(self, &searched, query, allocator, max_results, &result_list) catch {};
+    }
+
     return self.rerankAndFinalize(&result_list, query, allocator);
+}
+
+fn refillCappedFiles(
+    self: *Explorer,
+    searched: *const std.StringHashMap(void),
+    query: []const u8,
+    allocator: std.mem.Allocator,
+    max_results: usize,
+    result_list: *std.ArrayList(SearchResult),
+) !void {
+    var have = std.StringHashMap(void).init(allocator);
+    defer {
+        var it = have.keyIterator();
+        while (it.next()) |k| allocator.free(k.*);
+        have.deinit();
+    }
+    for (result_list.items) |r| {
+        const key = try std.fmt.allocPrint(allocator, "{s}:{d}", .{ r.path, r.line_num });
+        const gop = try have.getOrPut(key);
+        if (gop.found_existing) allocator.free(key);
+    }
+
+    var s_iter = searched.keyIterator();
+    while (s_iter.next()) |key_ptr| {
+        if (result_list.items.len >= max_results) return;
+        const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
+        defer ref.deinit();
+
+        var refill: std.ArrayList(SearchResult) = .empty;
+        searchInContent(key_ptr.*, ref.data, query, allocator, max_results, max_results, &refill) catch {
+            for (refill.items) |r| {
+                allocator.free(r.path);
+                allocator.free(r.line_text);
+            }
+            refill.deinit(allocator);
+            continue;
+        };
+        // Consume: move unseen hits into result_list, free the rest.
+        for (refill.items) |r| {
+            var keep = false;
+            if (result_list.items.len < max_results) blk: {
+                const key = std.fmt.allocPrint(allocator, "{s}:{d}", .{ r.path, r.line_num }) catch break :blk;
+                const gop = have.getOrPut(key) catch {
+                    allocator.free(key);
+                    break :blk;
+                };
+                if (gop.found_existing) {
+                    allocator.free(key);
+                    break :blk;
+                }
+                keep = true;
+            }
+            if (keep) {
+                result_list.append(allocator, r) catch {
+                    allocator.free(r.path);
+                    allocator.free(r.line_text);
+                };
+            } else {
+                allocator.free(r.path);
+                allocator.free(r.line_text);
+            }
+        }
+        refill.deinit(allocator);
+    }
 }
 
 /// Run the multi-signal rerank in place, then transfer ownership of
@@ -816,12 +891,29 @@ fn typeMentionsName(type_text: []const u8, name: []const u8) bool {
 /// return type, a parameter type, or — for type declarations — a base clause
 /// (`class Foo : Bar<Name>`). This is the precise, structural signal that a
 /// type is referenced, independent of content-search ranking.
+/// Razor directive aliases (`@model Ns.Type`, `@inherits Ns.Type`,
+/// `@inject IService svc`) are indexed as type_alias symbols whose NAME is the
+/// referenced type. Semantically they are type USAGES, not definitions: the
+/// view breaks when the type is renamed, and reference/blast-radius queries
+/// must report them rather than exclude them as declaration lines.
+pub fn isRazorDirectiveAlias(sym: Symbol) bool {
+    if (sym.kind != .type_alias) return false;
+    const detail = sym.detail orelse return false;
+    const t = std.mem.trimStart(u8, detail, " \t");
+    return std.mem.startsWith(u8, t, "@model") or
+        std.mem.startsWith(u8, t, "@inherits") or
+        std.mem.startsWith(u8, t, "@inject");
+}
+
 fn symbolReferencesType(sym: Symbol, name: []const u8) bool {
     if (sym.return_type) |rt| {
         if (typeMentionsName(rt, name)) return true;
     }
     for (sym.param_types) |pt| {
         if (typeMentionsName(pt, name)) return true;
+    }
+    if (isRazorDirectiveAlias(sym)) {
+        if (typeMentionsName(sym.name, name)) return true;
     }
     switch (sym.kind) {
         .class_def, .interface_def, .struct_def, .trait_def => {

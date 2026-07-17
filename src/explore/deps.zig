@@ -269,7 +269,7 @@ pub fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) 
 
 fn languageHasTypeUsageDeps(lang: @import("types.zig").Language) bool {
     return switch (lang) {
-        .c_sharp, .f_sharp, .java, .kotlin, .typescript => true,
+        .c_sharp, .f_sharp, .java, .kotlin, .typescript, .razor => true,
         else => false,
     };
 }
@@ -290,6 +290,68 @@ pub fn collectTypeUsageDeps(
         for (sym.param_types) |pt| {
             try collectTypeUsageDepsFromType(self, path, pt, seen, deps);
         }
+        // Razor directives (@model/@inherits/@inject) carry their type in the
+        // symbol NAME (kind=type_alias), not in return/param types. Renaming
+        // the model type breaks these views at runtime, so the edge is a hard
+        // dependency.
+        if (outline.language == .razor and @import("search.zig").isRazorDirectiveAlias(sym)) {
+            try collectTypeUsageDepsFromType(self, path, sym.name, seen, deps);
+        }
+    }
+
+    // Generic arguments in body code — DI registrations
+    // (services.AddTransient<IFoo, Foo>()) and HTML helper calls
+    // (Html.Kendo().Form<Model>()) — are compile-time dependencies that never
+    // appear in return/param types.
+    try collectGenericInvocationDeps(self, path, outline.language, seen, deps);
+}
+
+/// Scan raw content for `Ident<Args>(` generic invocations and record the
+/// argument types as usage deps. The `(` suffix requirement keeps `a<b && c>d`
+/// comparisons and razor markup out.
+fn collectGenericInvocationDeps(
+    self: *Explorer,
+    path: []const u8,
+    lang: @import("types.zig").Language,
+    seen: *std.StringHashMap(void),
+    deps: *std.ArrayList([]const u8),
+) !void {
+    if (lang != .c_sharp and lang != .razor) return;
+    const content = self.contents.get(path) orelse return;
+    var i: usize = 1;
+    while (i + 1 < content.len) : (i += 1) {
+        if (content[i] != '<') continue;
+        if (!parse_utils.isIdentChar(content[i - 1])) continue;
+        // Only identifier chars, dots, commas, whitespace, ?/[] and nested <>
+        // may appear in a generic argument list — anything else means this
+        // '<' was a comparison or markup.
+        var j = i + 1;
+        var depth: usize = 1;
+        var valid = true;
+        const limit = @min(content.len, i + 256);
+        while (j < limit) : (j += 1) {
+            const c = content[j];
+            if (c == '<') {
+                depth += 1;
+            } else if (c == '>') {
+                depth -= 1;
+                if (depth == 0) break;
+            } else if (!(parse_utils.isIdentChar(c) or c == '.' or c == ',' or
+                c == ' ' or c == '\t' or c == '?' or c == '[' or c == ']'))
+            {
+                valid = false;
+                break;
+            }
+        }
+        if (!valid or j >= limit or depth != 0) continue;
+        var k = j + 1;
+        while (k < content.len and (content[k] == ' ' or content[k] == '\t')) k += 1;
+        if (k >= content.len or content[k] != '(') {
+            i = j;
+            continue;
+        }
+        try collectTypeUsageDepsFromType(self, path, content[i + 1 .. j], seen, deps);
+        i = j;
     }
 }
 
@@ -305,7 +367,13 @@ fn collectTypeUsageDepsFromType(
         if (parse_utils.isIdentChar(c)) {
             if (token_start == null) token_start = i;
         } else if (token_start) |start| {
-            try addTypeUsageToken(self, path, type_text[start..i], seen, deps);
+            // A token directly followed by '.' is a namespace/outer qualifier
+            // (`MyApp.Models.Foo`) — only the final segment names the type;
+            // looking up qualifiers creates edges to unrelated same-named
+            // symbols.
+            if (c != '.') {
+                try addTypeUsageToken(self, path, type_text[start..i], seen, deps);
+            }
             token_start = null;
         }
     }
