@@ -18,6 +18,7 @@ const ssrs_parser = @import("../ssrs_parser.zig");
 const ssas_parser = @import("../ssas_parser.zig");
 const ssas_security = @import("../ssas_security.zig");
 const godot_parser = @import("../godot_parser.zig");
+const javascript_parser = @import("../javascript_parser.zig");
 const parse_utils = @import("parse_utils.zig");
 const skip_rules = @import("../watcher/skip_rules.zig");
 const startsWith = parse_utils.startsWith;
@@ -402,6 +403,15 @@ pub fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []co
         else => {},
     }
 
+    if (outline.language == .typescript or outline.language == .javascript) {
+        try javascript_parser.parse(parser, content, &outline);
+        outline.line_count = 1;
+        for (content) |c| if (c == '\n') {
+            outline.line_count += 1;
+        };
+        return outline;
+    }
+
     var line_num: u32 = 0;
     var prev_line_trimmed: []const u8 = "";
     var php_state: PhpParseState = .{};
@@ -535,8 +545,6 @@ pub fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []co
             try parser.parseZigLine(trimmed, line_num, &outline);
         } else if (outline.language == .python) {
             try parser.parsePythonLine(trimmed, line_num, &outline);
-        } else if (outline.language == .typescript or outline.language == .javascript) {
-            try parser.parseTsLine(trimmed, line_num, &outline);
         } else if (outline.language == .c or outline.language == .cpp) {
             try parser.parseCLine(line, trimmed, line_num, &outline, prev_line_trimmed, &c_brace_depth);
         } else if (outline.language == .rust) {

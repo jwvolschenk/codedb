@@ -34,7 +34,8 @@ pub const FORMAT_VERSION: u16 = 4;
 /// binary container layout.
 /// v3: OUTLINE_STATE now persists symbol decorators — older snapshots restored
 /// outlines without them, so they must be rescanned, not warm-loaded.
-pub const INDEX_VERSION: u32 = 3;
+/// v4: JavaScript/TypeScript outlines use source-wide lexical declaration parsing.
+pub const INDEX_VERSION: u32 = 4;
 
 pub const SectionId = enum(u32) {
     tree = 1,
