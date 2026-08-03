@@ -361,6 +361,34 @@ test "token guard: outline collapses a consecutive import run into one summary l
     try testing.expect(std.mem.indexOf(u8, out.items, "L1: import") == null);
 }
 
+test "token guard: JS/TS import collapsing joins bare paths, not whole statements" {
+    // Regression for a bug found dogfooding against a real ASP.NET+webpack
+    // repo: javascript_parser.zig's import symbol .name used to be the WHOLE
+    // statement, so collapsing glued full `import {...} from "...";` lines
+    // together instead of producing a compact path list.
+    const explore_tools = @import("explore_tools.zig");
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    try explorer.indexFile("Index.cshtml.js",
+        \\import { Toolbar } from "../../scripts/mycredopro.toolbar";
+        \\import { CallbackRequestHandler } from '../../scripts/mycredopro.requestcallbackhandler'
+        \\import { hideLoader, showLoader } from "../../scripts/mycredopro.common";
+        \\
+        \\function bindEventHandlers() {}
+    );
+
+    var args = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"path\":\"Index.cshtml.js\"}", .{});
+    defer args.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    explore_tools.handleOutline(testing.allocator, &args.value.object, &out, &explorer);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "imports: ../../scripts/mycredopro.toolbar, ../../scripts/mycredopro.requestcallbackhandler, ../../scripts/mycredopro.common") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "(x3)") != null);
+    // The bug: a stray "import {" fragment from a glued-together statement.
+    try testing.expect(std.mem.indexOf(u8, out.items, "import {") == null);
+}
+
 test "token guard: handleRead caps a rangeless whole-file dump but not a raw read" {
     var explorer = Explorer.init(testing.allocator);
     defer explorer.deinit();

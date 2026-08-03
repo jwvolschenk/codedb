@@ -50,6 +50,11 @@ test "javascript parser: module declarations and multiline imports" {
     try testing.expect(hasImport(&outline, "legacy-package"));
     const import_symbol = outline.symbols.items[0];
     try testing.expect(std.mem.indexOf(u8, import_symbol.detail.?, "import { first, second, } from \"mycredopro.common\";") != null);
+    // name is the bare import path, not the whole statement — matches every
+    // other language's import-symbol convention and is what makes
+    // codedb_outline's consecutive-import collapsing readable instead of
+    // gluing full statements together.
+    try testing.expectEqualStrings("mycredopro.common", import_symbol.name);
     try testing.expectEqual(SymbolKind.function, find(&outline, "handle").?.kind);
     try testing.expectEqual(SymbolKind.function, find(&outline, "arrow").?.kind);
     try testing.expectEqual(SymbolKind.function, find(&outline, "assigned").?.kind);

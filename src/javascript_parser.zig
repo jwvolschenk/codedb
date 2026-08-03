@@ -408,14 +408,20 @@ fn appendImportDeclaration(allocator: std.mem.Allocator, source: []const u8, tok
     const end_idx = end - 1;
     const detail = try normalizeDetail(allocator, declarationSlice(source, tokens, start, end_idx));
     errdefer allocator.free(detail);
-    const name = try allocator.dupe(u8, detail);
-    errdefer allocator.free(name);
-    try outline.symbols.append(allocator, .{ .name = name, .kind = .import, .line_start = tokens[start].line, .line_end = tokens[end_idx].line, .detail = detail });
+    // The symbol NAME is the resolved import path/specifier (e.g.
+    // "../mod.ts"), not the whole statement — matches every other language's
+    // import-symbol convention (appendImportSymbol) and is what makes
+    // consecutive-import collapsing (codedb_outline) produce a compact
+    // "imports: a, b, c" line instead of gluing full statements together.
+    // `detail` keeps the full statement for non-collapsed / verbose display.
     var chosen: ?usize = null;
     var i = start;
     while (i < end) : (i += 1) {
         if (tokens[i].kind == .string) chosen = i;
     }
+    const name = if (chosen) |idx| try allocator.dupe(u8, tokens[idx].text) else try allocator.dupe(u8, detail);
+    errdefer allocator.free(name);
+    try outline.symbols.append(allocator, .{ .name = name, .kind = .import, .line_start = tokens[start].line, .line_end = tokens[end_idx].line, .detail = detail });
     if (chosen) |idx| try outline.imports.append(allocator, try allocator.dupe(u8, tokens[idx].text));
 }
 
@@ -426,7 +432,9 @@ fn appendRequires(allocator: std.mem.Allocator, source: []const u8, tokens: []co
         try outline.imports.append(allocator, try allocator.dupe(u8, tokens[i + 2].text));
         const detail = try normalizeDetail(allocator, declarationSlice(source, tokens, start, end -| 1));
         errdefer allocator.free(detail);
-        const name = try allocator.dupe(u8, detail);
+        // Same rationale as appendImportDeclaration: name is the require()d
+        // path, not the whole `const x = require(...)` statement.
+        const name = try allocator.dupe(u8, tokens[i + 2].text);
         errdefer allocator.free(name);
         try outline.symbols.append(allocator, .{ .name = name, .kind = .import, .line_start = tokens[start].line, .line_end = tokens[end -| 1].line, .detail = detail });
     }
