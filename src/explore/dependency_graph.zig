@@ -89,7 +89,14 @@ pub const DependencyGraph = struct {
         return deps.items;
     }
 
-    pub fn getImportedBy(self: *const DependencyGraph, path: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
+    /// `basename_ambiguous` / `stem_ambiguous`: true when 2+ indexed files
+    /// share the queried path's basename/stem. The caller (Explorer, which
+    /// knows the full outline set) computes these; DependencyGraph only knows
+    /// import edges, not the set of indexed files. When ambiguous, the
+    /// corresponding fallback is skipped rather than attributing a bare
+    /// import to every same-named candidate — mirrors upstream's #572/#588
+    /// ambiguity guard.
+    pub fn getImportedBy(self: *const DependencyGraph, path: []const u8, allocator: std.mem.Allocator, basename_ambiguous: bool, stem_ambiguous: bool) ![]const []const u8 {
         // Extract basename for matching (e.g., "src/store.zig" -> "store.zig")
         const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
         const stem = fileStem(basename);
@@ -109,8 +116,10 @@ pub const DependencyGraph = struct {
             }
         }
 
-        // Also check basename match (imports often use short names)
-        if (!std.mem.eql(u8, path, basename)) {
+        // Also check basename match (imports often use short names) — unless
+        // 2+ indexed files share this basename, in which case the fallback
+        // can't tell which one a bare import actually meant.
+        if (!basename_ambiguous and !std.mem.eql(u8, path, basename)) {
             if (self.reverse.get(basename)) |rev_set| {
                 try appendReverseSetUnique(rev_set, &result, allocator);
             }
@@ -118,8 +127,8 @@ pub const DependencyGraph = struct {
 
         // Relative JS/TS-style imports are often extensionless (`./foo`) while
         // indexed files include extensions (`foo.ts`, `foo.js`). Match the file
-        // stem as a final exact-key fallback.
-        if (!std.mem.eql(u8, stem, basename)) {
+        // stem as a final exact-key fallback, same ambiguity guard.
+        if (!stem_ambiguous and !std.mem.eql(u8, stem, basename)) {
             if (self.reverse.get(stem)) |rev_set| {
                 try appendReverseSetUnique(rev_set, &result, allocator);
             }
@@ -257,7 +266,7 @@ pub const DependencyGraph = struct {
     }
 };
 
-fn fileStem(basename: []const u8) []const u8 {
+pub fn fileStem(basename: []const u8) []const u8 {
     if (std.mem.lastIndexOfScalar(u8, basename, '.')) |dot| {
         if (dot > 0) return basename[0..dot];
     }

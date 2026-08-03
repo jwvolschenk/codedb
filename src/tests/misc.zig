@@ -744,7 +744,7 @@ test "dep-graph: reverse index gives O(1) imported_by lookup" {
     try graph.setDeps("server.zig", deps2);
 
     // store.zig is imported by main.zig and server.zig
-    const imported_by = try graph.getImportedBy("store.zig", testing.allocator);
+    const imported_by = try graph.getImportedBy("store.zig", testing.allocator, false, false);
     defer {
         for (imported_by) |p| testing.allocator.free(p);
         testing.allocator.free(imported_by);
@@ -752,7 +752,7 @@ test "dep-graph: reverse index gives O(1) imported_by lookup" {
     try testing.expectEqual(@as(usize, 2), imported_by.len);
 
     // utils.zig is imported by main.zig only
-    const imported_by2 = try graph.getImportedBy("utils.zig", testing.allocator);
+    const imported_by2 = try graph.getImportedBy("utils.zig", testing.allocator, false, false);
     defer {
         for (imported_by2) |p| testing.allocator.free(p);
         testing.allocator.free(imported_by2);

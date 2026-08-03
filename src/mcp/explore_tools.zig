@@ -117,8 +117,8 @@ pub fn handleOutline(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
         return;
     }
     const w = cio.listWriter(out, alloc);
-    w.print("{s} ({s}, {d} lines, {d} bytes)", .{
-        outline.path, @tagName(outline.language), outline.line_count, outline.byte_size,
+    w.print("{s} ({s}, {d} lines)", .{
+        outline.path, @tagName(outline.language), outline.line_count,
     }) catch {};
     if (explore_mod.Explorer.isStubLikeOutline(&outline)) w.writeAll(" [stub]") catch {};
     const descriptor = explore_mod.Explorer.buildOutlineDescriptor(alloc, &outline) catch null;
@@ -177,6 +177,34 @@ fn writeOutlineSymbolsText(
     var i: usize = 0;
     while (i < outline.symbols.items.len) {
         const sym = outline.symbols.items[i];
+        // Consecutive imports collapse into one summary line: each import
+        // used to print as its own `L5: import foo` line, and import lines
+        // are never call/edit targets — the per-line numbers carry no value
+        // (−29% output size on import-heavy files).
+        if (sym.kind == .import) {
+            var count: usize = 0;
+            var names_len: usize = 0;
+            var truncated = false;
+            var first = true;
+            w.writeAll("  imports: ") catch {};
+            while (i < outline.symbols.items.len and outline.symbols.items[i].kind == .import) : (i += 1) {
+                count += 1;
+                if (names_len > 160) {
+                    truncated = true;
+                    continue;
+                }
+                if (!first) {
+                    w.writeAll(", ") catch {};
+                    names_len += 2;
+                }
+                first = false;
+                w.writeAll(outline.symbols.items[i].name) catch {};
+                names_len += outline.symbols.items[i].name.len;
+            }
+            if (truncated) w.writeAll(", \xe2\x80\xa6") catch {};
+            w.print("  (x{d})\n", .{count}) catch {};
+            continue;
+        }
         if (collapse_enabled and sym.kind == .variable) {
             const run_start = i;
             while (i < outline.symbols.items.len and outline.symbols.items[i].kind == .variable) : (i += 1) {}
@@ -393,10 +421,33 @@ pub fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
             const body = explorer.getSymbolBody(r.path, r.symbol.line_start, r.symbol.line_end, alloc) catch null;
             if (body) |b| {
                 defer alloc.free(b);
-                out.appendSlice(alloc, b) catch {};
+                appendCappedSymbolBody(alloc, out, r.path, b);
             }
         }
     }
+}
+
+/// Token guard for codedb_symbol body=true: god-class bodies (e.g. a
+/// 3,000-line class is ~127 KB) would otherwise be dumped whole, and since
+/// tool results persist in the agent transcript, ONE such call can cost
+/// ~1M re-sent tokens over a session. Cap only the pathological dumps
+/// (32 KB passes virtually every real function whole) — tighter caps
+/// measurably backfire: agents route around the tool and burn far more on
+/// extra round-trips.
+const symbol_body_cap: usize = 32 * 1024;
+
+fn appendCappedSymbolBody(alloc: std.mem.Allocator, out: *std.ArrayList(u8), path: []const u8, body: []const u8) void {
+    if (body.len <= symbol_body_cap) {
+        out.appendSlice(alloc, body) catch {};
+        return;
+    }
+    out.appendSlice(alloc, body[0..symbol_body_cap]) catch {};
+    var elided: usize = 0;
+    for (body[symbol_body_cap..]) |ch| {
+        if (ch == '\n') elided += 1;
+    }
+    const w = cio.listWriter(out, alloc);
+    w.print("\n\xe2\x80\xa6 [{d} more lines elided \xe2\x80\x94 run `codedb_outline` on {s} for the member list, then `codedb_read` at the line range you need]\n", .{ elided, path }) catch {};
 }
 
 fn writeDecoratorsInline(w: anytype, decorators: []const []const u8) void {
@@ -1672,7 +1723,7 @@ fn writeOutlineJson(
     w.print("\",\"language\":\"{s}\",\"line_count\":{d},\"byte_size\":{d},\"compact\":{},\"grouped\":{},\"symbols\":[", .{ @tagName(outline.language), outline.line_count, outline.byte_size, compact, grouped }) catch {};
     for (outline.symbols.items, 0..) |sym, i| {
         if (i > 0) w.writeAll(",") catch {};
-        writeSymbolHitJson(alloc, out, outline.path, sym, null);
+        writeSymbolHitJson(alloc, out, outline.path, sym, null, null);
     }
     w.print("],\"summary\":{{\"total\":{d},\"truncated\":false}}}}", .{outline.symbols.items.len}) catch {};
 }
@@ -1698,12 +1749,22 @@ fn writeSymbolJson(
         }
         if (!first) w.writeAll(",") catch {};
         first = false;
+        var owned_body: ?[]u8 = null;
         var body: ?[]const u8 = null;
+        var body_total_bytes: ?usize = null;
         if (include_body) {
-            body = explorer.getSymbolBody(r.path, r.symbol.line_start, r.symbol.line_end, alloc) catch null;
+            owned_body = explorer.getSymbolBody(r.path, r.symbol.line_start, r.symbol.line_end, alloc) catch null;
+            if (owned_body) |b| {
+                if (b.len > symbol_body_cap) {
+                    body_total_bytes = b.len;
+                    body = b[0..symbol_body_cap];
+                } else {
+                    body = b;
+                }
+            }
         }
-        writeSymbolHitJson(alloc, out, r.path, r.symbol, body);
-        if (body) |b| alloc.free(b);
+        writeSymbolHitJson(alloc, out, r.path, r.symbol, body, body_total_bytes);
+        if (owned_body) |b| alloc.free(b);
     }
     w.print("],\"summary\":{{\"total\":{d},\"truncated\":false}}}}", .{visible_count}) catch {};
 }
@@ -1714,6 +1775,7 @@ fn writeSymbolHitJson(
     path: []const u8,
     sym: explore_mod.Symbol,
     body: ?[]const u8,
+    body_total_bytes: ?usize,
 ) void {
     const w = cio.listWriter(out, alloc);
     w.print("{{\"path\":\"", .{}) catch {};
@@ -1755,6 +1817,12 @@ fn writeSymbolHitJson(
         w.print(",\"body\":\"", .{}) catch {};
         writeJsonString(out, alloc, b);
         w.print("\"", .{}) catch {};
+        // Token guard: god-class bodies are capped at symbol_body_cap bytes;
+        // this field tells the caller the body was truncated and by how much,
+        // instead of silently looking like the whole definition.
+        if (body_total_bytes) |total| {
+            w.print(",\"body_truncated_bytes\":{d}", .{total}) catch {};
+        }
     }
     w.print("}}", .{}) catch {};
 }

@@ -8,6 +8,7 @@ const TypeGraph = @import("../index.zig").TypeGraph;
 const Store = @import("../store.zig").Store;
 const tsql_parser = @import("../tsql_parser.zig");
 const parse_utils = @import("parse_utils.zig");
+const dependency_graph = @import("dependency_graph.zig");
 
 pub fn findSymbol(self: *Explorer, name: []const u8, allocator: std.mem.Allocator) !?struct { path: []const u8, symbol: Symbol } {
     self.mu.lockShared();
@@ -165,7 +166,21 @@ pub fn findAllSymbols(self: *Explorer, name: []const u8, allocator: std.mem.Allo
 pub fn getImportedBy(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
     self.mu.lockShared();
     defer self.mu.unlockShared();
-    return self.dep_graph.getImportedBy(path, allocator);
+    const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
+    const stem = dependency_graph.fileStem(basename);
+    // Ambiguity guard (mirrors upstream #572/#588): a bare basename/stem
+    // import can't tell which of 2+ same-named indexed files it meant, so
+    // count collisions across the FULL indexed set before letting
+    // DependencyGraph fall back to a basename/stem match.
+    var basename_count: usize = 0;
+    var stem_count: usize = 0;
+    var it = self.outlines.keyIterator();
+    while (it.next()) |k| {
+        const kb = if (std.mem.lastIndexOfScalar(u8, k.*, '/')) |p| k.*[p + 1 ..] else k.*;
+        if (std.mem.eql(u8, kb, basename)) basename_count += 1;
+        if (std.mem.eql(u8, dependency_graph.fileStem(kb), stem)) stem_count += 1;
+    }
+    return self.dep_graph.getImportedBy(path, allocator, basename_count > 1, stem_count > 1);
 }
 
 pub fn getTransitiveDependents(self: *Explorer, path: []const u8, allocator: std.mem.Allocator, max_depth: ?u32) ![]const []const u8 {

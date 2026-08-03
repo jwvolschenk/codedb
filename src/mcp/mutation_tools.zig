@@ -152,8 +152,11 @@ pub fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Ob
         };
         defer alloc.free(extracted);
         out.appendSlice(alloc, extracted) catch {};
-    } else {
+    } else if (raw) {
+        // #632: raw mode is byte-exact for exact-string editors — never capped.
         out.appendSlice(alloc, content) catch {};
+    } else {
+        explore_mod.Explorer.appendCappedFullFile(alloc, out, content);
     }
 }
 

@@ -5,6 +5,30 @@ const FileOutline = @import("../explore.zig").FileOutline;
 const Language = @import("../explore.zig").Language;
 const matchGlob = @import("../explore.zig").matchGlob;
 
+/// Token guard for rangeless full-file reads / symbol bodies: past a point a
+/// whole dump is never the right payload — tool results persist in the agent
+/// transcript and re-bill on every subsequent model call (a 150 KB dump costs
+/// ~37k tokens × the rest of the session). Cap only pathological dumps
+/// (64 KB ≈ 1,500 lines) — tighter caps measurably backfire: agents route
+/// around the tool and burn far more on extra round-trips. Raw-mode reads
+/// (byte-exact, for exact-string edits) bypass this entirely.
+pub const full_read_cap: usize = 64 * 1024;
+
+pub fn appendCappedFullFile(allocator: std.mem.Allocator, out: *std.ArrayList(u8), content: []const u8) void {
+    const cio = @import("../cio.zig");
+    if (content.len <= full_read_cap) {
+        out.appendSlice(allocator, content) catch {};
+        return;
+    }
+    out.appendSlice(allocator, content[0..full_read_cap]) catch {};
+    var elided: usize = 0;
+    for (content[full_read_cap..]) |ch| {
+        if (ch == '\n') elided += 1;
+    }
+    const w = cio.listWriter(out, allocator);
+    w.print("\n\xe2\x80\xa6 [{d} more lines elided ({d} bytes total) \xe2\x80\x94 run codedb_outline on this file, then codedb_read with line_start/line_end for the slice you need]\n", .{ elided, content.len }) catch {};
+}
+
 pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) ![]u8 {
     const s = @import("../style.zig").style(use_color);
 
@@ -32,13 +56,52 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) !
     var seen_dirs = std.StringHashMap(void).init(allocator);
     defer seen_dirs.deinit();
 
-    for (paths.items) |path| {
+    // Token guard (two-pass): 0-symbol files (JSON/markdown/lockfiles/assets)
+    // and dot-paths are pure noise for agents orienting in a repo — on a
+    // config-heavy ASP.NET project these can dominate tree output. Filter
+    // them out, keeping one summary line for discoverability. If the repo has
+    // NOTHING but such files (docs-only), fall back to showing everything
+    // rather than an empty tree.
+    var keep = try allocator.alloc(bool, paths.items.len);
+    defer allocator.free(keep);
+    var kept_dirs = std.StringHashMap(void).init(allocator);
+    defer kept_dirs.deinit();
+    var shown: usize = 0;
+    for (paths.items, 0..) |path, pi| {
+        const outline = self.outlines.get(path) orelse {
+            keep[pi] = false;
+            continue;
+        };
+        const dotpath = path[0] == '.' or std.mem.indexOf(u8, path, "/.") != null;
+        const k = !dotpath and outline.symbols.items.len > 0;
+        keep[pi] = k;
+        if (k) {
+            shown += 1;
+            var prefix_end: usize = 0;
+            while (std.mem.indexOfScalarPos(u8, path, prefix_end, '/')) |sep| {
+                try kept_dirs.put(path[0 .. sep + 1], {});
+                prefix_end = sep + 1;
+            }
+        }
+    }
+    const filter_active = shown > 0;
+    var omitted: usize = 0;
+
+    for (paths.items, 0..) |path, pi| {
         const outline = self.outlines.get(path) orelse continue;
+        if (filter_active and !keep[pi]) {
+            omitted += 1;
+            continue;
+        }
 
         // Emit directory nodes we haven't seen yet
         var prefix_end: usize = 0;
         while (std.mem.indexOfScalarPos(u8, path, prefix_end, '/')) |sep| {
             const dir = path[0 .. sep + 1];
+            if (filter_active and !kept_dirs.contains(dir)) {
+                prefix_end = sep + 1;
+                continue;
+            }
             if (!seen_dirs.contains(dir)) {
                 try seen_dirs.put(dir, {});
                 const depth = std.mem.count(u8, dir[0..sep], "/");
@@ -68,6 +131,9 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) !
         });
         if (descriptor) |d| try writer.print(" - {s}", .{d});
         try writer.writeAll("\n");
+    }
+    if (filter_active and omitted > 0) {
+        try writer.print("{s}\xe2\x80\xa6 +{d} non-code files omitted (no symbols or dotfiles){s}\n", .{ s.dim, omitted, s.reset });
     }
 
     return aw.toOwnedSlice();

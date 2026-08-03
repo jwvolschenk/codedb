@@ -22,3 +22,18 @@ pub const Context = struct {
     mcp_auto_index: bool,
     require_git_repo: bool,
 };
+
+/// Errors and exits 1 if more positional args follow the command name than
+/// `max_positional` allows. Closes the "extra or typo'd arguments silently
+/// ignored" gap (upstream #528) — e.g. `codedb word foo bar baz` used to
+/// search for "foo" and drop "bar baz" without a hint anything was wrong.
+pub fn rejectExtraArgs(ctx: *const Context, max_positional: usize, usage: []const u8) void {
+    if (ctx.args.len > ctx.cmd_args_start + max_positional) {
+        ctx.out.p("{s}\xe2\x9c\x97{s} unexpected argument: {s}{s}{s}\n  usage: {s}\n", .{
+            ctx.s.red,      ctx.s.reset,
+            ctx.s.bold,     ctx.args[ctx.cmd_args_start + max_positional],
+            ctx.s.reset,    usage,
+        });
+        std.process.exit(1);
+    }
+}

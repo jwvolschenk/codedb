@@ -97,51 +97,103 @@ pub const WordIndex = struct {
 
     /// Remove all index entries for a file (call before re-indexing).
     pub fn removeFile(self: *WordIndex, path: []const u8) void {
-        const removed = self.file_words.fetchRemove(path) orelse return;
-        const stable_path = removed.key;
-        const words_slice = removed.value;
+        if (self.file_words.fetchRemove(path)) |removed| {
+            const stable_path = removed.key;
+            const words_slice = removed.value;
 
-        const doc_id = self.path_to_id.get(stable_path) orelse {
-            self.allocator.free(words_slice);
-            self.allocator.free(stable_path);
+            const doc_id = self.path_to_id.get(stable_path) orelse {
+                self.allocator.free(words_slice);
+                self.allocator.free(stable_path);
+                return;
+            };
+            _ = self.path_to_id.remove(stable_path);
+            if (doc_id < self.id_to_path.items.len) {
+                self.id_to_path.items[doc_id] = "";
+                // #606: recycle the slot so getOrCreateDocId can reuse it, keeping
+                // id_to_path bounded in long-lived daemons instead of growing on
+                // every re-index.
+                self.free_ids.append(self.allocator, doc_id) catch {};
+            }
+            if (self.doc_lengths.fetchRemove(doc_id)) |kv| {
+                self.total_tokens -= kv.value;
+            }
+            defer {
+                self.allocator.free(words_slice);
+                self.allocator.free(stable_path);
+            }
+
+            // For each word this file contributed, remove hits with this doc_id.
+            // Prune empty buckets so churn does not leak key/list entries.
+            for (words_slice) |word| {
+                const word_ptr = &word;
+                if (self.index.getEntry(word_ptr.*)) |entry| {
+                    const hits = entry.value_ptr;
+                    var i: usize = 0;
+                    while (i < hits.items.len) {
+                        if (hits.items[i].doc_id == doc_id) {
+                            _ = hits.swapRemove(i);
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    if (hits.items.len == 0) {
+                        const owned_word = entry.key_ptr.*;
+                        hits.deinit(self.allocator);
+                        _ = self.index.remove(word_ptr.*);
+                        self.allocator.free(owned_word);
+                    }
+                }
+            }
             return;
-        };
-        _ = self.path_to_id.remove(stable_path);
-        if (doc_id < self.id_to_path.items.len) {
-            self.id_to_path.items[doc_id] = "";
-            // #606: recycle the slot so getOrCreateDocId can reuse it, keeping
-            // id_to_path bounded in long-lived daemons instead of growing on
-            // every re-index.
-            self.free_ids.append(self.allocator, doc_id) catch {};
         }
+
+        // No per-file word list: `path` was indexed while skip_file_words was
+        // set (the bulk-scan memory optimization, commands/mod.zig), which
+        // never populates file_words. Pre-fix this was a silent no-op, so a
+        // file edited after a cold-started long-running process (e.g. `codedb
+        // serve` starting from no snapshot) accumulated ghost postings at
+        // stale lines and doubled BM25 term frequency forever. Sweep every
+        // posting list for the doc_id instead — the caller-visible cost is an
+        // O(index) scan on a path that would otherwise have wrong results.
+        const doc_id = self.path_to_id.get(path) orelse return;
+        _ = self.path_to_id.remove(path);
         if (self.doc_lengths.fetchRemove(doc_id)) |kv| {
             self.total_tokens -= kv.value;
         }
-        defer {
-            self.allocator.free(words_slice);
-            self.allocator.free(stable_path);
+        var freed_path: ?[]const u8 = null;
+        if (doc_id < self.id_to_path.items.len) {
+            freed_path = self.id_to_path.items[doc_id];
+            self.id_to_path.items[doc_id] = "";
+            self.free_ids.append(self.allocator, doc_id) catch {};
         }
+        // id_to_path owns this string when skip_file_words populated it
+        // (mirrors the ownership rule already applied in deinit()).
+        defer if (freed_path) |p| {
+            if (p.len > 0) self.allocator.free(@constCast(p));
+        };
 
-        // For each word this file contributed, remove hits with this doc_id.
-        // Prune empty buckets so churn does not leak key/list entries.
-        for (words_slice) |word| {
-            const word_ptr = &word;
-            if (self.index.getEntry(word_ptr.*)) |entry| {
-                const hits = entry.value_ptr;
-                var i: usize = 0;
-                while (i < hits.items.len) {
-                    if (hits.items[i].doc_id == doc_id) {
-                        _ = hits.swapRemove(i);
-                    } else {
-                        i += 1;
-                    }
+        var empty_words: std.ArrayList([]const u8) = .empty;
+        defer empty_words.deinit(self.allocator);
+        var it = self.index.iterator();
+        while (it.next()) |entry| {
+            const hits = entry.value_ptr;
+            var i: usize = 0;
+            while (i < hits.items.len) {
+                if (hits.items[i].doc_id == doc_id) {
+                    _ = hits.swapRemove(i);
+                } else {
+                    i += 1;
                 }
-                if (hits.items.len == 0) {
-                    const owned_word = entry.key_ptr.*;
-                    hits.deinit(self.allocator);
-                    _ = self.index.remove(word_ptr.*);
-                    self.allocator.free(owned_word);
-                }
+            }
+            if (hits.items.len == 0) {
+                empty_words.append(self.allocator, entry.key_ptr.*) catch continue;
+            }
+        }
+        for (empty_words.items) |word| {
+            if (self.index.fetchRemove(word)) |kv| {
+                var hits = kv.value;
+                hits.deinit(self.allocator);
+                self.allocator.free(kv.key);
             }
         }
     }

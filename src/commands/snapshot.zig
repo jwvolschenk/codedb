@@ -1,7 +1,8 @@
 const std = @import("std");
 const cio = @import("../cio.zig");
 const sty = @import("../style.zig");
-const Context = @import("context.zig").Context;
+const context_mod = @import("context.zig");
+const Context = context_mod.Context;
 const AgentRegistry = @import("../agent.zig").AgentRegistry;
 const watcher = @import("../watcher.zig");
 const server = @import("../server.zig");
@@ -14,6 +15,7 @@ const disk_cache = @import("../cli/disk_cache.zig");
 const scan = @import("../cli/scan.zig");
 
 pub fn run(ctx: *Context) !void {
+    context_mod.rejectExtraArgs(ctx, 1, "codedb [root] snapshot [output-path]");
     const t0 = cio.nanoTimestamp();
     const output = if (ctx.args.len > ctx.cmd_args_start) ctx.args[ctx.cmd_args_start] else "codedb.snapshot";
     snapshot_mod.writeSnapshotDual(ctx.io, ctx.explorer, ctx.abs_root, output, ctx.allocator) catch |err| {

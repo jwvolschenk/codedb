@@ -44,6 +44,14 @@ pub const setRequireGitRepo = server.setRequireGitRepo;
 pub const getRequireGitRepo = server.getRequireGitRepo;
 pub const run = server.run;
 pub const dispatch = server.dispatch;
+pub const ConvergenceGovernor = server.ConvergenceGovernor;
+pub const convergenceNudge = server.convergenceNudge;
+pub const convergenceStrategyNudge = server.convergenceStrategyNudge;
+pub const negotiateProtocolVersion = server.negotiateProtocolVersion;
+pub const unsupportedMetaProtocolVersion = server.unsupportedMetaProtocolVersion;
+pub const discover_result = server.discover_result;
+pub const supported_versions_json = server.supported_versions_json;
+pub const mcp_instructions = server.mcp_instructions;
 
 // ── explore tool handlers (extracted to mcp/explore_tools.zig) ──
 const explore_tools = @import("mcp/explore_tools.zig");

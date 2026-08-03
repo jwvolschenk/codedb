@@ -426,6 +426,37 @@ test "issue-400-bug2: total_tokens stays consistent across re-index when skip_fi
     try testing.expectEqual(@as(u64, 1), explorer.word_index.total_tokens);
 }
 
+test "token guard: removeFile clears stale postings for a file indexed under skip_file_words" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    explorer.word_index.skip_file_words = true;
+    // skip_file_words=true never populates file_words, so removeFile (called
+    // internally by indexFile before re-indexing) used to be a silent no-op:
+    // the OLD posting for "one" would survive alongside the new content
+    // forever — a ghost hit at a stale line, and doubled BM25 term frequency
+    // on every re-index of the same file.
+    try explorer.indexFile("a.zig", "one two three\n");
+    const before = try explorer.searchWord("one", testing.allocator);
+    defer testing.allocator.free(before);
+    try testing.expectEqual(@as(usize, 1), before.len);
+
+    try explorer.indexFile("a.zig", "eight nine ten\n");
+    const after_stale = try explorer.searchWord("one", testing.allocator);
+    defer testing.allocator.free(after_stale);
+    try testing.expectEqual(@as(usize, 0), after_stale.len);
+
+    const after_fresh = try explorer.searchWord("eight", testing.allocator);
+    defer testing.allocator.free(after_fresh);
+    try testing.expectEqual(@as(usize, 1), after_fresh.len);
+
+    // A hard delete (no re-index following it) must also clear the postings,
+    // not just leave the doc_id orphaned in the index.
+    explorer.word_index.removeFile("a.zig");
+    const after_delete = try explorer.searchWord("eight", testing.allocator);
+    defer testing.allocator.free(after_delete);
+    try testing.expectEqual(@as(usize, 0), after_delete.len);
+}
+
 // ---------------------------------------------------------------------------
 // BM25 stress / recall regression tests (#421 stress-421 branch)
 // ---------------------------------------------------------------------------

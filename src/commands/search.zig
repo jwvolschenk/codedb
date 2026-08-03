@@ -1,7 +1,8 @@
 const std = @import("std");
 const cio = @import("../cio.zig");
 const sty = @import("../style.zig");
-const Context = @import("context.zig").Context;
+const context_mod = @import("context.zig");
+const Context = context_mod.Context;
 const AgentRegistry = @import("../agent.zig").AgentRegistry;
 const watcher = @import("../watcher.zig");
 const server = @import("../server.zig");
@@ -20,6 +21,9 @@ pub fn run(ctx: *Context) !void {
         use_regex = true;
         query_arg_start = ctx.cmd_args_start + 1;
     }
+    var shifted = ctx.*;
+    shifted.cmd_args_start = query_arg_start;
+    context_mod.rejectExtraArgs(&shifted, 1, "codedb [root] search [--regex] <query>");
     const query = if (ctx.args.len > query_arg_start) ctx.args[query_arg_start] else {
         ctx.out.p("{s}\xe2\x9c\x97{s} usage: codedb [ctx.root] search [--regex] {s}<query>{s}\n", .{
             ctx.s.red, ctx.s.reset, ctx.s.cyan, ctx.s.reset,

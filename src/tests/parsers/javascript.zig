@@ -175,3 +175,42 @@ test "javascript parser: malformed constructs stay bounded and hide their conten
     try expectMissing(&class_outline, "hiddenLocal");
     try expectMissing(&class_outline, "hiddenLoop");
 }
+
+test "javascript parser: multi-line + re-export relative imports resolve in the dep graph" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    try explorer.indexFile("src/bus/event-bus.ts", "export class EventBus {}\n");
+    try explorer.indexFile("src/role/role-driver.ts",
+        \\import {
+        \\  existsSync,
+        \\  readdirSync,
+        \\} from "../bus/event-bus.ts";
+        \\
+        \\export * from "./re-export.ts";
+        \\
+        \\// loads config from "config.json" at boot
+        \\
+        \\export class RoleDriver {}
+    );
+
+    // The multi-line import's `from "..."` clause resolves to the actual
+    // dependency graph edge, not just the raw outline.imports specifier.
+    const importers = try explorer.getImportedBy("src/bus/event-bus.ts", testing.allocator);
+    defer {
+        for (importers) |p| testing.allocator.free(p);
+        testing.allocator.free(importers);
+    }
+    var found = false;
+    for (importers) |p| {
+        if (std.mem.eql(u8, p, "src/role/role-driver.ts")) found = true;
+    }
+    try testing.expect(found);
+
+    // A comment that merely contains `from "..."` must never become a
+    // dependency edge.
+    var outline = (try explorer.getOutline("src/role/role-driver.ts", testing.allocator)).?;
+    defer outline.deinit();
+    for (outline.imports.items) |imp| {
+        try testing.expect(!std.mem.eql(u8, imp, "config.json"));
+    }
+}

@@ -1,7 +1,8 @@
 const std = @import("std");
 const cio = @import("../cio.zig");
 const sty = @import("../style.zig");
-const Context = @import("context.zig").Context;
+const context_mod = @import("context.zig");
+const Context = context_mod.Context;
 const AgentRegistry = @import("../agent.zig").AgentRegistry;
 const watcher = @import("../watcher.zig");
 const server = @import("../server.zig");
@@ -14,6 +15,7 @@ const disk_cache = @import("../cli/disk_cache.zig");
 const scan = @import("../cli/scan.zig");
 
 pub fn run(ctx: *Context) !void {
+    context_mod.rejectExtraArgs(ctx, 0, "codedb [root] serve");
     const port: u16 = blk: {
         const raw = cio.posixGetenv("CODEDB_PORT") orelse break :blk 6767;
         break :blk std.fmt.parseInt(u16, raw, 10) catch 6767;

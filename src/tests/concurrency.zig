@@ -181,7 +181,7 @@ test "dep-graph: setDeps removes old reverse edges" {
     try deps1.append(testing.allocator, "store.zig");
     try graph.setDeps("main.zig", deps1);
 
-    const before = try graph.getImportedBy("store.zig", testing.allocator);
+    const before = try graph.getImportedBy("store.zig", testing.allocator, false, false);
     defer {
         for (before) |p| testing.allocator.free(p);
         testing.allocator.free(before);
@@ -194,7 +194,7 @@ test "dep-graph: setDeps removes old reverse edges" {
     try graph.setDeps("main.zig", deps2);
 
     // store.zig should no longer have main.zig as a dependent
-    const after = try graph.getImportedBy("store.zig", testing.allocator);
+    const after = try graph.getImportedBy("store.zig", testing.allocator, false, false);
     defer {
         for (after) |p| testing.allocator.free(p);
         testing.allocator.free(after);
@@ -202,7 +202,7 @@ test "dep-graph: setDeps removes old reverse edges" {
     try testing.expectEqual(@as(usize, 0), after.len);
 
     // utils.zig should now have main.zig
-    const utils_deps = try graph.getImportedBy("utils.zig", testing.allocator);
+    const utils_deps = try graph.getImportedBy("utils.zig", testing.allocator, false, false);
     defer {
         for (utils_deps) |p| testing.allocator.free(p);
         testing.allocator.free(utils_deps);
@@ -229,7 +229,7 @@ test "dep-graph: remove cleans forward and reverse edges" {
     try testing.expectEqual(@as(usize, 1), graph.count());
 
     // store.zig should only be imported by server.zig now
-    const imported_by = try graph.getImportedBy("store.zig", testing.allocator);
+    const imported_by = try graph.getImportedBy("store.zig", testing.allocator, false, false);
     defer {
         for (imported_by) |p| testing.allocator.free(p);
         testing.allocator.free(imported_by);

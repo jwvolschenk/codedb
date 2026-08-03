@@ -236,6 +236,8 @@ pub const Explorer = struct {
     }
 
     pub const getTree = @import("explore/tree.zig").getTree;
+    pub const full_read_cap = @import("explore/tree.zig").full_read_cap;
+    pub const appendCappedFullFile = @import("explore/tree.zig").appendCappedFullFile;
 
     pub const findSymbol = @import("explore/deps.zig").findSymbol;
 

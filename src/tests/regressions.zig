@@ -242,8 +242,67 @@ test "regression #7: tree shows only basenames" {
 
     // Full path should NOT appear in tree output
     try testing.expect(std.mem.indexOf(u8, tree, "pkg/foo/bar.zig") == null);
-    // Only basename
-    try testing.expect(std.mem.indexOf(u8, tree, "bar.zig") != null);
+}
+
+test "token guard: tree omits 0-symbol files and dotpaths, keeps a summary line" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}");
+    // No parseable symbols: pure prose, no functions/types/etc.
+    try explorer.indexFile("README.md", "just some prose with no headings or code");
+    try explorer.indexFile(".github/workflows/ci.txt", "plain text, no symbols");
+
+    const tree = try explorer.getTree(testing.allocator, false);
+    defer testing.allocator.free(tree);
+
+    try testing.expect(std.mem.indexOf(u8, tree, "main.zig") != null);
+    try testing.expect(std.mem.indexOf(u8, tree, "README.md") == null);
+    try testing.expect(std.mem.indexOf(u8, tree, "ci.txt") == null);
+    try testing.expect(std.mem.indexOf(u8, tree, "non-code files omitted") != null);
+}
+
+test "token guard: tree shows everything when no file has symbols (docs-only fallback)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("README.md", "just prose");
+    try explorer.indexFile("docs/guide.md", "more prose");
+
+    const tree = try explorer.getTree(testing.allocator, false);
+    defer testing.allocator.free(tree);
+
+    try testing.expect(std.mem.indexOf(u8, tree, "README.md") != null);
+    try testing.expect(std.mem.indexOf(u8, tree, "guide.md") != null);
+    try testing.expect(std.mem.indexOf(u8, tree, "omitted") == null);
+}
+
+test "token guard: appendCappedFullFile passes small content through untouched" {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    const small = "hello world\n";
+    Explorer.appendCappedFullFile(testing.allocator, &out, small);
+    try testing.expectEqualStrings(small, out.items);
+}
+
+test "token guard: appendCappedFullFile truncates pathological dumps with an elision note" {
+    var content: std.ArrayList(u8) = .empty;
+    defer content.deinit(testing.allocator);
+    var i: usize = 0;
+    while (i < 4000) : (i += 1) {
+        try content.appendSlice(testing.allocator, "line of filler content here\n");
+    }
+    try testing.expect(content.items.len > Explorer.full_read_cap);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    Explorer.appendCappedFullFile(testing.allocator, &out, content.items);
+
+    try testing.expect(out.items.len < content.items.len);
+    try testing.expect(std.mem.indexOf(u8, out.items, "more lines elided") != null);
+    try testing.expect(std.mem.startsWith(u8, out.items, content.items[0..Explorer.full_read_cap]));
 }
 
 test "regression: queue push stays non-blocking when full" {

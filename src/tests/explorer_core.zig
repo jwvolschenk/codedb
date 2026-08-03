@@ -843,6 +843,34 @@ test "typescript relative parent imports are indexed as reverse dependencies" {
     try testing.expectEqualStrings("src/features/consumer.ts", deps[0]);
 }
 
+test "getImportedBy: ambiguous basename is not attributed to every same-named file" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // Two distinct files share the basename "index.ts".
+    try explorer.indexFile("src/a/index.ts", "export function fromA() {}\n");
+    try explorer.indexFile("src/b/index.ts", "export function fromB() {}\n");
+    // A bare (non-relative) import named "index" can't tell the two apart.
+    try explorer.indexFile("src/consumer.ts", "import { fromA } from 'index'\n");
+
+    const deps_a = try explorer.getImportedBy("src/a/index.ts", testing.allocator);
+    defer {
+        for (deps_a) |d| testing.allocator.free(d);
+        testing.allocator.free(deps_a);
+    }
+    const deps_b = try explorer.getImportedBy("src/b/index.ts", testing.allocator);
+    defer {
+        for (deps_b) |d| testing.allocator.free(d);
+        testing.allocator.free(deps_b);
+    }
+
+    // Neither side of the ambiguity gets the bare-import edge — the fallback
+    // is skipped entirely rather than guessing which "index.ts" it meant.
+    try testing.expectEqual(@as(usize, 0), deps_a.len);
+    try testing.expectEqual(@as(usize, 0), deps_b.len);
+}
+
 // ── Trigram index regression suite (#142) ─────────────────────────────
 // Tests correctness invariants that must hold across index implementation changes.
 

@@ -34,6 +34,7 @@ const git_mod = @import("../git.zig");
 const root_policy = @import("../root_policy.zig");
 const disk_cache = @import("../cli/disk_cache.zig");
 const release_info = @import("../release_info.zig");
+const reconcile_mod = @import("../watcher/reconcile.zig");
 
 const mcp = @import("../mcp.zig");
 
@@ -324,7 +325,18 @@ pub const ProjectCache = struct {
         store: Store,
         snapshot_cache: SnapshotCache,
         last_used: i64,
+        last_reconciled: i64 = 0,
     };
+
+    /// Stale-index guard for cross-project `project=` lookups (#591-style
+    /// reconcile, applied on cache hits too): a secondary project is loaded
+    /// once and then served from this in-process LRU for the rest of the
+    /// server's life, unlike the server's own root which stays fresh via the
+    /// live filesystem watcher. Without this, edits to a secondary project
+    /// (an agent's own writes included) are invisible until the entry is
+    /// evicted. Throttled — reconcileWorkingTree shells out to `git status`,
+    /// not worth paying on every single tool call to the same project.
+    const RECONCILE_THROTTLE_MS = 2000;
 
     mu: cio.RwLock,
     alloc: std.mem.Allocator,
@@ -401,6 +413,10 @@ pub const ProjectCache = struct {
             if (slot.*) |entry| {
                 if (std.mem.eql(u8, entry.path, p)) {
                     entry.last_used = now;
+                    if (now - entry.last_reconciled > RECONCILE_THROTTLE_MS) {
+                        entry.last_reconciled = now;
+                        reconcile_mod.reconcileWorkingTree(io, &entry.explorer, &entry.store, entry.path, &.{}, self.alloc);
+                    }
                     return ProjectCtx{ .explorer = &entry.explorer, .store = &entry.store, .snapshot_cache = &entry.snapshot_cache };
                 }
             }
@@ -417,6 +433,7 @@ pub const ProjectCache = struct {
         new_entry.store = Store.init(self.alloc);
         new_entry.snapshot_cache = .{};
         new_entry.last_used = now;
+        new_entry.last_reconciled = now;
 
         var snap_buf: [std.fs.max_path_bytes]u8 = undefined;
         const snap_path = std.fmt.bufPrint(&snap_buf, "{s}/codedb.snapshot", .{p}) catch {
@@ -452,6 +469,15 @@ pub const ProjectCache = struct {
 
         // Rebuild TypeIndex and TypeGraph from loaded outlines
         new_entry.explorer.rebuildTypeIndexes();
+
+        // Heal offline edits AFTER disk indexes are adopted but BEFORE the
+        // content-release compaction below — same ordering as the primary-root
+        // load path (commands/mcp.zig) and the CLI cold-load path
+        // (disk_cache.reconcileAfterLoad): a secondary project queried via
+        // project= can have been edited since its snapshot was written, and
+        // this is the only reconciliation it gets before the throttled
+        // cache-hit reconcile above takes over.
+        reconcile_mod.reconcileWorkingTree(io, &new_entry.explorer, &new_entry.store, p, &.{}, self.alloc);
 
         // Release raw file contents retained by the snapshot load — outlines,
         // trigram index, and word index are sufficient for all query tools.
@@ -615,7 +641,7 @@ pub const Tool = enum {
 };
 
 pub const tools_list =
-    \\{"tools":[
+    \\{"ttlMs":3600000,"cacheScope":"public","tools":[
     \\{"name":"codedb_tree","description":"Whole-repo file tree with per-file language, line counts, and symbol counts. Use to orient in an unfamiliar project.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_outline","description":"Symbol outline of one file: functions, structs, enums, imports, consts with line numbers. Set grouped=true for sectioned output by symbol kind. Run before codedb_read to find the lines you actually need.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"grouped":{"type":"boolean","description":"Group symbols into sections with line ranges and counts (default: false)."},"output_format":{"type":"string","enum":["text","json"],"description":"text (default) or json with confidence/why_matched metadata"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
     \\{"name":"codedb_symbol","description":"Find where a named symbol is defined across the index. Returns file, line, kind, detail, and decorators when captured. Results are ranked: type definitions (class/interface/struct/enum/...) first, then functions/methods, then constants/variables, then imports — so the canonical definition surfaces above same-named constants or imports. Pass kind (e.g. class_def) to restrict to one kind, and body=true for source. Pick this over codedb_search when you have an exact identifier.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name to search for (exact match)"},"kind":{"type":"string","description":"Restrict results to one SymbolKind. Useful to disambiguate a real type from same-named constants/imports. One of: class_def, interface_def, struct_def, enum_def, union_def, trait_def, type_alias, function, method, constant, variable, import, macro_def, impl_block, test_decl, comment_block."},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"decorator_filter":{"type":"string","description":"Only return symbols whose captured decorator/attribute contains this text, e.g. HttpPost or [Authorize]."},"output_format":{"type":"string","enum":["text","json"],"description":"text (default) or json with confidence/why_matched metadata"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
@@ -869,6 +895,8 @@ const Session = struct {
     roots_requested_at: i64 = 0,
     roots: std.ArrayList(Root) = .empty,
     deferred_scan: ?*DeferredScan = null,
+    /// Convergence governor: recent call signatures for this session.
+    governor: ConvergenceGovernor = .{},
 
     fn freeRoots(self: *Session) void {
         for (self.roots.items) |r| {
@@ -883,6 +911,107 @@ const Session = struct {
         self.roots.deinit(self.alloc);
     }
 };
+
+/// Convergence governor: tracks recent tool-call signatures within a session
+/// so a non-convergent agent that keeps firing the *same* navigation call (or
+/// keeps reformulating the same query) gets an in-band nudge to change
+/// strategy instead of looping — the 3-5x token runaways seen on large repos.
+/// It never changes a tool's result — it only lets handleCall append a
+/// one-line hint to the (separate) guidance content block once a call repeats.
+pub const ConvergenceGovernor = struct {
+    pub const HISTORY = 8; // ring-buffer window of recent calls
+    // Tool results are deterministic within a session, so the SECOND
+    // identical call is already pure waste — don't wait for a third.
+    pub const WARN_AT = 2; // same signature this many times in the window -> nudge
+    pub const NAME_WARN_AT = 4; // same query-tool (any args) this many times -> strategy nudge
+
+    sigs: [HISTORY]u64 = @splat(0),
+    head: usize = 0,
+    name_sigs: [HISTORY]u64 = @splat(0),
+    name_head: usize = 0,
+
+    /// Record a call signature and return how many times it has occurred within
+    /// the recent window (including this call). >= WARN_AT means it's looping.
+    pub fn record(self: *ConvergenceGovernor, sig: u64) usize {
+        const s = if (sig == 0) 1 else sig; // 0 is the empty-slot sentinel
+        var occurrences: usize = 1;
+        for (self.sigs) |prev| {
+            if (prev == s) occurrences += 1;
+        }
+        self.sigs[self.head] = s;
+        self.head = (self.head + 1) % HISTORY;
+        return occurrences;
+    }
+
+    /// Record a tool-name-only signature. Catches reformulation loops — the
+    /// classic runaway is search "x" -> search "x y" -> search "x y z":
+    /// different exact sigs, same wasted strategy.
+    pub fn recordName(self: *ConvergenceGovernor, name_sig: u64) usize {
+        const s = if (name_sig == 0) 1 else name_sig;
+        var occurrences: usize = 1;
+        for (self.name_sigs) |prev| {
+            if (prev == s) occurrences += 1;
+        }
+        self.name_sigs[self.name_head] = s;
+        self.name_head = (self.name_head + 1) % HISTORY;
+        return occurrences;
+    }
+};
+
+/// Stable signature of a tool call (name + its argument values) so two identical
+/// calls hash equal. Iteration order is consistent for an identical call shape.
+fn callSignature(name: []const u8, args: *const std.json.ObjectMap) u64 {
+    var h = std.hash.Wyhash.init(0);
+    h.update(name);
+    var it = args.iterator();
+    while (it.next()) |e| {
+        h.update(e.key_ptr.*);
+        switch (e.value_ptr.*) {
+            .string => |sv| h.update(sv),
+            .integer => |n| h.update(std.mem.asBytes(&n)),
+            .float => |f| h.update(std.mem.asBytes(&f)),
+            .bool => |b| h.update(if (b) "1" else "0"),
+            else => {},
+        }
+    }
+    return h.final();
+}
+
+/// Navigation tools where a repeated identical call is a runaway signal worth
+/// nudging on. Write/admin tools (edit, status, changes, projects) are excluded.
+fn isGovernedNavTool(name: []const u8) bool {
+    return std.mem.eql(u8, name, "codedb_search") or
+        std.mem.eql(u8, name, "codedb_find") or
+        std.mem.eql(u8, name, "codedb_word") or
+        std.mem.eql(u8, name, "codedb_read") or
+        std.mem.eql(u8, name, "codedb_outline") or
+        std.mem.eql(u8, name, "codedb_symbol") or
+        std.mem.eql(u8, name, "codedb_callers");
+}
+
+/// Query-reformulation tools where repeated use with DRIFTING args signals a
+/// fishing expedition. Deliberately excludes read/outline/symbol/callers —
+/// hitting those repeatedly with distinct targets is legitimate sequential
+/// exploration, and a noisy nudge trains agents to ignore the real one.
+fn isGovernedQueryTool(name: []const u8) bool {
+    return std.mem.eql(u8, name, "codedb_search") or
+        std.mem.eql(u8, name, "codedb_find") or
+        std.mem.eql(u8, name, "codedb_word");
+}
+
+/// The convergence nudge text for a governed nav call once it has repeated
+/// >= WARN_AT times, or null when no nudge should fire.
+pub fn convergenceNudge(occurrences: usize) ?[]const u8 {
+    if (occurrences < ConvergenceGovernor.WARN_AT) return null;
+    return "[codedb] You have issued this exact call before \xe2\x80\x94 results are deterministic within a session, the answer is already above. Change strategy: use a structural tool (codedb_symbol for a definition, codedb_callers for usages, codedb_deps for impact), open the file directly with codedb_read, or refine the query.";
+}
+
+/// Fired when the same QUERY tool is used repeatedly with drifting args —
+/// the reformulation loop the exact-signature nudge can't see.
+pub fn convergenceStrategyNudge(occurrences: usize) ?[]const u8 {
+    if (occurrences < ConvergenceGovernor.NAME_WARN_AT) return null;
+    return "[codedb] Repeated searches with tweaked queries are not converging. Stop guessing phrasing: locate the exact identifier with codedb_symbol, then codedb_callers / codedb_read around its definition.";
+}
 
 pub fn run(
     io: std.Io,
@@ -972,6 +1101,16 @@ pub fn run(
         }
         const method = method_opt.?;
 
+        // MCP 2026-07-28 stateless mode: a request may pin its protocol
+        // version in params._meta; answer versions we do not support with
+        // UnsupportedProtocolVersionError instead of guessing.
+        if (!is_notification) {
+            if (unsupportedMetaProtocolVersion(root)) |requested| {
+                writeUnsupportedProtocolVersionError(alloc, stdout, id, requested);
+                continue;
+            }
+        }
+
         if (mcpj.eql(method, "initialize")) {
             handleInitialize(&session, root, id);
         } else if (mcpj.eql(method, "notifications/initialized")) {
@@ -1004,9 +1143,11 @@ pub fn run(
                     }
                 }
             }
-            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan);
+            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, &session.governor);
         } else if (mcpj.eql(method, "ping")) {
             if (!is_notification) writeResult(alloc, stdout, id, "{}");
+        } else if (mcpj.eql(method, "server/discover")) {
+            if (!is_notification) writeResult(alloc, stdout, id, discover_result);
         } else {
             if (!is_notification) writeError(alloc, stdout, id, -32601, "Method not found");
         }
@@ -1034,11 +1175,92 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
             s.client_name = name;
         }
     }
+    var negotiated: []const u8 = SUPPORTED_PROTOCOL_VERSIONS[0];
+    if (root.get("params")) |p| {
+        if (p == .object) {
+            if (mcpj.getStr(&p.object, "protocolVersion")) |requested| {
+                if (negotiateProtocolVersion(requested)) |v| negotiated = v;
+            }
+        }
+    }
     const init_result = std.fmt.allocPrint(s.alloc,
-        \\{{"protocolVersion":"2025-06-18","capabilities":{{"tools":{{"listChanged":false}}}},"serverInfo":{{"name":"codedb","version":"{s}"}}}}
-    , .{release_info.semver}) catch return;
+        \\{{"protocolVersion":"{s}","capabilities":{{"tools":{{"listChanged":false}},"extensions":{{}}}},"serverInfo":{{"name":"codedb","version":"{s}"}},"instructions":"{s}"}}
+    , .{ negotiated, release_info.semver, mcp_instructions }) catch return;
     defer s.alloc.free(init_result);
     writeResult(s.alloc, s.stdout, id, init_result);
+}
+
+/// Ordered newest-first: a client that sends a newer version than we know
+/// should still get our newest known version back, not an old one.
+const SUPPORTED_PROTOCOL_VERSIONS = [_][]const u8{
+    "2026-07-28",
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+};
+
+/// Returns the requested version if we support it exactly. Otherwise: if it
+/// looks like a future date (lex-greater than our latest), reply with our
+/// latest; else reply with our oldest known version so older clients at
+/// least get a compatible-shaped response.
+pub fn negotiateProtocolVersion(requested: []const u8) ?[]const u8 {
+    if (requested.len == 0) return null;
+    for (SUPPORTED_PROTOCOL_VERSIONS) |v| {
+        if (std.mem.eql(u8, v, requested)) return v;
+    }
+    if (std.mem.order(u8, requested, SUPPORTED_PROTOCOL_VERSIONS[0]) == .gt) {
+        return SUPPORTED_PROTOCOL_VERSIONS[0];
+    }
+    return SUPPORTED_PROTOCOL_VERSIONS[SUPPORTED_PROTOCOL_VERSIONS.len - 1];
+}
+
+/// JSON array form of SUPPORTED_PROTOCOL_VERSIONS, built at comptime so
+/// server/discover and the -32022 error data can never drift from the
+/// negotiation list.
+pub const supported_versions_json = blk: {
+    var s: []const u8 = "[";
+    for (SUPPORTED_PROTOCOL_VERSIONS, 0..) |v, i| {
+        s = s ++ (if (i == 0) "\"" else ",\"") ++ v ++ "\"";
+    }
+    break :blk s ++ "]";
+};
+
+pub const mcp_instructions = "codedb is a code-intelligence and context tool \xe2\x80\x94 not your editor. Default to the structural tools FIRST: codedb_symbol for a definition, codedb_callers for usages/references, codedb_relations for type hierarchy, codedb_outline for a file's structure before codedb_read. Use codedb_search only for substrings or phrases when you do NOT know the exact symbol name \xe2\x80\x94 it is a fallback, not the default. Make edits with your own native file tools; codedb_edit is only a fallback for clients with no native editing.";
+
+/// MCP 2026-07-28 `server/discover` \xe2\x80\x94 the stateless-mode probe/identity RPC.
+/// Prebuilt at comptime; declares resultType itself so writeResult's
+/// resultType/_meta splice passes it through unchanged.
+pub const discover_result = "{\"resultType\":\"complete\",\"supportedVersions\":" ++ supported_versions_json ++
+    ",\"capabilities\":{\"tools\":{\"listChanged\":false},\"extensions\":{}}" ++
+    ",\"instructions\":\"" ++ mcp_instructions ++ "\"" ++
+    ",\"ttlMs\":3600000,\"cacheScope\":\"public\"" ++
+    ",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"codedb\",\"version\":\"" ++ release_info.semver ++ "\"}}}";
+
+/// The version string from params._meta["io.modelcontextprotocol/protocolVersion"]
+/// when it names a revision we do not support; null when the key is absent or
+/// the version is supported. Legacy clients never send the key, so the classic
+/// initialize negotiation path above is untouched.
+pub fn unsupportedMetaProtocolVersion(root: *const std.json.ObjectMap) ?[]const u8 {
+    const p = root.get("params") orelse return null;
+    if (p != .object) return null;
+    const m = p.object.get("_meta") orelse return null;
+    if (m != .object) return null;
+    const v = mcpj.getStr(&m.object, "io.modelcontextprotocol/protocolVersion") orelse return null;
+    for (SUPPORTED_PROTOCOL_VERSIONS) |s| {
+        if (std.mem.eql(u8, s, v)) return null;
+    }
+    return v;
+}
+
+fn writeUnsupportedProtocolVersionError(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, requested: []const u8) void {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
+    jsonio.appendId(alloc, &buf, id);
+    buf.appendSlice(alloc, ",\"error\":{\"code\":-32022,\"message\":\"Unsupported protocol version\",\"data\":{\"requested\":\"") catch return;
+    writeEscaped(alloc, &buf, requested);
+    buf.appendSlice(alloc, "\",\"supported\":" ++ supported_versions_json ++ "}}}\n") catch return;
+    stdout.writeAll(buf.items) catch return;
 }
 
 fn requestRoots(s: *Session) void {
@@ -1133,6 +1355,7 @@ fn handleCall(
     cache: *ProjectCache,
     telem: *telemetry_mod.Telemetry,
     deferred_scan: ?*DeferredScan,
+    governor: *ConvergenceGovernor,
 ) void {
     const is_notification = id == null;
 
@@ -1200,6 +1423,25 @@ fn handleCall(
     var guidance: std.ArrayList(u8) = .empty;
     defer guidance.deinit(alloc);
     mcpGenerateGuidance(alloc, name, args, out.items, is_error, &guidance);
+
+    // Convergence governor: if this exact navigation call keeps repeating
+    // within the session, or the same query tool keeps getting reformulated,
+    // nudge the agent to change strategy instead of looping. Appended to the
+    // separate guidance block — it never alters Block 2 (the tool result).
+    if (isGovernedNavTool(name)) {
+        const occurrences = governor.record(callSignature(name, args));
+        if (convergenceNudge(occurrences)) |msg| {
+            if (guidance.items.len > 0) guidance.appendSlice(alloc, "\n") catch {};
+            guidance.appendSlice(alloc, msg) catch {};
+        }
+    }
+    if (isGovernedQueryTool(name)) {
+        const name_occurrences = governor.recordName(std.hash.Wyhash.hash(0, name));
+        if (convergenceStrategyNudge(name_occurrences)) |msg| {
+            if (guidance.items.len > 0) guidance.appendSlice(alloc, "\n") catch {};
+            guidance.appendSlice(alloc, msg) catch {};
+        }
+    }
 
     // Assemble 3-block MCP content envelope
     var result: std.ArrayList(u8) = .empty;
