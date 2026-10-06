@@ -1403,8 +1403,8 @@ pub fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
             };
         } else {
             explorer.mu.lockShared();
+            defer explorer.mu.unlockShared();
             const fwd = explorer.dep_graph.getForwardDeps(path);
-            explorer.mu.unlockShared();
             if (fwd) |deps| {
                 var result_list: std.ArrayList([]const u8) = .empty;
                 for (deps) |dep| {

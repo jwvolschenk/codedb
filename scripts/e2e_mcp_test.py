@@ -205,7 +205,7 @@ def reply_roots(p: MCPProcess, project_path: str, timeout: float = 5.0) -> bool:
         "jsonrpc": "2.0",
         "id": req["id"],
         "result": {
-            "roots": [{"uri": f"file://{project_path}", "name": "project"}],
+            "roots": [{"uri": Path(project_path).resolve().as_uri(), "name": "project"}],
         },
     })
     return True

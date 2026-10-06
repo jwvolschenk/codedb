@@ -531,7 +531,7 @@ pub const TrigramIndex = struct {
 
     pub const POSTINGS_MAGIC = [4]u8{ 'C', 'D', 'B', 'T' };
     pub const LOOKUP_MAGIC = [4]u8{ 'C', 'D', 'B', 'L' };
-    pub const FORMAT_VERSION: u16 = 3;
+    pub const FORMAT_VERSION: u16 = 4;
 
     /// Posting entry for v3+: file_id (u32) + next_mask (u8) + loc_mask (u8) + pad (2 bytes) = 8 bytes
     pub const DiskPosting = extern struct {
@@ -727,7 +727,7 @@ pub const TrigramIndex = struct {
         if (postings_data.len < 8) return null;
         if (!std.mem.eql(u8, postings_data[0..4], &POSTINGS_MAGIC)) return null;
         const post_version = std.mem.readInt(u16, postings_data[4..6], .little);
-        if (post_version < 1 or post_version > FORMAT_VERSION) return null;
+        if (post_version != FORMAT_VERSION) return null;
         const file_count: u32 = if (post_version >= 3)
             std.mem.readInt(u32, postings_data[6..10], .little)
         else
@@ -770,7 +770,7 @@ pub const TrigramIndex = struct {
         if (lookup_data.len < 12) return null;
         if (!std.mem.eql(u8, lookup_data[0..4], &LOOKUP_MAGIC)) return null;
         const lk_version = std.mem.readInt(u16, lookup_data[4..6], .little);
-        if (lk_version < 1 or lk_version > FORMAT_VERSION) return null;
+        if (lk_version != FORMAT_VERSION) return null;
         const entry_count = std.mem.readInt(u32, lookup_data[8..12], .little);
         if (lookup_data.len < 12 + entry_count * @sizeOf(LookupEntry)) return null;
 
@@ -886,7 +886,7 @@ pub const TrigramIndex = struct {
         if (n < 8) return null;
         if (!std.mem.eql(u8, buf[0..4], &POSTINGS_MAGIC)) return null;
         const version = std.mem.readInt(u16, buf[4..6], .little);
-        if (version < 1 or version > FORMAT_VERSION) return null;
+        if (version != FORMAT_VERSION) return null;
         const file_count: u32 = if (version >= 3)
             std.mem.readInt(u32, buf[6..10], .little)
         else

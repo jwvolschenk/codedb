@@ -1,3 +1,4 @@
+const project_file = @import("../project_file.zig");
 const std = @import("std");
 const explore_mod = @import("../explore.zig");
 const Explorer = explore_mod.Explorer;
@@ -106,8 +107,9 @@ pub fn loadSnapshotValidated(
     // Validate content section fits within actual file size (issue-40: truncation detection)
     const file_stat = file.stat(io) catch return false;
     const file_size = file_stat.size;
-    if (content_entry.offset + content_entry.length > file_size) return false;
+    if (content_entry.offset > file_size or content_entry.length > file_size - content_entry.offset) return false;
 
+    if (!(format.validateContent(io, file, content_entry, allocator) catch false)) return false;
     var read_pos: u64 = content_entry.offset;
     const snap_mtime: i128 = @intCast(file_stat.mtime.nanoseconds);
     var bytes_read: u64 = 0;
@@ -154,21 +156,13 @@ pub fn loadSnapshotValidated(
         var disk_content: ?[]u8 = null;
         if (snap_mtime > 0) blk: {
             if (root_dir) |rd| {
-                const df = rd.openFile(io, path_buf, .{}) catch break :blk;
+                const df = project_file.open(io, rd, path_buf) catch break :blk;
                 defer df.close(io);
                 const ds = df.stat(io) catch break :blk;
                 const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
                 if (ds_mtime <= snap_mtime) break :blk;
-                disk_content = rd.readFileAlloc(io, path_buf, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
-            } else {
-                // No root dir (legacy/test path with absolute paths) — keep the
-                // old cwd-relative behavior so we don't regress those callers.
-                const df = std.Io.Dir.cwd().openFile(io, path_buf, .{}) catch break :blk;
-                defer df.close(io);
-                const ds = df.stat(io) catch break :blk;
-                const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
-                if (ds_mtime <= snap_mtime) break :blk;
-                disk_content = std.Io.Dir.cwd().readFileAlloc(io, path_buf, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
+                disk_content = project_file.readAlloc(io, rd, path_buf, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
+
             }
         }
         defer if (disk_content) |dc| allocator.free(dc);
@@ -237,10 +231,11 @@ pub fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std
 
     var cursor: usize = 0;
     const file_count = try readSectionInt(u32, bytes, &cursor);
+    if (file_count > bytes.len / 19) return error.InvalidData;
     for (0..file_count) |_| {
         const path = try readSectionString(bytes, &cursor, allocator, 4096);
-        if (path.len == 0) return error.InvalidData;
         errdefer allocator.free(path);
+        if (!project_file.isAllowedPath(path)) return error.InvalidData;
 
         var outline = FileOutline.init(allocator, path);
         errdefer outline.deinit();
@@ -263,8 +258,8 @@ pub fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std
         const symbol_count = try readSectionInt(u32, bytes, &cursor);
         for (0..symbol_count) |_| {
             const name = try readSectionString(bytes, &cursor, allocator, std.math.maxInt(u16));
-            if (name.len == 0) return error.InvalidData;
             errdefer allocator.free(name);
+            if (name.len == 0) return error.InvalidData;
 
             const kind_raw = try readSectionByte(bytes, &cursor);
             const kind = std.enums.fromInt(SymbolKind, kind_raw) orelse return error.InvalidData;
@@ -289,6 +284,7 @@ pub fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std
 
             // v3: param_types
             const param_types_count = try readSectionInt(u32, bytes, &cursor);
+            if (param_types_count > (bytes.len - cursor) / 2) return error.InvalidData;
             const param_types = try allocator.alloc([]const u8, param_types_count);
             errdefer allocator.free(param_types);
             for (0..param_types_count) |pi| {
@@ -298,6 +294,7 @@ pub fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std
 
             // v4: decorators
             const decorators_count = try readSectionInt(u32, bytes, &cursor);
+            if (decorators_count > (bytes.len - cursor) / 2) return error.InvalidData;
             const decorators: [][]const u8 = if (decorators_count > 0)
                 try allocator.alloc([]const u8, decorators_count)
             else
@@ -320,6 +317,7 @@ pub fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std
             });
         }
 
+        if (result.contains(path)) return error.InvalidData;
         try result.put(path, outline);
     }
 
@@ -346,6 +344,7 @@ pub fn insertRestoredFile(
     outline: FileOutline,
     allocator: std.mem.Allocator,
 ) !void {
+    if (!project_file.isAllowedPath(path) or @import("../ssas_security.zig").containsSensitiveContent(path, content)) return error.InvalidData;
     var restored_outline = outline;
     restored_outline.path = path;
 

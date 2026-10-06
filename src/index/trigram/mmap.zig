@@ -102,7 +102,7 @@ pub const MmapTrigramIndex = struct {
         // Validate postings header
         if (!std.mem.eql(u8, postings_data[0..4], &TrigramIndex.POSTINGS_MAGIC)) return null;
         const post_version = std.mem.readInt(u16, postings_data[4..6], .little);
-        if (post_version < 1 or post_version > TrigramIndex.FORMAT_VERSION) return null;
+        if (post_version != TrigramIndex.FORMAT_VERSION) return null;
         const file_count: u32 = if (post_version >= 3)
             std.mem.readInt(u32, postings_data[6..10], .little)
         else
@@ -146,7 +146,7 @@ pub const MmapTrigramIndex = struct {
         // Validate lookup header
         if (!std.mem.eql(u8, lookup_data[0..4], &TrigramIndex.LOOKUP_MAGIC)) return null;
         const lk_version = std.mem.readInt(u16, lookup_data[4..6], .little);
-        if (lk_version < 1 or lk_version > TrigramIndex.FORMAT_VERSION) return null;
+        if (lk_version != TrigramIndex.FORMAT_VERSION) return null;
         const entry_count = std.mem.readInt(u32, lookup_data[8..12], .little);
         if (lookup_data.len < 12 + entry_count * @sizeOf(TrigramIndex.LookupEntry)) return null;
 

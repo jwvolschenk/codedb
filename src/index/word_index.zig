@@ -442,7 +442,7 @@ pub const WordIndex = struct {
     };
 
     const DISK_MAGIC = [4]u8{ 'C', 'D', 'B', 'W' };
-    const DISK_FORMAT_VERSION: u16 = 3;
+    const DISK_FORMAT_VERSION: u16 = 4;
 
     pub fn writeToDisk(self: *WordIndex, io: std.Io, dir_path: []const u8, git_head: ?[40]u8) !void {
         var file_table: std.ArrayList([]const u8) = .empty;
@@ -722,7 +722,7 @@ pub const WordIndex = struct {
         if (n < 51) return null;
         if (!std.mem.eql(u8, buf[0..4], &DISK_MAGIC)) return null;
         const version = std.mem.readInt(u16, buf[4..6], .little);
-        if (version < 1 or version > DISK_FORMAT_VERSION) return null;
+        if (version != DISK_FORMAT_VERSION) return null;
 
         const file_count = std.mem.readInt(u32, buf[6..10], .little);
         var git_head: ?[40]u8 = null;

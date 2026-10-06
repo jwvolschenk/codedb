@@ -1,3 +1,4 @@
+const project_file = @import("../project_file.zig");
 const std = @import("std");
 const builtin = @import("builtin");
 const cio = @import("../cio.zig");
@@ -391,7 +392,7 @@ pub fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: 
     if (stat.size > skip_rules.max_indexed_file_bytes) return;
     var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer content_arena.deinit();
-    const content = try dir.readFileAlloc(io, path, content_arena.allocator(), .limited(skip_rules.max_indexed_file_bytes));
+    const content = try project_file.readAlloc(io, dir, path, content_arena.allocator(), .limited(skip_rules.max_indexed_file_bytes));
     if (ssas_security.containsSensitiveContent(path, content)) {
         explorer.removeFile(path);
         return error.SensitiveContent;

@@ -812,6 +812,7 @@ test "issue-116: getGitHead returns valid SHA for git repos" {
 }
 
 test "issue-148: POLLHUP detects closed pipe" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // POSIX poll; Windows EOF is covered by MCP E2E.
     // Verify the polling infrastructure works for pipe-based transports
     const pipe = try cio.makePipe();
     defer _ = std.c.close(pipe[0]);
@@ -865,6 +866,7 @@ test "issue-148: idle watchdog exits on shutdown signal" {
 }
 
 test "issue-148: open pipe does not trigger HUP" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // POSIX poll; Windows EOF is covered by MCP E2E.
     const pipe = try cio.makePipe();
     defer _ = std.c.close(pipe[0]);
     defer _ = std.c.close(pipe[1]);

@@ -17,6 +17,9 @@ const root_policy = @import("root_policy.zig");
 pub fn isPathSafe(path: []const u8) bool {
     if (path.len == 0) return false;
     if (path[0] == '/') return false;
+    // Drive-qualified, drive-relative, and NTFS alternate-data-stream paths
+    // are never relative project keys, even on a non-Windows host.
+    if (std.mem.indexOfScalar(u8, path, ':') != null) return false;
     // Block null bytes (path truncation attack)
     if (std.mem.indexOfScalar(u8, path, 0) != null) return false;
     // Block backslash separators so Windows-style `..\..\x` can't bypass the
@@ -25,6 +28,13 @@ pub fn isPathSafe(path: []const u8) bool {
     var it = std.mem.splitScalar(u8, path, '/');
     while (it.next()) |component| {
         if (std.mem.eql(u8, component, "..")) return false;
+        if (@import("builtin").os.tag == .windows and component.len > 0) {
+            if (component[component.len - 1] == '.' or component[component.len - 1] == ' ') return false;
+            const stem = component[0 .. std.mem.indexOfScalar(u8, component, '.') orelse component.len];
+            for ([_][]const u8{ "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9" }) |device| {
+                if (std.ascii.eqlIgnoreCase(stem, device)) return false;
+            }
+        }
     }
     return true;
 }
@@ -42,15 +52,26 @@ pub fn projectRelPath(path: []const u8, root: []const u8) ?[]const u8 {
     // Already a safe relative path — pass through.
     if (isPathSafe(path)) return path;
     // Only absolute paths get the in-root rescue; anything else stays rejected.
-    if (path.len == 0 or path[0] != '/') return null;
+    if (path.len == 0) return null;
+    const windows_absolute = path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and (path[2] == '/' or path[2] == '\\');
+    if (!windows_absolute and path[0] != '/') return null;
+    if (path.len >= 2 and path[0] == '/' and path[1] == '/') return null;
     if (root.len == 0) return null;
     // "/" is never a legitimate project root (root_policy rejects it for
     // indexing) — and accepting it would let `//etc/passwd` pass the child
     // check via its doubled slash.
     if (std.mem.eql(u8, root, "/")) return null;
-    if (!root_policy.isExactOrChild(path, root)) return null;
+    if (windows_absolute) {
+        if (root.len <= 3 or path.len <= root.len) return null;
+        for (root, path[0..root.len]) |a, b| {
+            const aa = if (a == '\\') '/' else std.ascii.toLower(a);
+            const bb = if (b == '\\') '/' else std.ascii.toLower(b);
+            if (aa != bb) return null;
+        }
+        if (path[root.len] != '/' and path[root.len] != '\\') return null;
+    } else if (!root_policy.isExactOrChild(path, root)) return null;
     var rel = path[root.len..];
-    while (rel.len > 0 and rel[0] == '/') rel = rel[1..];
+    while (rel.len > 0 and (rel[0] == '/' or (windows_absolute and rel[0] == '\\'))) rel = rel[1..];
     if (rel.len == 0) return null; // the root directory itself, not a file
     // Re-validate the stripped remainder (blocks `/root/../escape`, nulls, etc).
     if (!isPathSafe(rel)) return null;
@@ -65,6 +86,15 @@ pub fn projectRelPath(path: []const u8, root: []const u8) ?[]const u8 {
 /// start with '.' or the few letters that begin sensitive names. Skip the
 /// full check for those common cases.
 pub fn isSensitivePath(path: []const u8) bool {
+    // Fold once into a bounded stack buffer, including directory separators.
+    // Reject overlong names conservatively instead of truncating the policy key.
+    var normalized: [std.fs.max_path_bytes]u8 = undefined;
+    if (path.len > normalized.len) return true;
+    for (path, normalized[0..path.len]) |ch, *out| out.* = if (ch == '\\') '/' else std.ascii.toLower(ch);
+    return isSensitiveNormalized(normalized[0..path.len]);
+}
+
+fn isSensitiveNormalized(path: []const u8) bool {
     const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| path[sep + 1 ..] else path;
     if (basename.len == 0) return false;
     const first = basename[0];
@@ -108,4 +138,31 @@ pub fn isSensitivePath(path: []const u8) bool {
         std.mem.indexOf(u8, path, ".gnupg/") != null or
         std.mem.indexOf(u8, path, ".aws/") != null) return true;
     return false;
+}
+
+/// Public file arguments may use native Windows separators; stored index keys
+/// always use '/'. Keep the borrowed-slice helper strict for existing callers.
+pub fn normalizedProjectPath(allocator: std.mem.Allocator, path: []const u8, root: []const u8) !?[]u8 {
+    const normalized = try allocator.dupe(u8, path);
+    defer allocator.free(normalized);
+    if (@import("builtin").os.tag == .windows) {
+        for (normalized) |*ch| if (ch.* == '\\') { ch.* = '/'; };
+    }
+    const rel = projectRelPath(normalized, root) orelse return null;
+    return try allocator.dupe(u8, rel);
+}
+
+test "security: Windows drive and stream paths are never relative keys" {
+    for ([_][]const u8{ "C:/outside.txt", "c:outside.txt", "file.txt:secret", "//host/share/x", "\\\\?\\C:\\x", "../x" }) |path| {
+        try std.testing.expect(!isPathSafe(path));
+    }
+    try std.testing.expect(projectRelPath("C:/outside.txt", "C:/project") == null);
+    try std.testing.expectEqualStrings("source file.zig", projectRelPath("c:/PROJECT/source file.zig", "C:/project").?);
+}
+
+test "security: secret names and directory separators are case insensitive" {
+    for ([_][]const u8{ ".ENV", "upper/.ENV.local", "private.PEM", "private.KEY", "Credentials.JSON", "a\\.AWS\\config", "a/.SSH/config" }) |path| {
+        try std.testing.expect(isSensitivePath(path));
+    }
+    try std.testing.expect(!isSensitivePath("src/environment.zig"));
 }

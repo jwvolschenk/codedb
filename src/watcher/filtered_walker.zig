@@ -1,3 +1,4 @@
+const project_file = @import("../project_file.zig");
 const std = @import("std");
 const skip_rules = @import("skip_rules.zig");
 
@@ -44,7 +45,7 @@ pub const FilteredWalker = struct {
             try self.visited_real_paths.put(allocator, seed, {});
         } else |_| {}
 
-        if (root.readFileAlloc(io, ".codedbignore", allocator, .limited(64 * 1024))) |content| {
+        if (project_file.readAlloc(io, root, ".codedbignore", allocator, .limited(64 * 1024))) |content| {
             self.codedbignore_hash = std.hash.Wyhash.hash(0, content);
             defer allocator.free(content);
             var lines = std.mem.splitScalar(u8, content, '\n');
@@ -56,7 +57,7 @@ pub const FilteredWalker = struct {
             }
         } else |_| {}
 
-        if (root.readFileAlloc(io, ".gitignore", allocator, .limited(64 * 1024))) |content| {
+        if (project_file.readAlloc(io, root, ".gitignore", allocator, .limited(64 * 1024))) |content| {
             defer allocator.free(content);
             var lines = std.mem.splitScalar(u8, content, '\n');
             while (lines.next()) |line| {
@@ -128,7 +129,7 @@ pub const FilteredWalker = struct {
                             entry.name;
                         if (self.isIgnored(entry.name, check_path)) continue;
                     }
-                    const sub = top.dir_handle.openDir(self.io, entry.name, .{ .iterate = true }) catch continue;
+                    const sub = top.dir_handle.openDir(self.io, entry.name, .{ .iterate = true, .follow_symlinks = false }) catch continue;
                     errdefer sub.close(self.io);
                     const saved_len = self.name_buffer.items.len;
                     errdefer self.name_buffer.shrinkRetainingCapacity(saved_len);
@@ -145,48 +146,7 @@ pub const FilteredWalker = struct {
                     continue;
                 }
 
-                if (entry.kind != .file) {
-                    if (entry.kind != .sym_link) continue;
-                    const target_stat = top.dir_handle.statFile(self.io, entry.name, .{}) catch continue;
-                    if (target_stat.kind == .directory) {
-                        if (skip_rules.shouldSkipDir(entry.name)) continue;
-                        if (self.ignore_patterns.items.len > 0) {
-                            var check_buf: [std.fs.max_path_bytes]u8 = undefined;
-                            const check_path = if (self.dir_prefix_len > 0)
-                                std.fmt.bufPrint(&check_buf, "{s}/{s}", .{ self.name_buffer.items[0..self.dir_prefix_len], entry.name }) catch entry.name
-                            else
-                                entry.name;
-                            if (self.isIgnored(entry.name, check_path)) continue;
-                        }
-                        var rt_buf: [std.fs.max_path_bytes]u8 = undefined;
-                        const rt_len = top.dir_handle.realPathFile(self.io, entry.name, &rt_buf) catch continue;
-                        const real_target = rt_buf[0..rt_len];
-                        if (self.real_root.len == 0) continue;
-                        if (!std.mem.startsWith(u8, real_target, self.real_root)) continue;
-                        if (real_target.len != self.real_root.len and real_target[self.real_root.len] != '/') continue;
-                        const gop = self.visited_real_paths.getOrPut(self.allocator, real_target) catch continue;
-                        if (gop.found_existing) continue;
-                        const dup = self.allocator.dupe(u8, real_target) catch {
-                            _ = self.visited_real_paths.remove(real_target);
-                            continue;
-                        };
-                        gop.key_ptr.* = dup;
-                        const sub = top.dir_handle.openDir(self.io, entry.name, .{ .iterate = true }) catch continue;
-                        errdefer sub.close(self.io);
-                        const saved_len_sym = self.name_buffer.items.len;
-                        errdefer self.name_buffer.shrinkRetainingCapacity(saved_len_sym);
-                        if (self.name_buffer.items.len > 0)
-                            try self.name_buffer.append(self.allocator, '/');
-                        try self.name_buffer.appendSlice(self.allocator, entry.name);
-                        self.dir_prefix_len = self.name_buffer.items.len;
-                        try self.stack.append(self.allocator, .{
-                            .dir_handle = sub,
-                            .iter = sub.iterate(),
-                        });
-                        continue;
-                    }
-                    if (target_stat.kind != .file) continue;
-                }
+                if (entry.kind != .file) continue;
 
                 if (self.dir_prefix_len > 0)
                     try self.name_buffer.append(self.allocator, '/');
@@ -197,6 +157,10 @@ pub const FilteredWalker = struct {
                     continue;
                 }
 
+                if (!project_file.isAllowedPath(self.name_buffer.items)) {
+                    self.name_buffer.shrinkRetainingCapacity(self.dir_prefix_len);
+                    continue;
+                }
                 return .{ .path = self.name_buffer.items };
             } else {
                 if (self.stack.items.len > 1) {

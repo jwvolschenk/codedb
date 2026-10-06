@@ -1,3 +1,4 @@
+const project_file = @import("../project_file.zig");
 const std = @import("std");
 const cio = @import("../cio.zig");
 const Store = @import("../store.zig").Store;
@@ -327,7 +328,7 @@ pub fn persistWordIndexFromSource(
     word_index.skip_file_words = true;
 
     for (paths.items) |path| {
-        const content = root_dir.readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024)) catch continue;
+        const content = project_file.readAlloc(io, root_dir, path, allocator, .limited(64 * 1024 * 1024)) catch continue;
         errdefer allocator.free(content);
         try word_index.indexFile(path, content);
         allocator.free(content);

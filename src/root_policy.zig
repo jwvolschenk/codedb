@@ -8,6 +8,21 @@ pub fn isExactOrChild(path: []const u8, prefix: []const u8) bool {
 
 pub fn isIndexableRoot(path: []const u8) bool {
     if (path.len == 0) return false;
+    // Reject network/device roots and whole drives before any Git exception.
+    if (path.len >= 2 and (path[0] == '/' or path[0] == '\\') and (path[1] == '/' or path[1] == '\\')) return false;
+    if (path.len >= 2 and path[1] == ':') {
+        if (!std.ascii.isAlphabetic(path[0]) or path.len <= 3) return false;
+        if (path[2] != '/' and path[2] != '\\') return false;
+        var components = std.mem.tokenizeAny(u8, path[3..], "/\\");
+        const first = components.next() orelse return false;
+        for ([_][]const u8{ "windows", "program files", "program files (x86)", "programdata", "$recycle.bin", "system volume information" }) |name| {
+            if (std.ascii.eqlIgnoreCase(first, name)) return false;
+        }
+        if (std.ascii.eqlIgnoreCase(first, "users")) {
+            _ = components.next() orelse return false;
+            if (components.next() == null) return false;
+        }
+    }
     if (std.mem.eql(u8, path, "/")) return false;
     if (isExactOrChild(path, "/private/tmp")) return false;
     if (isExactOrChild(path, "/tmp")) return false;
@@ -50,3 +65,10 @@ pub fn isIndexableRoot(path: []const u8) bool {
 }
 
 const testing = std.testing;
+
+test "security: reject Windows system drive home and network roots" {
+    for ([_][]const u8{ "C:", "C:/", "C:\\", "C:relative", "C:/Windows/System32", "c:/PROGRAM FILES/app", "C:/Users", "C:/Users/person", "//host/share/repo", "\\\\?\\C:\\repo" }) |path| {
+        try testing.expect(!isIndexableRoot(path));
+    }
+    try testing.expect(isIndexableRoot("C:/repos/project"));
+}

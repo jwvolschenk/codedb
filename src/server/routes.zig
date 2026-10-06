@@ -1,3 +1,4 @@
+const project_file = @import("../project_file.zig");
 // codedb HTTP server — ported to Zig 0.16 std.Io.net (issue #285).
 //
 // This restores the port server that upstream stubbed out in commit 56ea465
@@ -291,7 +292,7 @@ pub fn handleConnection(
             respondJson(&conn, "500 Internal Server Error", "{\"error\":\"root not configured\"}");
             return;
         };
-        const content = root_dir.readFileAlloc(io, path, allocator, .limited(10 * 1024 * 1024)) catch |err| switch (err) {
+        const content = project_file.readAlloc(io, root_dir, path, allocator, .limited(10 * 1024 * 1024)) catch |err| switch (err) {
             error.FileNotFound => {
                 respondJson(&conn, "404 Not Found", "{\"error\":\"file not found\"}");
                 return;

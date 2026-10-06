@@ -20,6 +20,8 @@ pub const posix = if (!is_windows) struct {
 
 // Windows externs (only declared on Windows).
 pub const win = if (is_windows) struct {
+    pub extern "c" fn _pipe(fds: *[2]c_int, size: c_uint, mode: c_int) c_int;
+    pub extern "c" fn _close(fd: c_int) c_int;
     pub extern "kernel32" fn WriteFile(hFile: std.os.windows.HANDLE, lpBuffer: [*]const u8, nNumberOfBytesToWrite: std.os.windows.DWORD, lpNumberOfBytesWritten: *std.os.windows.DWORD, lpOverlapped: ?*anyopaque) std.os.windows.BOOL;
     pub extern "kernel32" fn GetStdHandle(nStdHandle: std.os.windows.DWORD) std.os.windows.HANDLE;
     pub extern "kernel32" fn GetConsoleMode(hConsoleHandle: std.os.windows.HANDLE, lpMode: *std.os.windows.DWORD) std.os.windows.BOOL;

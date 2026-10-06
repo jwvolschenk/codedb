@@ -1,3 +1,4 @@
+const project_file = @import("../project_file.zig");
 // codedb MCP — ASP.NET tool implementations.
 //
 // Extracted from mcp.zig to keep the route/config-xref subsystem (which is
@@ -234,7 +235,7 @@ fn collectOnDemandConfigDefinitions(
         if (entry.kind != .file) continue;
         if (!std.mem.startsWith(u8, entry.name, "appsettings")) continue;
         if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
-        const content = dir.readFileAlloc(io, entry.name, alloc, .limited(4 * 1024 * 1024)) catch continue;
+        const content = project_file.readAlloc(io, dir, entry.name, alloc, .limited(4 * 1024 * 1024)) catch continue;
         defer alloc.free(content);
         collectJsonConfigDefinitions(alloc, entry.name, content, definitions) catch continue;
         const rel = if (rel_dir.len == 0)

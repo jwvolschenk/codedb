@@ -1,3 +1,4 @@
+const project_file = @import("../project_file.zig");
 const std = @import("std");
 const explore_mod = @import("../explore.zig");
 const Explorer = explore_mod.Explorer;
@@ -20,6 +21,7 @@ pub fn loadSnapshotFast(
     store: *Store,
     allocator: std.mem.Allocator,
 ) !bool {
+    if (format.readSnapshotIndexVersion(io, snapshot_path, allocator) != format.INDEX_VERSION) return false;
     var outline_states = loadOutlineStateMap(io, snapshot_path, allocator) catch std.StringHashMap(FileOutline).init(allocator);
     defer deinitOutlineStateMap(&outline_states, allocator);
 
@@ -31,7 +33,7 @@ pub fn loadSnapshotFast(
     defer content_file.close(io);
 
     const file_stat = content_file.stat(io) catch return false;
-    if (content_entry.offset + content_entry.length > file_stat.size) return false;
+    if (content_entry.offset > file_stat.size or content_entry.length > file_stat.size - content_entry.offset) return false;
 
     // Project-root dir handle for freshness re-reads — paths in the snapshot
     // are relative to root, but a spawned MCP server's cwd != root. See
@@ -42,6 +44,7 @@ pub fn loadSnapshotFast(
         null;
     defer if (root_dir) |rd| rd.close(io);
 
+    if (!(format.validateContent(io, content_file, content_entry, allocator) catch false)) return false;
     var read_pos: u64 = content_entry.offset;
     const snap_mtime: i128 = @intCast(file_stat.mtime.nanoseconds);
     var bytes_read: u64 = 0;
@@ -57,7 +60,7 @@ pub fn loadSnapshotFast(
         bytes_read += 2;
 
         const path_buf = allocator.alloc(u8, path_len) catch return false;
-        const prn = content_file.readPositionalAll(io, path_buf, read_pos) catch return false;
+        const prn = content_file.readPositionalAll(io, path_buf, read_pos) catch { allocator.free(path_buf); return false; };
         if (prn != path_len) {
             allocator.free(path_buf);
             break;
@@ -66,7 +69,7 @@ pub fn loadSnapshotFast(
         bytes_read += path_len;
 
         var cl_buf: [4]u8 = undefined;
-        const cln = content_file.readPositionalAll(io, &cl_buf, read_pos) catch return false;
+        const cln = content_file.readPositionalAll(io, &cl_buf, read_pos) catch { allocator.free(path_buf); return false; };
         if (cln != 4) {
             allocator.free(path_buf);
             break;
@@ -79,8 +82,8 @@ pub fn loadSnapshotFast(
         }
         bytes_read += 4;
 
-        const content = allocator.alloc(u8, content_len) catch return false;
-        const crn = content_file.readPositionalAll(io, content, read_pos) catch return false;
+        const content = allocator.alloc(u8, content_len) catch { allocator.free(path_buf); return false; };
+        const crn = content_file.readPositionalAll(io, content, read_pos) catch { allocator.free(path_buf); allocator.free(content); return false; };
         if (crn != content_len) {
             allocator.free(path_buf);
             allocator.free(content);
@@ -94,19 +97,13 @@ pub fn loadSnapshotFast(
             // Open relative to the project root (root_dir), not Dir.cwd() —
             // paths are root-relative and a spawned server's cwd != root (#591).
             if (root_dir) |rd| {
-                const df = rd.openFile(io, path_buf, .{}) catch break :blk;
+                const df = project_file.open(io, rd, path_buf) catch break :blk;
                 defer df.close(io);
                 const ds = df.stat(io) catch break :blk;
                 const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
                 if (ds_mtime <= snap_mtime) break :blk;
-                disk_content = rd.readFileAlloc(io, path_buf, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
-            } else {
-                const df = std.Io.Dir.cwd().openFile(io, path_buf, .{}) catch break :blk;
-                defer df.close(io);
-                const ds = df.stat(io) catch break :blk;
-                const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
-                if (ds_mtime <= snap_mtime) break :blk;
-                disk_content = std.Io.Dir.cwd().readFileAlloc(io, path_buf, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
+                disk_content = project_file.readAlloc(io, rd, path_buf, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
+
             }
         }
         defer if (disk_content) |dc| allocator.free(dc);

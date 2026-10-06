@@ -1,3 +1,4 @@
+const project_file = @import("project_file.zig");
 const std = @import("std");
 const Store = @import("store.zig").Store;
 const AgentRegistry = @import("agent.zig").AgentRegistry;
@@ -46,7 +47,10 @@ pub fn applyEdit(
         else => {},
     }
 
-    const source = try std.Io.Dir.cwd().readFileAlloc(io, req.path, allocator, .limited(10 * 1024 * 1024));
+    const root = if (explorer) |exp| exp.root_dir orelse std.Io.Dir.cwd() else std.Io.Dir.cwd();
+    const parent = try project_file.openParent(io, root, req.path);
+    defer parent.close(io);
+    const source = try project_file.readAlloc(io, root, req.path, allocator, .limited(10 * 1024 * 1024));
     defer allocator.free(source);
     if (ssas_security.containsSensitiveContent(req.path, source)) return error.SensitiveContent;
 
@@ -141,17 +145,17 @@ pub fn applyEdit(
     }
 
     // Atomic write: write to temp file then rename to prevent corruption on crash
-    const dir = std.Io.Dir.cwd();
-    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.codedb_tmp", .{req.path});
+    const dir = parent.dir;
+    const tmp_path = try std.fmt.allocPrint(allocator, ".codedb-edit-{x}.tmp", .{@import("cio.zig").randU64()});
     defer allocator.free(tmp_path);
 
     {
-        const tmp_file = try dir.createFile(io, tmp_path, .{});
+        const tmp_file = try dir.createFile(io, tmp_path, .{ .exclusive = true, .resolve_beneath = true });
         defer tmp_file.close(io);
         try tmp_file.writeStreamingAll(io, result);
     }
 
-    std.Io.Dir.rename(dir, tmp_path, dir, req.path, io) catch |err| {
+    std.Io.Dir.rename(dir, tmp_path, dir, parent.basename, io) catch |err| {
         // Clean up temp file on rename failure
         dir.deleteFile(io, tmp_path) catch {};
         return err;

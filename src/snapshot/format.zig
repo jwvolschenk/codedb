@@ -35,7 +35,8 @@ pub const FORMAT_VERSION: u16 = 4;
 /// v3: OUTLINE_STATE now persists symbol decorators — older snapshots restored
 /// outlines without them, so they must be rescanned, not warm-loaded.
 /// v4: JavaScript/TypeScript outlines use source-wide lexical declaration parsing.
-pub const INDEX_VERSION: u32 = 4;
+/// v5: root-confined source reads and case-insensitive secret exclusions.
+pub const INDEX_VERSION: u32 = 5;
 
 pub const SectionId = enum(u32) {
     tree = 1,
@@ -52,6 +53,45 @@ pub const SectionEntry = struct {
     length: u64,
 };
 
+/// Preflight every record before mutating an index or doing a disk fallback.
+/// Arithmetic uses remaining section bytes, never unchecked offset + length.
+pub fn validateContent(io: std.Io, file: std.Io.File, entry: SectionEntry, allocator: std.mem.Allocator) !bool {
+    const file_size = try file.length(io);
+    if (entry.offset > file_size or entry.length > file_size - entry.offset) return false;
+    var remaining = entry.length;
+    var pos = entry.offset;
+    var paths = std.StringHashMap(void).init(allocator);
+    defer {
+        var keys = paths.keyIterator();
+        while (keys.next()) |key| allocator.free(key.*);
+        paths.deinit();
+    }
+    while (remaining != 0) {
+        var pl: [2]u8 = undefined;
+        if (remaining < 2 or try file.readPositionalAll(io, &pl, pos) != 2) return false;
+        pos += 2;
+        remaining -= 2;
+        const len = std.mem.readInt(u16, &pl, .little);
+        if (len == 0 or len > 4096 or len > remaining) return false;
+        var path: [4096]u8 = undefined;
+        if (try file.readPositionalAll(io, path[0..len], pos) != len) return false;
+        if (!path_safety.isPathSafe(path[0..len]) or path_safety.isSensitivePath(path[0..len]) or paths.contains(path[0..len])) return false;
+        const owned = try allocator.dupe(u8, path[0..len]);
+        paths.put(owned, {}) catch |err| { allocator.free(owned); return err; };
+        pos += len;
+        remaining -= len;
+        var cl: [4]u8 = undefined;
+        if (remaining < 4 or try file.readPositionalAll(io, &cl, pos) != 4) return false;
+        pos += 4;
+        remaining -= 4;
+        const content_len = std.mem.readInt(u32, &cl, .little);
+        if (content_len > 64 * 1024 * 1024 or content_len > remaining) return false;
+        pos += content_len;
+        remaining -= content_len;
+    }
+    return true;
+}
+
 /// Write a portable `.codedb` snapshot file.
 pub fn readSectionsFromFile(io: std.Io, file: std.Io.File, allocator: std.mem.Allocator) !?std.AutoHashMap(u32, SectionEntry) {
     var magic_buf: [4]u8 = undefined;
@@ -63,9 +103,14 @@ pub fn readSectionsFromFile(io: std.Io, file: std.Io.File, allocator: std.mem.Al
     const scn = file.readPositionalAll(io, &sc_buf, 48) catch return null;
     if (scn != 4) return null;
     const section_count = std.mem.readInt(u32, &sc_buf, .little);
+    const size = try file.length(io);
+    if (section_count == 0 or section_count > 32 or size < 52 or section_count > (size - 52) / 20) return null;
+    var version: [2]u8 = undefined;
+    if (try file.readPositionalAll(io, &version, 4) != 2 or std.mem.readInt(u16, &version, .little) != FORMAT_VERSION) return null;
 
     var result = std.AutoHashMap(u32, SectionEntry).init(allocator);
-    errdefer result.deinit();
+    var success = false;
+    defer if (!success) result.deinit();
 
     var pos: u64 = 52;
     for (0..section_count) |_| {
@@ -73,6 +118,14 @@ pub fn readSectionsFromFile(io: std.Io, file: std.Io.File, allocator: std.mem.Al
         const en = file.readPositionalAll(io, &entry_buf, pos) catch return null;
         if (en != 20) return null;
         pos += 20;
+        const id = std.mem.readInt(u32, entry_buf[0..4], .little);
+        const offset = std.mem.readInt(u64, entry_buf[4..12], .little);
+        const length = std.mem.readInt(u64, entry_buf[12..20], .little);
+        if (result.contains(id) or offset < 52 + @as(u64, section_count) * 20 or offset > size or length > size - offset) return null;
+        var existing = result.valueIterator();
+        while (existing.next()) |entry| {
+            if (offset < entry.offset + entry.length and entry.offset < offset + length) return null;
+        }
         try result.put(
             std.mem.readInt(u32, entry_buf[0..4], .little),
             .{
@@ -82,6 +135,7 @@ pub fn readSectionsFromFile(io: std.Io, file: std.Io.File, allocator: std.mem.Al
             },
         );
     }
+    success = true;
     return result;
 }
 
@@ -104,7 +158,7 @@ pub fn readSectionBytes(io: std.Io, path: []const u8, section_id: SectionId, all
 
     // Validate section fits within file
     const file_size = file.length(io) catch return null;
-    if (entry.offset + entry.length > file_size) return null;
+    if (entry.offset > file_size or entry.length > file_size - entry.offset) return null;
 
     const buf = try allocator.alloc(u8, @intCast(entry.length));
     errdefer allocator.free(buf);
@@ -268,7 +322,7 @@ fn freeAndNull(out: *std.ArrayList([]u8), allocator: std.mem.Allocator) ?[][]u8 
 /// Returns true on success, false if the snapshot couldn't be loaded.
 pub fn readSectionInt(comptime T: type, buf: []const u8, cursor: *usize) !T {
     const size = @sizeOf(T);
-    if (cursor.* + size > buf.len) return error.InvalidData;
+    if (cursor.* > buf.len or size > buf.len - cursor.*) return error.InvalidData;
     const value = std.mem.readInt(T, buf[cursor.*..][0..size], .little);
     cursor.* += size;
     return value;
@@ -284,7 +338,7 @@ pub fn readSectionByte(buf: []const u8, cursor: *usize) !u8 {
 pub fn readSectionString(buf: []const u8, cursor: *usize, allocator: std.mem.Allocator, max_len: usize) ![]u8 {
     const len = try readSectionInt(u16, buf, cursor);
     if (len > max_len) return error.InvalidData;
-    if (cursor.* + len > buf.len) return error.InvalidData;
+    if (cursor.* > buf.len or len > buf.len - cursor.*) return error.InvalidData;
     const out = try allocator.dupe(u8, buf[cursor.* .. cursor.* + len]);
     cursor.* += len;
     return out;

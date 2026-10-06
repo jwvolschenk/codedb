@@ -1,3 +1,4 @@
+const project_file = @import("../project_file.zig");
 // codedb_manifest MCP tool (#591 Task 12) — local package-dependency facts.
 //
 // Answers three agent questions without shipping lockfiles or hitting the
@@ -136,7 +137,7 @@ fn readAndParse(io: std.Io, alloc: std.mem.Allocator, project_root: []const u8, 
 
     const dir = std.Io.Dir.cwd().openDir(io, project_root, .{}) catch return null;
     defer dir.close(io);
-    const content = dir.readFileAlloc(io, rel_path, alloc, .limited(max_manifest_bytes)) catch return null;
+    const content = project_file.readAlloc(io, dir, rel_path, alloc, .limited(max_manifest_bytes)) catch return null;
     defer alloc.free(content);
 
     const deps = manifest_mod.parseManifest(kind, content, alloc) catch return null;

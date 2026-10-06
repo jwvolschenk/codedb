@@ -10,10 +10,10 @@ const NsGetArgv = platform.NsGetArgv;
 pub const PipeError = error{PipeFailed};
 pub fn makePipe() PipeError![2]c_int {
     if (is_windows) {
-        // Windows: use MSVC CRT _pipe. 64 = O_BINARY | O_NOINHERIT.
-        const fds = std.c._pipe(null, 65536, 6);
-        if (fds.err != 0) return error.PipeFailed;
-        return .{ fds.ret[0], fds.ret[1] };
+        // MSVC CRT descriptors, binary and non-inheritable.
+        var fds: [2]c_int = .{ -1, -1 };
+        if (win._pipe(&fds, 65536, 0x8000 | 0x0080) != 0) return error.PipeFailed;
+        return fds;
     }
     var fds: [2]c_int = .{ -1, -1 };
     if (posix.pipe(&fds) != 0) return error.PipeFailed;
@@ -22,7 +22,7 @@ pub fn makePipe() PipeError![2]c_int {
 
 pub fn closeFd(fd: c_int) void {
     if (is_windows) {
-        _ = std.c._close(fd);
+        _ = win._close(fd);
     } else {
         _ = posix.close(fd);
     }

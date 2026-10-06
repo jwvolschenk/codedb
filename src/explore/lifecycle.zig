@@ -1,3 +1,4 @@
+const project_file = @import("../project_file.zig");
 const std = @import("std");
 const Explorer = @import("../explore.zig").Explorer;
 const FileOutline = @import("../explore.zig").FileOutline;
@@ -55,7 +56,7 @@ pub fn indexFileSkipTrigram(self: *Explorer, path: []const u8, content: []const 
 
 pub fn commitParsedFileOwnedOutline(self: *Explorer, path: []const u8, content: []const u8, outline: FileOutline, full_index: bool, skip_trigram: bool) !void {
     var owned_outline = outline;
-    if (ssas_security.containsSensitiveContent(path, content)) {
+    if (!project_file.isAllowedPath(path) or ssas_security.containsSensitiveContent(path, content)) {
         owned_outline.deinit();
         self.removeFile(path);
         return;
@@ -1250,7 +1251,7 @@ pub fn clearDecoratorList(allocator: std.mem.Allocator, pending: *std.ArrayList(
 }
 
 pub fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_index: bool, skip_trigram: bool) !void {
-    if (ssas_security.containsSensitiveContent(path, content)) {
+    if (!project_file.isAllowedPath(path) or ssas_security.containsSensitiveContent(path, content)) {
         self.removeFile(path);
         return;
     }
@@ -1387,7 +1388,7 @@ pub fn rebuildWordIndex(self: *Explorer) !void {
         const io = self.io orelse return error.WordIndexIncomplete;
         const dir = self.root_dir orelse return error.WordIndexIncomplete;
         for (paths) |path| {
-            const content = try dir.readFileAlloc(io, path, self.allocator, .limited(64 * 1024 * 1024));
+            const content = try project_file.readAlloc(io, dir, path, self.allocator, .limited(64 * 1024 * 1024));
             errdefer self.allocator.free(content);
             try rebuilt.indexFile(path, content);
             self.allocator.free(content);
@@ -1532,12 +1533,17 @@ pub const ContentRef = struct {
 
 /// Get content: zero-copy from cache, or read from disk (caller-owned).
 pub fn readContentForSearch(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) ?ContentRef {
+    if (!project_file.isAllowedPath(path)) return null;
     if (self.contents.get(path)) |cached| {
         return .{ .data = cached, .owned = false, .allocator = allocator };
     }
     const io = self.io orelse return null;
-    const dir = self.root_dir orelse std.Io.Dir.cwd();
-    const data = dir.readFileAlloc(io, path, allocator, .limited(skip_rules.max_indexed_file_bytes)) catch return null;
+    const dir = self.root_dir orelse return null;
+    const data = project_file.readAlloc(io, dir, path, allocator, .limited(skip_rules.max_indexed_file_bytes)) catch return null;
+    if (ssas_security.containsSensitiveContent(path, data)) {
+        allocator.free(data);
+        return null;
+    }
     return .{ .data = data, .owned = true, .allocator = allocator };
 }
 

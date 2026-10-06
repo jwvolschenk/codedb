@@ -59,6 +59,8 @@ pub fn canonicalizeRoot(io: std.Io, alloc: std.mem.Allocator, raw: []const u8) e
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer alloc.free(path);
+    if (path.len >= 2 and (path[0] == '/' or path[0] == '\\') and (path[1] == '/' or path[1] == '\\')) return error.ResolveFailed;
+    if (path.len >= 2 and path[1] == ':' and (path.len < 3 or (path[2] != '/' and path[2] != '\\'))) return error.ResolveFailed;
 
     // Step 2: resolve symlinks / relative components via realpath, using the
     // same primitive as `cli/shell.resolveRoot`.

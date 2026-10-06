@@ -1,3 +1,4 @@
+const project_file = @import("../project_file.zig");
 const std = @import("std");
 const cio = @import("../cio.zig");
 const explore_mod = @import("../explore.zig");
@@ -298,7 +299,7 @@ pub fn writeSnapshot(
                 try fw.writeAll(&cl_buf);
                 try fw.writeAll(content);
             } else if (root_dir) |*dir| {
-                const disk_content = dir.readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024)) catch continue;
+                const disk_content = project_file.readAlloc(io, dir.*, path, allocator, .limited(64 * 1024 * 1024)) catch continue;
                 errdefer allocator.free(disk_content);
                 if (ssas_security.containsSensitiveContent(path, disk_content)) {
                     allocator.free(disk_content);

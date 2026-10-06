@@ -1,3 +1,4 @@
+const project_file = @import("../project_file.zig");
 const std = @import("std");
 const ContentCache = @import("../hot_cache.zig").ContentCache;
 const cio = @import("../cio.zig");
@@ -63,7 +64,7 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, explorer: *Explorer, dir
         // initial Store snapshot metadata; workers repeat the check as a
         // defense-in-depth guard before parsing/index construction.
         if (ssas_security.isSsasContentPath(entry.path) and stat.size <= skip_rules.max_indexed_file_bytes) {
-            const security_content = dir.readFileAlloc(io, entry.path, allocator, .limited(skip_rules.max_indexed_file_bytes)) catch continue;
+            const security_content = project_file.readAlloc(io, dir, entry.path, allocator, .limited(skip_rules.max_indexed_file_bytes)) catch continue;
             const contains_secret = ssas_security.containsSensitiveContent(entry.path, security_content);
             allocator.free(security_content);
             if (contains_secret) continue;
@@ -78,13 +79,11 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, explorer: *Explorer, dir
     return entries;
 }
 
-fn parseInitialScanEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, arena_alloc: std.mem.Allocator) !?ParsedScanFile {
+fn parseInitialScanEntry(io: std.Io, dir: std.Io.Dir, entry: InitialScanEntry, arena_alloc: std.mem.Allocator) !?ParsedScanFile {
     if (skip_rules.shouldSkipFile(entry.path)) return null;
-    const dir = try std.Io.Dir.cwd().openDir(io, root, .{});
-    defer dir.close(io);
     const stat = try dir.statFile(io, entry.path, .{});
     if (stat.size > skip_rules.max_indexed_file_bytes) return null;
-    const content = try dir.readFileAlloc(io, entry.path, arena_alloc, .limited(skip_rules.max_indexed_file_bytes));
+    const content = try project_file.readAlloc(io, dir, entry.path, arena_alloc, .limited(skip_rules.max_indexed_file_bytes));
     if (ssas_security.containsSensitiveContent(entry.path, content)) return null;
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {
@@ -100,13 +99,13 @@ fn parseInitialScanEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, 
     };
 }
 
-fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8, entries: []const InitialScanEntry) void {
+fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, dir: std.Io.Dir, entries: []const InitialScanEntry) void {
     const arena_alloc = results.arena.allocator();
     for (entries, 0..) |entry, i| {
         // Budget check inside the parse phase too — worker arenas hold file
         // contents, so a wrong-folder blowup shows up here before any commit.
         if (i % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing()) return;
-        const parsed = parseInitialScanEntry(io, root, entry, arena_alloc) catch null;
+        const parsed = parseInitialScanEntry(io, dir, entry, arena_alloc) catch null;
         if (parsed) |file| {
             results.items.append(arena_alloc, file) catch return;
         }
@@ -131,7 +130,7 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
             {
                 var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
                 defer arena.deinit();
-                const parsed = try parseInitialScanEntry(io, root, entry, arena.allocator());
+                const parsed = try parseInitialScanEntry(io, dir, entry, arena.allocator());
                 if (parsed) |file| {
                     try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
                 }
@@ -158,7 +157,7 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
         const count = chunk_size + extra;
         const chunk = entries.items[offset .. offset + count];
         offset += count;
-        threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk });
+        threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, dir, chunk });
     }
     for (threads) |thread| thread.join();
 
@@ -178,13 +177,11 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
     }
 }
 
-fn readFileEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, arena_alloc: std.mem.Allocator) ?struct { path: []const u8, content: []const u8 } {
+fn readFileEntry(io: std.Io, dir: std.Io.Dir, entry: InitialScanEntry, arena_alloc: std.mem.Allocator) ?struct { path: []const u8, content: []const u8 } {
     if (skip_rules.shouldSkipFile(entry.path)) return null;
-    const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch return null;
-    defer dir.close(io);
     const stat = dir.statFile(io, entry.path, .{}) catch return null;
     if (stat.size > skip_rules.max_indexed_file_bytes) return null;
-    const c = dir.readFileAlloc(io, entry.path, arena_alloc, .limited(skip_rules.max_indexed_file_bytes)) catch return null;
+    const c = project_file.readAlloc(io, dir, entry.path, arena_alloc, .limited(skip_rules.max_indexed_file_bytes)) catch return null;
     if (ssas_security.containsSensitiveContent(entry.path, c)) return null;
     const check_len = @min(c.len, 512);
     for (c[0..check_len]) |ch| {
@@ -207,10 +204,10 @@ const ReadResults = struct {
     }
 };
 
-fn readWorker(io: std.Io, results: *ReadResults, root: []const u8, entries: []const InitialScanEntry) void {
+fn readWorker(io: std.Io, results: *ReadResults, dir: std.Io.Dir, entries: []const InitialScanEntry) void {
     const alloc = results.arena.allocator();
     for (entries) |entry| {
-        if (readFileEntry(io, root, entry, alloc)) |r| {
+        if (readFileEntry(io, dir, entry, alloc)) |r| {
             results.items.append(alloc, r) catch {};
         }
     }
@@ -332,7 +329,7 @@ pub fn buildTrigramsFromCache(
     return tmp_tri;
 }
 
-fn trigramExtractWorker(io: std.Io, results: *TriExtractResults, root: []const u8, entries: []const InitialScanEntry) void {
+fn trigramExtractWorker(io: std.Io, results: *TriExtractResults, dir: std.Io.Dir, entries: []const InitialScanEntry) void {
     const alloc = results.arena.allocator();
     const index_m = @import("../index.zig");
     var local = std.AutoHashMap(index_m.Trigram, index_m.PostingMask).init(std.heap.c_allocator);
@@ -340,7 +337,7 @@ fn trigramExtractWorker(io: std.Io, results: *TriExtractResults, root: []const u
     local.ensureTotalCapacity(4096) catch {};
     for (entries, 0..) |entry, entry_idx| {
         if (entry_idx % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing()) return;
-        const r = readFileEntry(io, root, entry, alloc) orelse continue;
+        const r = readFileEntry(io, dir, entry, alloc) orelse continue;
         if (r.content.len > 64 * 1024) continue;
         local.clearRetainingCapacity();
         if (r.content.len >= 3) {
@@ -404,7 +401,7 @@ pub fn initialScanWithTrigrams(
             if (i % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing()) return tmp_tri;
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
-            const parsed = parseInitialScanEntry(io, root, entry, arena.allocator()) catch null;
+            const parsed = parseInitialScanEntry(io, dir, entry, arena.allocator()) catch null;
             if (parsed) |file| {
                 if (!skip_outlines) {
                     explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, true) catch continue;
@@ -436,7 +433,7 @@ pub fn initialScanWithTrigrams(
             const count = chunk_size + extra;
             const chunk = entries.items[offset .. offset + count];
             offset += count;
-            threads[i] = try std.Thread.spawn(.{}, trigramExtractWorker, .{ io, ext, root, chunk });
+            threads[i] = try std.Thread.spawn(.{}, trigramExtractWorker, .{ io, ext, dir, chunk });
         }
         for (threads) |thread| thread.join();
 
@@ -466,7 +463,7 @@ pub fn initialScanWithTrigrams(
             const count = chunk_size + extra;
             const chunk = entries.items[offset .. offset + count];
             offset += count;
-            threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk });
+            threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, dir, chunk });
         }
         for (threads) |thread| thread.join();
 
@@ -505,7 +502,7 @@ pub fn indexFileOutline(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: 
     if (skip_rules.shouldSkipFile(path)) return;
     const stat = try dir.statFile(io, path, .{});
     if (stat.size > skip_rules.max_indexed_file_bytes) return;
-    const content = try dir.readFileAlloc(io, path, allocator, .limited(skip_rules.max_indexed_file_bytes));
+    const content = try project_file.readAlloc(io, dir, path, allocator, .limited(skip_rules.max_indexed_file_bytes));
     defer allocator.free(content);
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {

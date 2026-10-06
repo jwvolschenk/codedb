@@ -1,3 +1,4 @@
+const project_file = @import("../project_file.zig");
 // codedb MCP — mutation tool handlers.
 //
 // Extracted from mcp.zig. Each handler takes args + explorer/store/etc. and
@@ -30,10 +31,9 @@ const getScanState = mcp.getScanState;
 const pathglob = @import("pathglob.zig");
 const isPathSafe = pathglob.isPathSafe;
 
-fn readProjectFile(io: std.Io, project_root: []const u8, path: []const u8, alloc: std.mem.Allocator) ![]u8 {
-    var dir = try std.Io.Dir.cwd().openDir(io, project_root, .{});
-    defer dir.close(io);
-    return dir.readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024));
+fn readProjectFile(io: std.Io, explorer: *Explorer, path: []const u8, alloc: std.mem.Allocator) ![]u8 {
+    const dir = explorer.root_dir orelse return error.AccessDenied;
+    return project_file.readAlloc(io, dir, path, alloc, .limited(10 * 1024 * 1024));
 }
 
 pub fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, project_root: []const u8) void {
@@ -44,10 +44,11 @@ pub fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Ob
     };
     // #629: accept absolute paths that live inside the project root, rewriting
     // them to relative form; reject everything else as traversal.
-    const path = pathglob.projectRelPath(path_arg, project_root) orelse {
+    const path = (@import("../path_safety.zig").normalizedProjectPath(alloc, path_arg, project_root) catch null) orelse {
         out.appendSlice(alloc, "error: path traversal not allowed") catch {};
         return;
     };
+    defer alloc.free(path);
     if (watcher.isSensitivePath(path)) {
         out.appendSlice(alloc, "error: access to sensitive file blocked") catch {};
         return;
@@ -61,7 +62,7 @@ pub fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Ob
         owned_content
     else blk: {
         // Fall back to disk read
-        break :blk readProjectFile(io, project_root, path, alloc) catch {
+        break :blk readProjectFile(io, explorer, path, alloc) catch {
             out.appendSlice(alloc, "error: failed to read file: ") catch {};
             out.appendSlice(alloc, path) catch {};
             // Issue #356-p3: fuzzy fallback so a mistyped path is recoverable
@@ -167,10 +168,11 @@ pub fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Ob
     };
     // #629: accept absolute paths that live inside the project root, rewriting
     // them to relative form; reject everything else as traversal.
-    const path = pathglob.projectRelPath(path_arg, project_root) orelse {
+    const path = (@import("../path_safety.zig").normalizedProjectPath(alloc, path_arg, project_root) catch null) orelse {
         out.appendSlice(alloc, "error: path traversal not allowed") catch {};
         return;
     };
+    defer alloc.free(path);
     if (watcher.isSensitivePath(path)) {
         out.appendSlice(alloc, "error: access to sensitive file blocked") catch {};
         return;
@@ -182,7 +184,7 @@ pub fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Ob
     if (std.Io.Dir.cwd().openDir(io, project_root, .{})) |dir_value| {
         var dir = dir_value;
         defer dir.close(io);
-        if (dir.readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024))) |existing| {
+        if (project_file.readAlloc(io, dir, path, alloc, .limited(10 * 1024 * 1024))) |existing| {
             defer alloc.free(existing);
             if (watcher.containsSensitiveContent(path, existing)) {
                 explorer.removeFile(path);
@@ -247,7 +249,7 @@ pub fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Ob
         if (err == error.HashMismatch) {
             // Include the file's current hex hash so the agent can re-read with if_hash
             // to verify it has the latest content, then retry the edit.
-            if (readProjectFile(io, project_root, path, alloc)) |bytes| {
+            if (readProjectFile(io, explorer, path, alloc)) |bytes| {
                 defer alloc.free(bytes);
                 const w = cio.listWriter(out, alloc);
                 w.print(" (current hash: {x})", .{std.hash.Wyhash.hash(0, bytes)}) catch {};
