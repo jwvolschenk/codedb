@@ -10,6 +10,7 @@ const release_info = @import("../release_info.zig");
 /// resultType (server/discover) pass through unchanged; clients on older
 /// protocol revisions ignore the extra members.
 pub const result_meta_prelude = "{\"resultType\":\"complete\",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"codedb\",\"version\":\"" ++ release_info.semver ++ "\"}}";
+pub threadlocal var modern_results: bool = true;
 
 pub fn writeResult(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, result: []const u8) void {
     var buf: std.ArrayList(u8) = .empty;
@@ -19,7 +20,7 @@ pub fn writeResult(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Val
     appendId(alloc, &buf, id);
     buf.appendSlice(alloc, ",\"result\":") catch return;
     var payload = result;
-    if (result.len >= 2 and result[0] == '{' and !std.mem.startsWith(u8, result, "{\"resultType\"")) {
+    if (modern_results and result.len >= 2 and result[0] == '{' and !std.mem.startsWith(u8, result, "{\"resultType\"")) {
         buf.appendSlice(alloc, result_meta_prelude) catch return;
         if (std.mem.eql(u8, result, "{}")) {
             buf.appendSlice(alloc, "}") catch return;

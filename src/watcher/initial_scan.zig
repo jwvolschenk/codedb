@@ -56,6 +56,7 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, explorer: *Explorer, dir
     const max_trigram_files: usize = 15_000;
     var file_count: usize = 0;
     while (try walker.next()) |entry| {
+        explorer.scan_metrics.walked();
         // Memory budget (#591 Task 8): stop the walk, keep what we have.
         if (file_count % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing()) break;
         const stat = dir.statFile(io, entry.path, .{}) catch continue;
@@ -68,6 +69,10 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, explorer: *Explorer, dir
             const contains_secret = ssas_security.containsSensitiveContent(entry.path, security_content);
             allocator.free(security_content);
             if (contains_secret) continue;
+        }
+        if (stat.size > skip_rules.max_indexed_file_bytes) {
+            _ = explorer.scan_metrics.oversized.fetchAdd(1, .monotonic);
+            continue;
         }
         _ = try store.recordSnapshot(entry.path, stat.size, 0);
         file_count += 1;
@@ -99,12 +104,13 @@ fn parseInitialScanEntry(io: std.Io, dir: std.Io.Dir, entry: InitialScanEntry, a
     };
 }
 
-fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, dir: std.Io.Dir, entries: []const InitialScanEntry) void {
+fn initialScanWorker(io: std.Io, metrics: *@import("../scan_metrics.zig").Metrics, results: *WorkerParsedResults, dir: std.Io.Dir, entries: []const InitialScanEntry) void {
     const arena_alloc = results.arena.allocator();
     for (entries, 0..) |entry, i| {
         // Budget check inside the parse phase too — worker arenas hold file
         // contents, so a wrong-folder blowup shows up here before any commit.
         if (i % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing()) return;
+        metrics.progress();
         const parsed = parseInitialScanEntry(io, dir, entry, arena_alloc) catch null;
         if (parsed) |file| {
             results.items.append(arena_alloc, file) catch return;
@@ -113,6 +119,9 @@ fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, dir: std.Io.Dir,
 }
 
 pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, skip_trigram: bool, worker_count: usize) !void {
+    explorer.scan_metrics.start();
+    defer explorer.scan_metrics.finish();
+    errdefer explorer.scan_metrics.failed.store(true, .release);
     const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
     defer dir.close(io);
 
@@ -122,6 +131,7 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
         entries.deinit(allocator);
     }
 
+    explorer.scan_metrics.walk_finished_ms.store(cio.milliTimestamp(), .release);
     if (entries.items.len == 0) return;
     const n_workers = @max(@as(usize, 1), @min(worker_count, entries.items.len));
     if (n_workers == 1) {
@@ -133,6 +143,7 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
                 const parsed = try parseInitialScanEntry(io, dir, entry, arena.allocator());
                 if (parsed) |file| {
                     try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
+                    explorer.scan_metrics.committed();
                 }
             }
         }
@@ -157,7 +168,7 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
         const count = chunk_size + extra;
         const chunk = entries.items[offset .. offset + count];
         offset += count;
-        threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, dir, chunk });
+        threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, &explorer.scan_metrics, worker, dir, chunk });
     }
     for (threads) |thread| thread.join();
 
@@ -171,6 +182,7 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
             if (budget.exceeded() or (committed % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing())) break;
             committed += 1;
             try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
+            explorer.scan_metrics.committed();
         }
         worker.deinit(allocator);
         workers_committed += 1;
@@ -377,6 +389,9 @@ pub fn initialScanWithTrigrams(
     trigram_alloc: std.mem.Allocator,
     skip_outlines: bool,
 ) !?*TrigramIndex {
+    explorer.scan_metrics.start();
+    defer explorer.scan_metrics.finish();
+    errdefer explorer.scan_metrics.failed.store(true, .release);
     const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
     defer dir.close(io);
 
@@ -385,6 +400,7 @@ pub fn initialScanWithTrigrams(
         for (entries.items) |entry| allocator.free(entry.path);
         entries.deinit(allocator);
     }
+    explorer.scan_metrics.walk_finished_ms.store(cio.milliTimestamp(), .release);
     if (entries.items.len == 0) return null;
 
     const cpu_count = std.Thread.getCpuCount() catch 1;
@@ -405,6 +421,7 @@ pub fn initialScanWithTrigrams(
             if (parsed) |file| {
                 if (!skip_outlines) {
                     explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, true) catch continue;
+                    explorer.scan_metrics.committed();
                 }
                 if (file.content.len <= 64 * 1024) {
                     tmp_tri.indexFile(file.path, file.content) catch {};
@@ -463,7 +480,7 @@ pub fn initialScanWithTrigrams(
             const count = chunk_size + extra;
             const chunk = entries.items[offset .. offset + count];
             offset += count;
-            threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, dir, chunk });
+            threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, &explorer.scan_metrics, worker, dir, chunk });
         }
         for (threads) |thread| thread.join();
 
@@ -473,6 +490,7 @@ pub fn initialScanWithTrigrams(
                 if (budget.exceeded() or (committed % budget.CHECK_INTERVAL == 0 and budget.shouldStopIndexing())) break;
                 committed += 1;
                 explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, true) catch continue;
+                explorer.scan_metrics.committed();
                 if (file.content.len <= 64 * 1024) {
                     tmp_tri.indexFile(file.path, file.content) catch {};
                 }

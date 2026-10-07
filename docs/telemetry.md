@@ -1,6 +1,25 @@
 # Telemetry Data Flow
 
-codedb writes telemetry to `~/.codedb/telemetry.ndjson` unless `CODEDB_NO_TELEMETRY=1` is set. The file is append-only. On MCP session close, the data is synced to the codedb analytics endpoint (`codedb.codegraff.com/telemetry/ingest`) and the local file is cleared. **No source code, file contents, file paths, or search queries are collected** — only aggregate tool call counts, latency, and startup stats.
+Telemetry is disabled by default. `CODEDB_TELEMETRY=1`, `true`, or `yes` enables
+local aggregate events (words are case insensitive). `0`, `false`, an empty
+value, and other values do not enable it. `CODEDB_NO_TELEMETRY=1`, `true`, or
+`yes`, and MCP's `--no-telemetry` option take precedence over opt-in.
+
+There is no default analytics destination. Upload requires an explicit
+`CODEDB_TELEMETRY_URL`. HTTPS is accepted; HTTP is accepted only for
+`localhost:<port>` or `127.0.0.1:<port>` for local testing. `CLOUD_URL` is not
+used for telemetry. Explicit remote-query tools remain separate operations.
+
+Each process exclusively creates `telemetry-<random>.ndjson` in its data
+directory. Events flush after every three recorded events and on graceful
+shutdown. Upload is attempted only at shutdown, with a five-second curl timeout;
+query handlers never upload telemetry. Only a successful HTTP/process response
+clears the file. Failed uploads stay on disk; previous session files are not
+automatically retried. Forced termination can lose events still in the bounded
+256-event memory buffer.
+
+**No source code, file contents, file paths, search queries, embeddings, or tool
+arguments are collected** — only aggregate tool-call and index statistics.
 
 The current on-disk format is compact:
 
@@ -9,6 +28,10 @@ The current on-disk format is compact:
 - `tool`, `ns` / `latency_ns`, `err` / `error`, `bytes` / `response_bytes`
 - `files` / `file_count`, `lines` / `total_lines`
 - optional `languages`, `index_size_bytes`, `startup_time_ms`, `version`, `platform`
+
+The language mask currently covers enum values 0–31; later language categories
+are omitted. Test the contract with synthetic payloads and a local HTTP endpoint:
+`python scripts/test-plan-integration.py --binary zig-out/bin/codedb.exe`.
 
 `scripts/sync-telemetry.py` normalizes those fields and loads them into Postgres with `COPY`.
 

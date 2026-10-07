@@ -48,32 +48,20 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
 
     // Search for all occurrences with scope info. In references mode, merge
     // structural type references so recall isn't capped by content ranking.
-    const results = (if (std.mem.eql(u8, match_mode, "references"))
-        ctx.explorer.searchReferencesWithScope(name, ctx.alloc, max)
-    else
-        ctx.explorer.searchContentWithScope(name, ctx.alloc, max)) catch {
+    const all_results = @import("../../explore_tools.zig").collectCallers(ctx.explorer, ctx.alloc, name, defs, match_mode, max + 1, getStr(step, "path_glob"), include_generated, if (ctx.have_set.*) ctx.file_set.items else null) catch {
         w.print("error: callers search failed\n", .{}) catch {};
         return false;
     };
+    const results = all_results[0..@min(max, all_results.len)];
+    if (all_results.len > max) w.writeAll("truncated: true (more matching candidates exist)\n") catch {};
     defer {
-        for (results) |r| {
+        for (all_results) |r| {
             ctx.alloc.free(r.line_text);
             ctx.alloc.free(r.path);
             if (r.scope_name) |sn| ctx.alloc.free(sn);
         }
-        ctx.alloc.free(results);
+        ctx.alloc.free(all_results);
     }
-
-    // Helper: check if a result is a call site (not a definition)
-    const CallSiteFilter = struct {
-        fn isCallSite(r: explore_mod.Explorer.ScopedSearchResult, definition_list: []const explore_mod.SymbolResult, nm: []const u8, mode: []const u8) bool {
-            const lang = explore_mod.detectLanguage(r.path);
-            if (!mcp.langHasCallSites(lang)) return false;
-            if (mcp.excludeAsDefinitionLine(r.path, r.line_num, r.line_text, nm, definition_list))
-                return false;
-            return mcp.callerLineMatches(r.line_text, nm, lang, mode);
-        }
-    };
 
     if (ctx.have_set.*) {
         // Intersect: only show callers in files from current set
@@ -86,7 +74,6 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
 
         var shown: usize = 0;
         for (results) |r| {
-            if (!CallSiteFilter.isCallSite(r, defs, name, match_mode)) continue;
             if (exclude_generated and skip_rules.isGeneratedPath(r.path)) continue;
             if (!path_set.contains(r.path)) continue;
             shown += 1;
@@ -117,7 +104,6 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
 
         var shown: usize = 0;
         for (results) |r| {
-            if (!CallSiteFilter.isCallSite(r, defs, name, match_mode)) continue;
             if (exclude_generated and skip_rules.isGeneratedPath(r.path)) continue;
             shown += 1;
             if (r.scope_name) |sn| {

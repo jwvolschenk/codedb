@@ -88,7 +88,7 @@ pub fn loadBestSnapshot(
     current_git_head: ?[40]u8,
     allocator: std.mem.Allocator,
 ) ?[]u8 {
-    const root_snapshot = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
+    const root_snapshot = if (cio.posixGetenv("CODEDB_CACHE_DIR") == null) std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null else null;
     if (root_snapshot) |first_snapshot| {
         if (loadSnapshotIfHeadMatches(io, first_snapshot, explorer, store, abs_root, current_git_head, allocator)) {
             return first_snapshot;
@@ -141,6 +141,12 @@ pub fn getDataDir(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8
     // The ONLY hash of the root string — #591. Case-folded on macOS/Windows so
     // case-insensitive-FS aliasing can't produce divergent cache dirs.
     const hash = root_resolve.cacheKey(abs_root);
+    if (cio.posixGetenv("CODEDB_CACHE_DIR")) |cache_dir| {
+        const dir = try std.fmt.allocPrint(allocator, "{s}/projects/{x}", .{ cache_dir, hash });
+        errdefer allocator.free(dir);
+        try std.Io.Dir.cwd().createDirPath(io, dir);
+        return dir;
+    }
     const home_env = cio.getHomeDir() orelse {
         return std.fmt.allocPrint(allocator, "{s}/.codedb", .{abs_root});
     };

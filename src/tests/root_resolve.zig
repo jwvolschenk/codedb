@@ -177,7 +177,7 @@ test "canonicalizeRoot: realpath resolves symlinks and relative input" {
     const canonical = try root_resolve.canonicalizeRoot(io, testing.allocator, ".");
     defer testing.allocator.free(canonical);
     try testing.expect(canonical.len > 0);
-    try testing.expect(canonical[0] == '/');
+    try testing.expect(std.fs.path.isAbsolute(canonical));
     try testing.expect(canonical[canonical.len - 1] != '/');
 }
 
@@ -188,7 +188,7 @@ test "canonicalizeRoot: file:// URI accepted and decoded" {
     const tmp_len = try tmp.dir.realPathFile(io, ".", &buf);
     const tmp_path = buf[0..tmp_len];
 
-    const uri = try std.fmt.allocPrint(testing.allocator, "file://{s}", .{tmp_path});
+    const uri = try std.fmt.allocPrint(testing.allocator, (if (@import("builtin").os.tag == .windows) "file:///{s}" else "file://{s}"), .{tmp_path});
     defer testing.allocator.free(uri);
 
     const canonical = try root_resolve.canonicalizeRoot(io, testing.allocator, uri);
@@ -201,5 +201,7 @@ test "canonicalizeRoot: root slash stays root slash" {
     // root_policy but canonicalizeRoot itself should leave it intact.
     const canonical = try root_resolve.canonicalizeRoot(io, testing.allocator, "/");
     defer testing.allocator.free(canonical);
-    try testing.expectEqualStrings("/", canonical);
+    if (@import("builtin").os.tag == .windows) {
+        try testing.expect(canonical.len == 3 and canonical[1] == ':');
+    } else try testing.expectEqualStrings("/", canonical);
 }

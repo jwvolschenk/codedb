@@ -113,6 +113,8 @@ fn containsString(haystack: []const []const u8, needle: []const u8) bool {
 }
 
 test "issue-164: AnyTrigramIndex dispatches to mmap variant" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // POSIX mmap only; heap persistence tested separately.
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -144,6 +146,8 @@ test "issue-164: AnyTrigramIndex dispatches to mmap variant" {
 }
 
 test "issue-593: mmap overlay masks stale base entries (no ghost matches)" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // POSIX mmap only; heap persistence tested separately.
+
     // Build heap, persist, load as mmap, then removeFile a file. Pre-fix the
     // .mmap removeFile was a no-op, so the deleted file's base trigrams kept
     // answering candidates() — ghost matches from a deleted file.
@@ -189,6 +193,8 @@ test "issue-593: mmap overlay masks stale base entries (no ghost matches)" {
 }
 
 test "issue-600: mmap_overlay writeToDisk persists overlay edits" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // POSIX mmap only; heap persistence tested separately.
+
     // Pre-fix the .mmap_overlay writeToDisk was a no-op, so overlay edits
     // vanished on restart. Materialize+serialize must persist the merged state.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);

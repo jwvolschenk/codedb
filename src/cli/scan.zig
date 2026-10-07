@@ -50,6 +50,9 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
     watcher.budget.clearExceeded();
     watcher.initialScan(io, store, explorer, root, allocator, heads_match) catch |err| {
         std.log.warn("background scan failed: {}", .{err});
+        mcp_server.setScanState(.failed);
+        scan_done.store(true, .release);
+        return;
     };
 
     // Phase gate: bail if shutting down after initial scan

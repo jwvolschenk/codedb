@@ -536,6 +536,8 @@ test "extractLines: compact on all-comment file returns empty" {
 // ── Regex decomposition tests ───────────────────────────────
 
 test "issue-164: mmap binary search on sorted lookup table" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // POSIX mmap only; heap persistence tested separately.
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();

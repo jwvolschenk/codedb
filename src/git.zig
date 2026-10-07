@@ -210,13 +210,14 @@ pub fn getDirtyPaths(root: []const u8, allocator: std.mem.Allocator) ?[][]u8 {
     // Fast path: root IS the repo toplevel — repo-relative == root-relative.
     // (Realpath both sides? root is canonical already — #591 funnel — and
     // --show-toplevel returns a resolved path, so byte equality is right.)
-    if (std.mem.eql(u8, toplevel, root)) return repo_relative;
+    if (root.len == toplevel.len and @import("root_policy.zig").isExactOrChild(root, toplevel)) return repo_relative;
     defer freePathList(repo_relative, allocator);
 
     // root must be toplevel/<prefix>/ — compute the prefix and rebase.
-    if (!std.mem.startsWith(u8, root, toplevel) or
-        root.len <= toplevel.len or root[toplevel.len] != '/') return null;
-    const prefix = root[toplevel.len + 1 ..];
+    if (!@import("root_policy.zig").isExactOrChild(root, toplevel) or root.len <= toplevel.len) return null;
+    const prefix = allocator.dupe(u8, root[toplevel.len + 1 ..]) catch return null;
+    defer allocator.free(prefix);
+    for (prefix) |*ch| if (ch.* == '\\') { ch.* = '/'; };
 
     var out: std.ArrayList([]u8) = .empty;
     var failed = false;

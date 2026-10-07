@@ -32,6 +32,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 
 # ── ANSI colours ──────────────────────────────────────────────────────────────
 
@@ -69,6 +72,8 @@ class MCPProcess:
             stderr=subprocess.PIPE,
             cwd=cwd,
             text=True,
+            encoding="utf-8",
+            errors="strict",
             bufsize=1,
             env=full_env,
         )

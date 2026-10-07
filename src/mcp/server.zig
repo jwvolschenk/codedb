@@ -244,7 +244,10 @@ const ProjectCtx = struct {
 };
 
 pub fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]u8 {
-    const hash = std.hash.Wyhash.hash(0, project_path);
+    const hash = root_resolve.cacheKey(project_path);
+    if (cio.posixGetenv("CODEDB_CACHE_DIR")) |cache_dir| {
+        return std.fmt.allocPrint(allocator, "{s}/projects/{x}", .{cache_dir, hash}) catch null;
+    }
     const home = cio.getHomeDir() orelse {
         return std.fmt.allocPrint(allocator, "{s}/.codedb", .{project_path}) catch null;
     };
@@ -444,13 +447,13 @@ pub const ProjectCache = struct {
             return error.PathTooLong;
         };
 
-        if (!snapshot_mod.loadSnapshot(io, snap_path, p, &new_entry.explorer, &new_entry.store, self.alloc)) {
+        if (cio.posixGetenv("CODEDB_CACHE_DIR") != null or !snapshot_mod.loadSnapshot(io, snap_path, p, &new_entry.explorer, &new_entry.store, self.alloc)) {
             // Fallback: try central store at ~/.codedb/projects/{hash}/codedb.snapshot
-            const hash = root_resolve.cacheKey(p);
             var central_buf: [std.fs.max_path_bytes]u8 = undefined;
             const loaded_central = blk: {
-                const home = cio.getHomeDir() orelse break :blk false;
-                const central = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch break :blk false;
+                const data_dir = getProjectDataDir(self.alloc, p) orelse break :blk false;
+                defer self.alloc.free(data_dir);
+                const central = std.fmt.bufPrint(&central_buf, "{s}/codedb.snapshot", .{data_dir}) catch break :blk false;
                 break :blk snapshot_mod.loadSnapshot(io, central, p, &new_entry.explorer, &new_entry.store, self.alloc);
             };
             if (!loaded_central) {
@@ -687,37 +690,66 @@ pub const tools_list =
 pub const ToolsListOpts = struct {
     bundle_enabled: bool = false,
     discriminated_opt_in: bool = false,
+    navigation: bool = false,
 };
+
+fn navigationTool(name: []const u8) bool {
+    for ([_][]const u8{ "codedb_edit", "codedb_index", "codedb_snapshot", "codedb_remote" }) |mutation| {
+        if (std.mem.eql(u8, name, mutation)) return false;
+    }
+    return true;
+}
+
+fn navigationProfile() bool {
+    const profile = cio.posixGetenv("CODEDB_TOOL_PROFILE") orelse return false;
+    return std.mem.eql(u8, profile, "navigation");
+}
 
 /// Build the runtime `tools/list` response. Honors the bundle and
 /// discriminated-schema env-var gates that run() reads. Always returns an
 /// allocator-owned slice the caller must free.
 pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]u8 {
-    if (opts.bundle_enabled and opts.discriminated_opt_in) {
-        return buildAugmentedToolsList(alloc);
-    }
 
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
     const a = arena.allocator();
 
-    var parsed = try std.json.parseFromSlice(std.json.Value, a, tools_list, .{});
+    const source = if (opts.bundle_enabled and opts.discriminated_opt_in) try buildAugmentedToolsList(a) else tools_list;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, source, .{});
 
     const root_obj = &parsed.value.object;
     const tools_val = root_obj.getPtr("tools") orelse return error.MalformedToolsList;
     if (tools_val.* != .array) return error.MalformedToolsList;
 
-    if (!opts.bundle_enabled) {
+    if (!opts.bundle_enabled or opts.navigation) {
         var filtered: std.json.Array = .init(a);
         for (tools_val.array.items) |t| {
             if (t == .object) {
                 if (t.object.get("name")) |n| {
                     if (n == .string and std.mem.eql(u8, n.string, "codedb_bundle")) continue;
+                    if (n == .string and opts.navigation and !navigationTool(n.string)) continue;
                 }
             }
             try filtered.append(t);
         }
         tools_val.* = .{ .array = filtered };
+    }
+
+    for (tools_val.array.items) |*t| {
+        const name = mcpj.getStr(&t.object, "name") orelse continue;
+        var annotations: std.json.ObjectMap = .empty;
+        const read_only = navigationTool(name) and !std.mem.eql(u8, name, "codedb_bundle");
+        try annotations.put(a, "readOnlyHint", .{ .bool = read_only });
+        try annotations.put(a, "destructiveHint", .{ .bool = !read_only });
+        try annotations.put(a, "openWorldHint", .{ .bool = std.mem.eql(u8, name, "codedb_remote") });
+        try t.object.put(a, "annotations", .{ .object = annotations });
+        if (opts.navigation) {
+            if (t.object.getPtr("description")) |description| {
+                if (description.* == .string) {
+                    if (std.mem.indexOf(u8, description.string, ". ")) |end| description.string = description.string[0..end + 1];
+                }
+            }
+        }
     }
 
     const out_in_arena = try std.json.Stringify.valueAlloc(a, parsed.value, .{});
@@ -812,6 +844,7 @@ pub const ScanState = enum(u8) {
     /// alive. Surfaced in codedb_status and tool-response hints so an agent
     /// immediately sees why results are incomplete (#591 Task 8).
     budget_exceeded = 5,
+    failed = 6,
 
     pub fn name(self: ScanState) []const u8 {
         return switch (self) {
@@ -821,6 +854,7 @@ pub const ScanState = enum(u8) {
             .ready => "ready",
             .lazy => "lazy",
             .budget_exceeded => "budget_exceeded",
+            .failed => "failed",
         };
     }
 };
@@ -870,7 +904,7 @@ pub fn getRequireGitRepo() bool {
 fn scanStateIsTerminal(state: ScanState) bool {
     // budget_exceeded is terminal: the scan will not progress further, and
     // the partial index is what there is to serve — don't spin on it.
-    return state == .ready or state == .lazy or state == .budget_exceeded;
+    return state == .ready or state == .lazy or state == .budget_exceeded or state == .failed;
 }
 
 fn waitForScanReady(timeout_ms: u64) void {
@@ -897,6 +931,7 @@ const Session = struct {
     deferred_scan: ?*DeferredScan = null,
     /// Convergence governor: recent call signatures for this session.
     governor: ConvergenceGovernor = .{},
+    modern_results: bool = false,
 
     fn freeRoots(self: *Session) void {
         for (self.roots.items) |r| {
@@ -929,6 +964,7 @@ pub const ConvergenceGovernor = struct {
     head: usize = 0,
     name_sigs: [HISTORY]u64 = @splat(0),
     name_head: usize = 0,
+    generation: u32 = 0,
 
     /// Record a call signature and return how many times it has occurred within
     /// the recent window (including this call). >= WARN_AT means it's looping.
@@ -1003,7 +1039,7 @@ fn isGovernedQueryTool(name: []const u8) bool {
 /// >= WARN_AT times, or null when no nudge should fire.
 pub fn convergenceNudge(occurrences: usize) ?[]const u8 {
     if (occurrences < ConvergenceGovernor.WARN_AT) return null;
-    return "[codedb] You have issued this exact call before \xe2\x80\x94 results are deterministic within a session, the answer is already above. Change strategy: use a structural tool (codedb_symbol for a definition, codedb_callers for usages, codedb_deps for impact), open the file directly with codedb_read, or refine the query.";
+    return "[codedb] You have issued this exact call before \xe2\x80\x94 the index generation has not changed since that call. Change strategy: use a structural tool (codedb_symbol for a definition, codedb_callers for usages, codedb_deps for impact), open the file directly with codedb_read, or refine the query.";
 }
 
 /// Fired when the same QUERY tool is used repeatedly with drifting args —
@@ -1056,6 +1092,7 @@ pub fn run(
     const tools_list_response: []const u8 = buildToolsListResponse(alloc, .{
         .bundle_enabled = bundle_enabled,
         .discriminated_opt_in = discriminated_opt_in,
+        .navigation = navigationProfile(),
     }) catch tools_list;
     defer if (tools_list_response.ptr != tools_list.ptr) alloc.free(tools_list_response);
     var session = Session{
@@ -1100,6 +1137,24 @@ pub fn run(
             continue;
         }
         const method = method_opt.?;
+        @import("jsonio.zig").modern_results = session.modern_results;
+        if (root.get("params")) |p| {
+            if (p == .object) {
+                if (p.object.get("_meta")) |meta| {
+                    if (meta != .object) {
+                        if (!is_notification) writeError(alloc, stdout, id, -32602, "_meta must be an object");
+                        continue;
+                    }
+                    if (meta.object.get("io.modelcontextprotocol/protocolVersion")) |version| {
+                        if (version != .string) {
+                            if (!is_notification) writeError(alloc, stdout, id, -32602, "protocolVersion must be a string");
+                            continue;
+                        }
+                        @import("jsonio.zig").modern_results = std.mem.eql(u8, version.string, "2026-07-28");
+                    }
+                }
+            }
+        }
 
         // MCP 2026-07-28 stateless mode: a request may pin its protocol
         // version in params._meta; answer versions we do not support with
@@ -1183,6 +1238,8 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
             }
         }
     }
+    s.modern_results = std.mem.eql(u8, negotiated, "2026-07-28");
+    @import("jsonio.zig").modern_results = s.modern_results;
     const init_result = std.fmt.allocPrint(s.alloc,
         \\{{"protocolVersion":"{s}","capabilities":{{"tools":{{"listChanged":false}},"extensions":{{}}}},"serverInfo":{{"name":"codedb","version":"{s}"}},"instructions":"{s}"}}
     , .{ negotiated, release_info.semver, mcp_instructions }) catch return;
@@ -1194,6 +1251,7 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
 /// should still get our newest known version back, not an old one.
 const SUPPORTED_PROTOCOL_VERSIONS = [_][]const u8{
     "2026-07-28",
+    "2025-11-25",
     "2025-06-18",
     "2025-03-26",
     "2024-11-05",
@@ -1373,6 +1431,10 @@ fn handleCall(
         if (!is_notification) writeError(alloc, stdout, id, -32602, "Missing tool name");
         return;
     };
+    if (navigationProfile() and (!navigationTool(name) or std.mem.eql(u8, name, "codedb_bundle"))) {
+        if (!is_notification) writeError(alloc, stdout, id, -32602, "Tool is unavailable in navigation profile");
+        return;
+    }
     var args_value = params.get("arguments") orelse std.json.Value{ .object = .empty };
     if (args_value != .object) {
         if (!is_notification) writeError(alloc, stdout, id, -32602, "arguments must be object");
@@ -1408,6 +1470,11 @@ fn handleCall(
         }
     }
     if (is_notification) return;
+    explorer.mu.lockShared();
+    const generation = explorer.search_gen;
+    explorer.mu.unlockShared();
+    if (governor.generation != generation or getStr(args, "project") != null) governor.* = .{ .generation = generation };
+    const verbose_output = if (cio.posixGetenv("CODEDB_VERBOSE_OUTPUT")) |v| std.mem.eql(u8, v, "1") else false;
 
     // Block 1: Human-readable colored summary (ANSI — preview pane always renders it)
     var summary: std.ArrayList(u8) = .empty;
@@ -1450,7 +1517,7 @@ fn handleCall(
     result.appendSlice(alloc, "{\"content\":[") catch return;
 
     // Block 1 (summary — stripped of ANSI codes for agent consumption)
-    if (summary.items.len > 0) {
+    if (verbose_output and summary.items.len > 0) {
         const clean_summary = stripAnsiCodes(alloc, summary.items);
         defer alloc.free(clean_summary);
         result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return;
@@ -1464,7 +1531,7 @@ fn handleCall(
     result.appendSlice(alloc, "\"}") catch return;
 
     // Block 3 (guidance — stripped of ANSI codes for agent consumption)
-    if (guidance.items.len > 0) {
+    if (verbose_output and guidance.items.len > 0) {
         const clean_guidance = stripAnsiCodes(alloc, guidance.items);
         defer alloc.free(clean_guidance);
         result.appendSlice(alloc, ",{\"type\":\"text\",\"text\":\"") catch return;
@@ -1644,7 +1711,11 @@ fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), too
         std.mem.indexOf(u8, out.items, "0 hits for ") != null or
         std.mem.indexOf(u8, out.items, "no results for: ") != null;
     const looks_unindexed = std.mem.indexOf(u8, out.items, "file not indexed") != null;
-    if (!(looks_empty or looks_unindexed)) return;
+    if (!(looks_empty or looks_unindexed) and state != .budget_exceeded and state != .failed) return;
+    if (state == .failed) {
+        out.appendSlice(alloc, "\nnote: initial scan failed — results come from a PARTIAL index; inspect status and retry indexing") catch {};
+        return;
+    }
     if (state == .lazy) {
         out.appendSlice(alloc, "\nnote: no project indexed — use codedb_index to index a specific project first") catch return;
         return;

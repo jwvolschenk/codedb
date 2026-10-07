@@ -69,55 +69,37 @@ function Strip-VersionPrefix($tag) {
 }
 
 # ── Download binary ──────────────────────────────────────────────────────
+function Get-VerifiedHash($text, $artifact) {
+    $entries = @($text -split "`n" | Where-Object { $_.Trim() -ne '' } | ForEach-Object {
+        if ($_ -notmatch '^([0-9a-fA-F]{64}) [ *]([^\r\n]+)\r?$') { throw "Malformed checksum manifest" }
+        if ($Matches[2].TrimEnd("`r") -ceq $artifact) { $Matches[1].ToLowerInvariant() }
+    })
+    if ($entries.Count -ne 1) { throw "Expected exactly one checksum for $artifact" }
+    return $entries[0]
+}
+
 function Download-Binary($platform, $tag, $dest) {
     $artifact = Get-ArtifactName $platform
-    $tmp = Join-Path $env:TEMP "codedb-setup-$PID.exe"
-
-    Write-Info "Downloading $artifact $tag..."
-
-    # Download via Invoke-WebRequest (public repo)
-    $url = "https://github.com/${ForkRepo}/releases/download/${tag}/${artifact}"
-    try {
-        Invoke-WebRequest -Uri $url -OutFile $tmp -UserAgent "codedb-setup" -UseBasicParsing | Out-Null
-    } catch {
-        Die "Download failed. Check: https://github.com/${ForkRepo}/releases"
-    }
-
-    # Verify checksum
-    try {
-        $checksumUrl = "https://github.com/${ForkRepo}/releases/download/${tag}/checksums.sha256"
-        $checksumText = (Invoke-WebRequest -Uri $checksumUrl -UserAgent "codedb-setup" -UseBasicParsing).Content
-
-        $expectedHash = ($checksumText -split "`n" | Where-Object { $_ -match $artifact } | ForEach-Object { ($_ -split '\s+')[0] })
-        if ($expectedHash) {
-            $actualHash = (Get-FileHash -Path $tmp -Algorithm SHA256).Hash.ToLower()
-            if ($actualHash -ne $expectedHash.ToLower()) {
-                Remove-Item -Force $tmp -ErrorAction SilentlyContinue
-                Die "Checksum mismatch -- binary may be corrupted"
-            }
-            Write-Ok "Checksum verified"
-        }
-    } catch {
-        Write-Warn "Could not verify checksum: $_"
-    }
-
-    # Install
     $destDir = Split-Path $dest -Parent
-    if (-not (Test-Path $destDir)) {
-        New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+    $tmp = Join-Path $destDir (".codedb-download-" + [Guid]::NewGuid().ToString('N'))
+    try {
+        $stream = [IO.File]::Open($tmp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $stream.Dispose()
+        $baseUrl = "https://github.com/${ForkRepo}/releases/download/${tag}"
+        Invoke-WebRequest -Uri "$baseUrl/$artifact" -OutFile $tmp -UserAgent "codedb-setup" -UseBasicParsing | Out-Null
+        $manifest = (Invoke-WebRequest -Uri "$baseUrl/checksums.sha256" -UserAgent "codedb-setup" -UseBasicParsing).Content
+        $expected = Get-VerifiedHash $manifest $artifact
+        $actual = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -cne $expected) { throw "Checksum mismatch" }
+        Write-Ok "Checksum verified"
+        # A locked executable is an error; never kill clients or delete first.
+        if (Test-Path -LiteralPath $dest) { [IO.File]::Replace($tmp, $dest, [NullString]::Value) }
+        else { [IO.File]::Move($tmp, $dest) }
+        Write-Ok "Installed to $dest"
+    } finally {
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
     }
-    # Stop any running codedb processes that would lock the binary
-    Get-Process | Where-Object { $_.Path -eq $dest } | ForEach-Object {
-        Write-Info "Stopping running codedb process (PID $($_.Id))..."
-        $_.Kill()
-        $_.WaitForExit(5000) | Out-Null
-    }
-    # Remove the existing binary explicitly (Move-Item -Force doesn't unlock on Windows)
-    if (Test-Path $dest) {
-        Remove-Item -Force $dest -ErrorAction SilentlyContinue
-    }
-    Move-Item -Force $tmp $dest
-    Write-Ok "Installed to $dest"
 }
 
 # ── Agent Instructions ───────────────────────────────────────────────────
@@ -266,4 +248,4 @@ function Main {
     Write-Host ""
 }
 
-Main
+if ($MyInvocation.InvocationName -ne ".") { Main }

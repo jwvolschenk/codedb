@@ -1,0 +1,56 @@
+{
+  "initialize": true,
+  "ready": true,
+  "deps:a/index.ts": "v * deps  a/index.ts\na/index.ts is imported by:\n  (none)\n\nindex: root=C:\\Users\\jwvol\\AppData\\Local\\Temp\\codedb-audit-extra-j1v9wkh_ scan=ready seq=8",
+  "deps:b/index.ts": "v * deps  b/index.ts\nb/index.ts is imported by:\n  (none)\n\nindex: root=C:\\Users\\jwvol\\AppData\\Local\\Temp\\codedb-audit-extra-j1v9wkh_ scan=ready seq=8",
+  "deps:consumer.ts": "v * deps  consumer.ts\nconsumer.ts depends on:\n  index\n(1 files)\n\nindex: root=C:\\Users\\jwvol\\AppData\\Local\\Temp\\codedb-audit-extra-j1v9wkh_ scan=ready seq=8",
+  "search:auditNestedIgnore": "v * search  'auditNestedIgnore' - 1 results\n1 results for 'auditNestedIgnore':\n  sub/hidden.ts:1: export const auditNestedIgnore = 7;\r\n\nindex: root=C:\\Users\\jwvol\\AppData\\Local\\Temp\\codedb-audit-extra-j1v9wkh_ scan=ready seq=8\n-> next: add scope=true to see enclosing functions",
+  "search:auditNegationKeep": "v * search  'auditNegationKeep' - 0 results\n0 results for 'auditNegationKeep':\n\nindex: root=C:\\Users\\jwvol\\AppData\\Local\\Temp\\codedb-audit-extra-j1v9wkh_ scan=ready seq=8\n-> next: add scope=true to see enclosing functions",
+  "search:auditNegationDrop": "v * search  'auditNegationDrop' - 0 results\n0 results for 'auditNegationDrop':\n\nindex: root=C:\\Users\\jwvol\\AppData\\Local\\Temp\\codedb-audit-extra-j1v9wkh_ scan=ready seq=8\n-> next: add scope=true to see enclosing functions",
+  "snapshot": {
+    "exit_code": 0,
+    "contains_sensitive_canary": true
+  },
+  "scenario1_correct_uri": [
+    {
+      "name": "[S1] initialize does not crash (no transport-closed)",
+      "passed": true,
+      "message": ""
+    },
+    {
+      "name": "[S1] server sends roots/list request",
+      "passed": true,
+      "message": ""
+    },
+    {
+      "name": "[S1] scan completes and files > 0",
+      "passed": true,
+      "message": ""
+    },
+    {
+      "name": "[S1] codedb_tree returns non-empty result",
+      "passed": true,
+      "message": "17245 chars"
+    },
+    {
+      "name": "[S1] codedb_search finds 'DeferredScan' in project",
+      "passed": true,
+      "message": ""
+    },
+    {
+      "name": "[S1] codedb_hot returns recent files",
+      "passed": true,
+      "message": "235 chars"
+    },
+    {
+      "name": "[S1] codedb_outline works on src/mcp.zig",
+      "passed": true,
+      "message": ""
+    },
+    {
+      "name": "[S1] codedb_symbol finds 'DeferredScan'",
+      "passed": true,
+      "message": ""
+    }
+  ]
+}

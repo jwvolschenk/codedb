@@ -81,46 +81,34 @@ strip_version_prefix() {
 }
 
 # ── Download binary ──────────────────────────────────────────────────────
-download_binary() {
-    local platform="$1" tag="$2" dest="$3"
-    local artifact
+download_binary() (
+    set -euo pipefail
+    local platform="$1" tag="$2" dest="$3" artifact tmp expected_hash actual_hash
     artifact="$(platform_to_artifact "$platform")"
-    local tmp="/tmp/codedb-setup.$$"
-
-    info "Downloading ${artifact} ${tag}..."
-
-    # Download via curl (public repo)
-    local url="https://github.com/${FORK_REPO}/releases/download/${tag}/${artifact}"
-    if ! curl -fsSL -A 'codedb-setup' "$url" -o "$tmp" 2>/dev/null; then
-        rm -f "$tmp"
-        die "Download failed. Check: https://github.com/${FORK_REPO}/releases"
-    fi
-
-    # Verify checksum
-    local checksum_text expected_hash
-    local checksum_url="https://github.com/${FORK_REPO}/releases/download/${tag}/checksums.sha256"
-    checksum_text="$(curl -fsSL -A 'codedb-setup' "$checksum_url" 2>/dev/null || true)"
-    expected_hash="$(printf '%s\n' "$checksum_text" | awk "/${artifact}\$/ { print \$1 }")"
-    if [ -n "$expected_hash" ]; then
-        local actual_hash
-        if command -v sha256sum >/dev/null 2>&1; then
-            actual_hash="$(sha256sum "$tmp" | awk '{print $1}')"
-        elif command -v shasum >/dev/null 2>&1; then
-            actual_hash="$(shasum -a 256 "$tmp" | awk '{print $1}')"
-        fi
-        if [ -n "${actual_hash:-}" ] && [ "$actual_hash" != "$expected_hash" ]; then
-            rm -f "$tmp"
-            die "Checksum mismatch — binary may be corrupted"
-        fi
-        ok "Checksum verified"
-    fi
-
-    xattr -c "$tmp" 2>/dev/null || true
     mkdir -p "$(dirname "$dest")"
+    tmp="$(mktemp "$(dirname "$dest")/.codedb-download.XXXXXXXX")"
+    trap 'rm -f "$tmp" "$tmp.sha256"' EXIT
+    local base_url="https://github.com/${FORK_REPO}/releases/download/${tag}"
+    curl -fsSL -A 'codedb-setup' "$base_url/$artifact" -o "$tmp"
+    curl -fsSL -A 'codedb-setup' "$base_url/checksums.sha256" -o "$tmp.sha256"
+    expected_hash="$(awk -v asset="$artifact" '
+        { sub(/\r$/, ""); if (NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-fA-F]/) exit 2;
+          name=$2; sub(/^\*/, "", name); if (name == asset) { hash=tolower($1); count++ } }
+        END { if (count != 1) exit 3; print hash }
+    ' "$tmp.sha256")" || die "Missing, malformed, or duplicate checksum"
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual_hash="$(sha256sum "$tmp")"
+    elif command -v shasum >/dev/null 2>&1; then
+        actual_hash="$(shasum -a 256 "$tmp")"
+    else
+        die "SHA-256 utility required"
+    fi
+    actual_hash="${actual_hash%% *}"
+    [ "$actual_hash" = "$expected_hash" ] || die "Checksum mismatch"
+    chmod +x "$tmp"
     mv -f "$tmp" "$dest"
-    chmod +x "$dest"
-    ok "Installed to ${dest}"
-}
+    ok "Verified and installed to ${dest}"
+)
 
 # ── Agent Instructions ───────────────────────────────────────────────────
 show_agent_instructions() {
@@ -265,5 +253,5 @@ main() {
     echo ""
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi
 

@@ -5,7 +5,7 @@ const explore = @import("explore.zig");
 const index = @import("index.zig");
 
 const RING_SIZE = 256;
-const CLOUD_URL = "https://codedb.codegraff.com/telemetry/ingest";
+// This fork has no inherited analytics destination. Upload needs an explicit URL.
 const VERSION = @import("release_info.zig").semver;
 const PLATFORM = std.fmt.comptimePrint("{s}-{s}", .{ @tagName(builtin.os.tag), @tagName(builtin.cpu.arch) });
 
@@ -38,7 +38,8 @@ pub const Telemetry = struct {
     file: ?std.Io.File = null,
     io: std.Io = undefined,
     write_offset: u64 = 0,
-    enabled: bool = true,
+    enabled: bool = false,
+    upload_url: ?[]const u8 = null,
     buf: [4096]u8 = undefined,
     path_buf: [std.fs.max_path_bytes]u8 = undefined,
     path_len: usize = 0,
@@ -50,18 +51,20 @@ pub const Telemetry = struct {
         self.io = io;
 
         // Telemetry is OPT-IN: only enabled when CODEDB_TELEMETRY=1 is set
-        if (disabled or cio.posixGetenv("CODEDB_TELEMETRY") == null) {
+        if (!telemetryEnabled(disabled, cio.posixGetenv("CODEDB_TELEMETRY"), cio.posixGetenv("CODEDB_NO_TELEMETRY"))) {
             self.enabled = false;
             return self;
         }
 
-        const path = std.fmt.allocPrint(allocator, "{s}/telemetry.ndjson", .{data_dir}) catch return self;
+        self.enabled = true;
+        self.upload_url = cio.posixGetenv("CODEDB_TELEMETRY_URL");
+        const path = std.fmt.allocPrint(allocator, "{s}/telemetry-{x}.ndjson", .{data_dir, cio.randU64()}) catch return self;
         defer allocator.free(path);
         if (path.len <= self.path_buf.len) {
             @memcpy(self.path_buf[0..path.len], path);
             self.path_len = path.len;
         }
-        self.file = std.Io.Dir.cwd().createFile(io, path, .{ .truncate = false }) catch return self;
+        self.file = std.Io.Dir.cwd().createFile(io, path, .{ .exclusive = true }) catch return self;
         if (self.file) |f| {
             self.write_offset = f.length(io) catch 0;
         }
@@ -94,9 +97,7 @@ pub const Telemetry = struct {
         if (count % 3 == 0) {
             self.flush();
         }
-        if (count % 10 == 0) {
-            self.syncToCloud();
-        }
+
     }
 
     pub fn recordSessionStart(self: *Telemetry) void {
@@ -161,7 +162,10 @@ pub const Telemetry = struct {
         while (i != head) : (i +%= 1) {
             const ev = self.ring[i % RING_SIZE];
             const len = self.formatEvent(&ev) catch continue;
-            f.writePositionalAll(self.io, self.buf[0..len], self.write_offset) catch continue;
+            f.writePositionalAll(self.io, self.buf[0..len], self.write_offset) catch {
+                self.tail.store(i, .monotonic);
+                return;
+            };
             self.write_offset += len;
         }
         self.tail.store(head, .monotonic);
@@ -169,6 +173,10 @@ pub const Telemetry = struct {
 
     fn syncToCloud(self: *Telemetry) void {
         if (!self.enabled or self.path_len == 0) return;
+        const url = self.upload_url orelse return;
+        if (!std.mem.startsWith(u8, url, "https://") and !std.mem.startsWith(u8, url, "http://127.0.0.1:") and !std.mem.startsWith(u8, url, "http://localhost:")) return;
+        self.write_lock.lock();
+        defer self.write_lock.unlock();
         const path = self.path_buf[0..self.path_len];
 
         const stat = std.Io.Dir.cwd().statFile(self.io, path, .{}) catch return;
@@ -180,13 +188,15 @@ pub const Telemetry = struct {
 
         const result = cio.runCapture(.{
             .allocator = std.heap.page_allocator,
-            .argv = &.{ "curl", "-sf", "-X", "POST", CLOUD_URL, "-H", "Content-Type: application/json", "--data-binary", data_arg, "--max-time", "5" },
+            .argv = &.{ "curl", "-sf", "-X", "POST", url, "-H", "Content-Type: application/x-ndjson", "--data-binary", data_arg, "--max-time", "5" },
             .max_output_bytes = 4096,
         }) catch return;
         std.heap.page_allocator.free(result.stdout);
         std.heap.page_allocator.free(result.stderr);
 
-        // Truncate the file after successful sync
+        switch (result.term) { .Exited => |code| if (code != 0) return, else => return, }
+
+        // Truncate the file only after a successful HTTP/process response.
         if (std.Io.Dir.cwd().createFile(self.io, path, .{ .truncate = true })) |f| {
             f.close(self.io);
             self.write_offset = 0;
@@ -195,7 +205,7 @@ pub const Telemetry = struct {
 
     pub fn syncWalToCloud(self: *Telemetry, wal_path: ?[]const u8) void {
         _ = wal_path;
-        self.syncToCloud();
+        self.flush(); // Never block a query on network I/O.
     }
 
     fn formatEvent(self: *Telemetry, ev: *const Event) !usize {
@@ -205,8 +215,9 @@ pub const Telemetry = struct {
         switch (ev.kind) {
             .tool_call => |tc| {
                 const name = tc.tool[0..tc.tool_len];
-                try w.print(",\"event_type\":\"tool_call\",\"tool\":\"{s}\",\"latency_ns\":{d},\"error\":{s},\"response_bytes\":{d}", .{
-                    name,
+                try w.writeAll(",\"event_type\":\"tool_call\",\"tool\":");
+                try std.json.Stringify.value(name, .{}, w);
+                try w.print(",\"latency_ns\":{d},\"error\":{s},\"response_bytes\":{d}", .{
                     @as(i64, @intCast(@min(tc.latency_ns, std.math.maxInt(i64)))),
                     if (tc.err) "true" else "false",
                     tc.response_bytes,
@@ -275,7 +286,7 @@ fn writeLanguages(writer: anytype, language_mask: u32) !void {
         "t4_template",
     };
     var first = true;
-    for (names, 0..) |name, idx| {
+    for (names[0..32], 0..) |name, idx| {
         const bit_index: u5 = @intCast(idx);
         if ((language_mask & (@as(u32, 1) << bit_index)) == 0) continue;
         if (!first) try writer.writeByte(',');
@@ -325,4 +336,23 @@ pub fn approxIndexSizeBytes(explorer: *const explore.Explorer) u64 {
     }
 
     return total;
+}
+
+fn truthy(value: ?[]const u8) bool {
+    const v = value orelse return false;
+    return std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "yes");
+}
+
+pub fn telemetryEnabled(disabled: bool, opt_in: ?[]const u8, opt_out: ?[]const u8) bool {
+    return !disabled and !truthy(opt_out) and truthy(opt_in);
+}
+
+test "telemetry requires explicit true and disable has precedence" {
+    const t = std.testing;
+    try t.expect(!telemetryEnabled(false, null, null));
+    try t.expect(!telemetryEnabled(false, "0", null));
+    try t.expect(!telemetryEnabled(false, "false", null));
+    try t.expect(telemetryEnabled(false, "true", null));
+    try t.expect(!telemetryEnabled(false, "1", "1"));
+    try t.expect(!telemetryEnabled(true, "1", null));
 }

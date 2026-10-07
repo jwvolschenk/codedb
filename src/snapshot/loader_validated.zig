@@ -287,9 +287,11 @@ pub fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std
             if (param_types_count > (bytes.len - cursor) / 2) return error.InvalidData;
             const param_types = try allocator.alloc([]const u8, param_types_count);
             errdefer allocator.free(param_types);
+            var params_initialized: usize = 0;
+            errdefer for (param_types[0..params_initialized]) |pt| allocator.free(pt);
             for (0..param_types_count) |pi| {
                 param_types[pi] = try readSectionString(bytes, &cursor, allocator, std.math.maxInt(u16));
-                errdefer for (param_types[0..pi]) |pt| allocator.free(pt);
+                params_initialized += 1;
             }
 
             // v4: decorators
@@ -300,9 +302,11 @@ pub fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std
             else
                 &.{};
             errdefer if (decorators.len > 0) allocator.free(decorators);
+            var decorators_initialized: usize = 0;
+            errdefer for (decorators[0..decorators_initialized]) |dec| allocator.free(dec);
             for (0..decorators_count) |di| {
                 decorators[di] = try readSectionString(bytes, &cursor, allocator, std.math.maxInt(u16));
-                errdefer for (decorators[0..di]) |dec| allocator.free(dec);
+                decorators_initialized += 1;
             }
 
             try outline.symbols.append(allocator, Symbol{
@@ -326,15 +330,9 @@ pub fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std
 }
 
 pub fn rebuildDepsFromOutline(explorer: *Explorer, path: []const u8, outline: *const FileOutline, allocator: std.mem.Allocator) !void {
-    var deps: std.ArrayList([]const u8) = .empty;
-    errdefer deps.deinit(allocator);
-
-    for (outline.imports.items) |imp| {
-        if (std.mem.indexOf(u8, imp, "..") != null) continue;
-        try deps.append(allocator, imp);
-    }
-
-    try explorer.dep_graph.setDeps(path, deps);
+    _ = allocator;
+    var borrowed = outline.*;
+    try explorer.rebuildDepsFor(path, &borrowed);
 }
 
 pub fn insertRestoredFile(

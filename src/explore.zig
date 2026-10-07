@@ -40,6 +40,8 @@ const glob = @import("explore/glob.zig");
 pub const matchGlob = glob.matchGlob;
 
 pub const Explorer = struct {
+    scan_metrics: @import("scan_metrics.zig").Metrics = .{},
+    tsconfig_paths: @import("tsconfig_paths.zig").Aliases = .{},
     outlines: std.StringHashMap(FileOutline),
     dep_graph: DependencyGraph,
     contents: ContentCache,
@@ -79,8 +81,10 @@ pub const Explorer = struct {
     rerank_trace_path: ?[]const u8 = null,
 
     pub fn setRoot(self: *Explorer, io: std.Io, root_path: []const u8) void {
+        if (self.root_dir) |old| old.close(self.io.?);
         self.io = io;
         self.root_dir = std.Io.Dir.cwd().openDir(io, root_path, .{}) catch null;
+        if (self.root_dir) |root| self.tsconfig_paths.load(io, root, self.allocator);
     }
     pub fn init(allocator: std.mem.Allocator) Explorer {
         return .{
@@ -99,6 +103,7 @@ pub const Explorer = struct {
     }
 
     pub fn deinit(self: *Explorer) void {
+        self.tsconfig_paths.deinit(self.allocator);
         var iter = self.outlines.iterator();
         while (iter.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
@@ -219,6 +224,7 @@ pub const Explorer = struct {
     pub const freeParamTypes = @import("explore/lifecycle.zig").freeParamTypes;
 
     pub fn getOutline(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) !?FileOutline {
+        self.indexOnMiss(path);
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
@@ -228,11 +234,23 @@ pub const Explorer = struct {
 
     /// Return a caller-owned copy of cached file content.
     pub fn getContent(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) !?[]u8 {
+        self.indexOnMiss(path);
         self.mu.lockShared();
         defer self.mu.unlockShared();
         const ref = self.readContentForSearch(path, allocator) orelse return null;
         if (ref.owned) return @constCast(ref.data);
         return try allocator.dupe(u8, ref.data);
+    }
+
+    fn indexOnMiss(self: *Explorer, path: []const u8) void {
+        self.mu.lockShared();
+        const indexed = self.outlines.contains(path);
+        self.mu.unlockShared();
+        if (indexed) return;
+        const root = self.root_dir orelse return;
+        const io = self.io orelse return;
+        if (!@import("watcher/filtered_walker.zig").FilteredWalker.allowsPath(io, root, path, self.allocator)) return;
+        @import("watcher/incremental.zig").indexFileContent(io, self, root, path, self.allocator, false) catch {};
     }
 
     pub const getTree = @import("explore/tree.zig").getTree;

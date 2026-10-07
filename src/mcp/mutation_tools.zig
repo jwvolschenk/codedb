@@ -288,9 +288,8 @@ pub fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *S
     const file_count = store.files.count();
     store.mu.unlock();
 
-    const index_bytes = telemetry_mod.approxIndexSizeBytes(explorer);
-
     explorer.mu.lockShared();
+    const index_bytes = telemetry_mod.approxIndexSizeBytes(explorer);
     const outline_count = explorer.outlines.count();
     const content_count = explorer.contents.count();
     const trigram_type: []const u8 = switch (explorer.trigram_index) {
@@ -341,6 +340,25 @@ pub fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *S
             w.print("  memory_budget: {d}MB\n", .{limit}) catch {};
         }
     }
+
+    const metrics = &explorer.scan_metrics;
+    const started = metrics.started_ms.load(.acquire);
+    const walked = metrics.walk_finished_ms.load(.acquire);
+    const finished = metrics.finished_ms.load(.acquire);
+    const now = cio.milliTimestamp();
+    w.print("  scanned: {d}\n  parsed: {d}\n  oversized: {d}\n  last_progress_ms: {d}\n  scan_failed: {}\n  peak_sampled_rss_bytes: {d}\n  walk_ms: {d}\n  parse_commit_ms: {d}\n  content_verified_ms: {d}\n  verification_remaining_files: {d}\n  ignore_policy_version: 2\n", .{
+        metrics.scanned.load(.acquire), metrics.parsed.load(.acquire), metrics.oversized.load(.acquire),
+        metrics.last_progress_ms.load(.acquire), metrics.failed.load(.acquire), metrics.peak_sampled_rss.load(.acquire),
+        if (started == 0) @as(i64, 0) else @max(0, (if (walked == 0) now else walked) - started),
+        if (walked == 0) @as(i64, 0) else @max(0, (if (finished == 0) now else finished) - walked),
+        metrics.verification_finished_ms.load(.acquire), metrics.verification_pending.load(.acquire),
+    }) catch {};
+    if (explorer.root_dir) |root_dir| {
+        var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (root_dir.realPath(explorer.io.?, &root_buf)) |len| w.print("  root: {s}\n", .{root_buf[0..len]}) catch {} else |_| {}
+    }
+    w.writeAll("  content_verification_bound: 60s + 2s per 64 eligible files + filesystem work\n") catch {};
+    w.writeAll("  include_generated: query flag only; index_generated_files must be enabled before rebuild to recover omitted files\n") catch {};
 
     w.print("  ignore_patterns: {d}\n", .{ignore_patterns.len}) catch {};
     for (ignore_patterns) |pattern| {

@@ -19,6 +19,44 @@ const Store = @import("../store.zig").Store;
 const git_mod = @import("../git.zig");
 const skip_rules = @import("skip_rules.zig");
 const incremental = @import("incremental.zig");
+const FilteredWalker = @import("filtered_walker.zig").FilteredWalker;
+
+/// Reconcile an explicit rebuild into an already populated live Explorer.
+/// Uses the same walker as cold/live scans, including current ignore rules.
+pub fn reconcileAll(io: std.Io, explorer: *Explorer, store: *Store, root: []const u8, alloc: std.mem.Allocator) !void {
+    const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
+    defer dir.close(io);
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var walker = try FilteredWalker.init(io, dir, a);
+    defer walker.deinit();
+    var visible = std.StringHashMap(void).init(a);
+    while (try walker.next()) |entry| {
+        if (skip_rules.shouldSkipFile(entry.path)) continue;
+        try visible.put(try a.dupe(u8, entry.path), {});
+    }
+    var removed: std.ArrayList([]const u8) = .empty;
+    explorer.mu.lockShared();
+    {
+        defer explorer.mu.unlockShared();
+        var it = explorer.outlines.keyIterator();
+        while (it.next()) |path| {
+            if (!visible.contains(path.*)) try removed.append(a, try a.dupe(u8, path.*));
+        }
+    }
+    for (removed.items) |path| {
+        explorer.removeFile(path);
+        _ = try store.recordDelete(path, 0);
+    }
+    var it = visible.keyIterator();
+    while (it.next()) |path| {
+        try incremental.indexFileContent(io, explorer, dir, path.*, a, false);
+        const stat = try @import("../project_file.zig").stat(io, dir, path.*);
+        _ = try store.recordSnapshot(path.*, stat.size, 0);
+    }
+    explorer.rebuildTypeIndexes();
+}
 
 /// For each path in (getDirtyPaths(abs_root) ∪ snapshot_dirty): stat under
 /// abs_root — exists → re-read + index + store.recordSnapshot; missing →
@@ -50,6 +88,20 @@ pub fn reconcileWorkingTree(
     const dir = std.Io.Dir.cwd().openDir(io, abs_root, .{}) catch return;
     defer dir.close(io);
 
+    // Apply the identical ignore policy before restoring dirty paths. Git's
+    // dirty list alone does not respect .codedbignore or nested policy edits.
+    const walk_dir = std.Io.Dir.cwd().openDir(io, abs_root, .{ .iterate = true }) catch return;
+    defer walk_dir.close(io);
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var visible = std.StringHashMap(void).init(a);
+    var walker = FilteredWalker.init(io, walk_dir, a) catch return;
+    defer walker.deinit();
+    while (walker.next() catch return) |entry| {
+        visible.put(a.dupe(u8, entry.path) catch return, {}) catch return;
+    }
+
     var reindexed: usize = 0;
     var removed: usize = 0;
     var it = set.keyIterator();
@@ -59,6 +111,11 @@ pub fn reconcileWorkingTree(
         // (extensions, lockfiles, sensitive paths, generated code, size cap,
         // binary sniff) are applied inside indexFileContent.
         if (skip_rules.shouldSkip(path)) continue;
+        if (!visible.contains(path)) {
+            explorer.removeFile(path);
+            _ = store.recordDelete(path, 0) catch {};
+            continue;
+        }
 
         const stat = dir.statFile(io, path, .{}) catch {
             // Deleted while down (or the old half of a rename): evict.

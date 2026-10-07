@@ -486,3 +486,20 @@ Warm RSS is materially lower because reopen no longer reconstructs the same larg
 - `SDKROOT=$(xcrun --show-sdk-path) zig build test`
 - `SDKROOT=$(xcrun --show-sdk-path) zig build -Doptimize=ReleaseFast`
 - `SDKROOT=$(xcrun --show-sdk-path) zig build run -- --version`
+# Unreleased
+
+- Hardened project-root boundaries and direct source access against traversal,
+  Windows drive/UNC/device/ADS forms, links and sensitive-file aliases.
+- Added fail-closed checksum verification for release installers and pinned Zig
+  bootstrap assets, with offline failure-injection tests.
+- Added nested Git ignore semantics, `.git/info/exclude`, bounded `.codedbignore`
+  handling, generated-output controls, exact local TypeScript/JavaScript import
+  resolution, and conservative `tsconfig` aliases.
+- Corrected caller/reference filtering across multiline comments and literals,
+  applied limits after filtering, and added bounded F# reference matching.
+- Added warm-start reconciliation, same-metadata content verification, forced
+  rebuild refresh, scan progress/memory diagnostics, and explicit partial/failed
+  states.
+- Made telemetry opt-in and local-first; failed uploads retain their WAL. MCP
+  protocol negotiation, annotations, navigation profiles, and the eight-scenario
+  Windows E2E harness are covered by local tests.

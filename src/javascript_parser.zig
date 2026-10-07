@@ -6,6 +6,20 @@ const SymbolKind = @import("explore.zig").SymbolKind;
 const max_declaration_tokens = 4096;
 const max_declaration_lines = 128;
 
+/// Preserve source offsets/newlines while erasing literals and comments.
+pub fn codeMask(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const masked = try allocator.alloc(u8, source.len);
+    errdefer allocator.free(masked);
+    for (source, masked) |ch, *out| out.* = if (ch == '\n') '\n' else ' ';
+    var tokens: std.ArrayList(Token) = .empty;
+    defer tokens.deinit(allocator);
+    try lex(allocator, source, &tokens);
+    for (tokens.items) |token| {
+        if (token.kind != .string) @memcpy(masked[token.start..token.end], source[token.start..token.end]);
+    }
+    return masked;
+}
+
 const TokenKind = enum { ident, string, punct, arrow };
 
 const Token = struct {

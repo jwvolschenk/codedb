@@ -1,0 +1,376 @@
+{
+  "binary": "C:\\Users\\jwvol\\AppData\\Local\\codedb\\bin\\codedb.exe",
+  "sha256": "c71c1cf0fe45d6aa8e746bd484f6c92e4c962803e095e3a8b331ca2ca25453af",
+  "synthetic": {
+    "symlink_created": false,
+    "symlink_error": "[WinError 1314] A required privilege is not held by the client: 'C:\\\\Users\\\\jwvol\\\\AppData\\\\Local\\\\Temp\\\\codedb-audit-20261006-_5ea25gq\\\\outside.txt' -> 'C:\\\\Users\\\\jwvol\\\\AppData\\\\Local\\\\Temp\\\\codedb-audit-20261006-_5ea25gq\\\\project\\\\linked.ts'",
+    "root": "C:\\Users\\jwvol\\AppData\\Local\\Temp\\codedb-audit-20261006-_5ea25gq\\project",
+    "initialize": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "resultType": "complete",
+        "_meta": {
+          "io.modelcontextprotocol/serverInfo": {
+            "name": "codedb",
+            "version": "3.0.1"
+          }
+        },
+        "protocolVersion": "2024-11-05",
+        "capabilities": {
+          "tools": {
+            "listChanged": false
+          },
+          "extensions": {}
+        },
+        "serverInfo": {
+          "name": "codedb",
+          "version": "3.0.1"
+        },
+        "instructions": "codedb is a code-intelligence and context tool \u00e2\u20ac\u201d not your editor. Default to the structural tools FIRST: codedb_symbol for a definition, codedb_callers for usages/references, codedb_relations for type hierarchy, codedb_outline for a file's structure before codedb_read. Use codedb_search only for substrings or phrases when you do NOT know the exact symbol name \u00e2\u20ac\u201d it is a fallback, not the default. Make edits with your own native file tools; codedb_edit is only a fallback for clients with no native editing."
+      }
+    },
+    "status": {
+      "ms": 15.0,
+      "text": "v * status  0 files - seq 0\ncodedb status:\n  seq: 0\n  files: 0\n  outlines: 0\n  contents_cached: 0\n  trigram_index: heap (0 files)\n  index_memory: 0KB\n  scan: walking\n  memory_budget: 6144MB\n  ignore_patterns: 0\n  codedbignore_hash: none\n  built_in_skip_dirs: 51\n    .git\n    .claude\n    .codedb\n    node_modules\n    .zig-cache\n    zig-out\n    .next\n    .nuxt\n    .svelte-kit\n    dist\n    build\n    .build\n    .output\n    out\n    __pycache__\n    .venv\n    venv\n    .env\n    .tox\n    .mypy_cache\n    .pytest_cache\n    .ruff_cache\n    target\n    .gradle\n    .idea\n    .vs\n    vendor\n    Pods\n    .dart_tool\n    .pub-cache\n    coverage\n    .nyc_output\n    .turbo\n    .parcel-cache\n    .cache\n    .tmp\n    .temp\n    .DS_Store\n    bundle\n    .bundle\n    .swc\n    .terraform\n    .terragrunt-cache\n    .serverless\n    elm-stuff\n    .stack-work\n    .cabal-sandbox\n    .cargo\n    bower_components\n    .godot\n    .import\n  generated_filter: enabled\n  generated_skip_events: 0\n  language_coverage: 0 languages\n  stale_files: 0 (tracked in store, not indexed)\n",
+      "error": null,
+      "isError": false
+    },
+    "tools": {
+      "count": 26,
+      "schema_bytes": 22523,
+      "annotations": {
+        "codedb_tree": null,
+        "codedb_outline": null,
+        "codedb_symbol": null,
+        "codedb_hierarchy": null,
+        "codedb_routes": null,
+        "codedb_config_xref": null,
+        "codedb_search": null,
+        "codedb_word": null,
+        "codedb_callers": null,
+        "codedb_relations": null,
+        "codedb_hot": null,
+        "codedb_deps": null,
+        "codedb_read": null,
+        "codedb_edit": null,
+        "codedb_changes": null,
+        "codedb_status": null,
+        "codedb_snapshot": null,
+        "codedb_types": null,
+        "codedb_remote": null,
+        "codedb_projects": null,
+        "codedb_index": null,
+        "codedb_find": null,
+        "codedb_query": null,
+        "codedb_glob": null,
+        "codedb_ls": null,
+        "codedb_manifest": null
+      }
+    },
+    "read:.env": {
+      "ms": 31.0,
+      "text": "x * read - access to sensitive file blocked\nerror: access to sensitive file blocked\nhint: use codedb_tree to verify file paths",
+      "error": null,
+      "isError": true
+    },
+    "read:upper/.ENV": {
+      "ms": 16.0,
+      "text": "v * read  upper/.ENV   5.6ms \nAUDIT_UPPER_ENV=synthetic_upper_env_canary\r\n",
+      "error": null,
+      "isError": false
+    },
+    "read:Credentials.JSON": {
+      "ms": 15.0,
+      "text": "v * read  Credentials.JSON\n{\"canary\":\"synthetic_credentials_canary\"}\r\n",
+      "error": null,
+      "isError": false
+    },
+    "read:private.PEM": {
+      "ms": 32.0,
+      "text": "v * read  private.PEM\nsynthetic_upper_pem_canary\r\n",
+      "error": null,
+      "isError": false
+    },
+    "read:private.key": {
+      "ms": 15.0,
+      "text": "x * read - access to sensitive file blocked\nerror: access to sensitive file blocked\nhint: use codedb_tree to verify file paths",
+      "error": null,
+      "isError": true
+    },
+    "read:linked.ts": {
+      "ms": 16.0,
+      "text": "x * read - failed to read file: linked.ts\nerror: failed to read file: linked.ts\ndid you mean:\n  sub/keep.ts\n  safe.ts\n  sub/nested-hidden.ts\n\nhint: use codedb_tree to verify file paths",
+      "error": null,
+      "isError": true
+    },
+    "read:C:/Users/jwvol/AppData/Local/Temp/codedb-audit-20261006-_5ea25gq/outside.txt": {
+      "ms": 31.0,
+      "text": "v * read  C:/Users/jwvol/AppData/Local/Temp/codedb-audit-20261006-_5ea25gq/outside.txt   6.1ms \nsynthetic_outside_canary\r\n",
+      "error": null,
+      "isError": false
+    },
+    "read:C:\\Users\\jwvol\\AppData\\Local\\Temp\\codedb-audit-20261006-_5ea25gq\\project\\safe.ts": {
+      "ms": 16.0,
+      "text": "x * read - path traversal not allowed\nerror: path traversal not allowed\nhint: use codedb_tree to verify file paths",
+      "error": null,
+      "isError": true
+    },
+    "read:C:/Users/jwvol/AppData/Local/Temp/codedb-audit-20261006-_5ea25gq/project/safe.ts": {
+      "ms": 15.0,
+      "text": "v * read  C:/Users/jwvol/AppData/Local/Temp/codedb-audit-20261006-_5ea25gq/project/safe.ts\nexport function auditTarget() { return 7; }\r\nexport function actualCaller() { auditTarget(); }\r\n/* auditTarget(); */\r\nconst pattern = /auditTarget()/;\r\nconst template = `auditTarget()`;\r\n/*\r\nauditTarget();\r\n*/\r\n",
+      "error": null,
+      "isError": false
+    },
+    "search:synthetic_upper": {
+      "ms": 16.0,
+      "text": "v * search  'synthetic_upper' - 2 results\n2 results for 'synthetic_upper':\n  private.PEM:1: synthetic_upper_pem_canary\r\n  upper/.ENV:1: AUDIT_UPPER_ENV=synthetic_upper_env_canary\r\n\nindex: root=C:\\Users\\jwvol\\AppData\\Local\\Temp\\codedb-audit-20261006-_5ea25gq\\project scan=ready seq=13\n-> next: add scope=true to see enclosing functions",
+      "error": null,
+      "isError": false
+    },
+    "search:synthetic_credentials": {
+      "ms": 31.0,
+      "text": "v * search  'synthetic_credentials' - 1 results\n1 results for 'synthetic_credentials':\n  Credentials.JSON:1: {\"canary\":\"synthetic_credentials_canary\"}\r\n\nindex: root=C:\\Users\\jwvol\\AppData\\Local\\Temp\\codedb-audit-20261006-_5ea25gq\\project scan=ready seq=13\n-> next: add scope=true to see enclosing functions",
+      "error": null,
+      "isError": false
+    },
+    "search:synthetic_outside": {
+      "ms": 16.0,
+      "text": "v * search  'synthetic_outside' - 0 results\n0 results for 'synthetic_outside':\n\nindex: root=C:\\Users\\jwvol\\AppData\\Local\\Temp\\codedb-audit-20261006-_5ea25gq\\project scan=ready seq=13\n-> next: add scope=true to see enclosing functions",
+      "error": null,
+      "isError": false
+    },
+    "search:nestedIgnoredCanary": {
+      "ms": 78.0,
+      "text": "v * search  'nestedIgnoredCanary' - 1 results  66.6ms \n1 results for 'nestedIgnoredCanary':\n  sub/nested-hidden.ts:1: export const nestedIgnoredCanary = 1;\r\n\nindex: root=C:\\Users\\jwvol\\AppData\\Local\\Temp\\codedb-audit-20261006-_5ea25gq\\project scan=ready seq=13\n-> next: add scope=true to see enclosing functions\n[codedb] Repeated searches with tweaked queries are not converging. Stop guessing phrasing: locate the exact identifier with codedb_symbol, then codedb_callers / codedb_read around its definition.",
+      "error": null,
+      "isError": false
+    },
+    "search:negationKeptCanary": {
+      "ms": 31.0,
+      "text": "v * search  'negationKeptCanary' - 1 results\n1 results for 'negationKeptCanary':\n  sub/keep.ts:1: export const negationKeptCanary = 1;\r\n\nindex: root=C:\\Users\\jwvol\\AppData\\Local\\Temp\\codedb-audit-20261006-_5ea25gq\\project scan=ready seq=13\n-> next: add scope=true to see enclosing functions\n[codedb] Repeated searches with tweaked queries are not converging. Stop guessing phrasing: locate the exact identifier with codedb_symbol, then codedb_callers / codedb_read around its definition.",
+      "error": null,
+      "isError": false
+    },
+    "callers:1": {
+      "ms": 16.0,
+      "text": "v * callers\n0 call sites for 'auditTarget':\n\nindex: root=C:\\Users\\jwvol\\AppData\\Local\\Temp\\codedb-audit-20261006-_5ea25gq\\project scan=ready seq=13",
+      "error": null,
+      "isError": false
+    },
+    "callers:50": {
+      "ms": 16.0,
+      "text": "v * callers\n5 call sites for 'auditTarget':\n  safe.ts:2: export function actualCaller() { auditTarget(); }\r  [in actualCaller (function, L2-L2)]\n  safe.ts:3: /* auditTarget(); */\r  [in actualCaller (function, L2-L2)]\n  safe.ts:4: const pattern = /auditTarget()/;\r  [in pattern (constant, L4-L4)]\n  safe.ts:5: const template = `auditTarget()`;\r  [in template (constant, L5-L5)]\n  safe.ts:7: auditTarget();\r  [in template (constant, L5-L5)]\n\nindex: root=C:\\Users\\jwvol\\AppData\\Local\\Temp\\codedb-audit-20261006-_5ea25gq\\project scan=ready seq=13",
+      "error": null,
+      "isError": false
+    }
+  },
+  "repositories": [
+    {
+      "root": "C:\\repos\\lm-asp-net",
+      "head": "2278eb9a3885ec2b366ebbddc601d58b6b7e363e",
+      "initialize_ms": 328.0,
+      "initialize_ok": true,
+      "status": {
+        "ms": 31.0,
+        "text": "v * status  0 files - seq 0\ncodedb status:\n  seq: 0\n  files: 0\n  outlines: 0\n  contents_cached: 0\n  trigram_index: heap (0 files)\n  index_memory: 0KB\n  scan: walking\n  memory_budget: 6144MB\n  ignore_patterns: 0\n  codedbignore_hash: none\n  built_in_skip_dirs: 51\n    .git\n    .claude\n    .codedb\n    node_modules\n    .zig-cache\n    zig-out\n    .next\n    .nuxt\n    .svelte-kit\n    dist\n    build\n    .build\n    .output\n    out\n    __pycache__\n    .venv\n    venv\n    .env\n    .tox\n    .mypy_cache\n    .pytest_cache\n    .ruff_cache\n    target\n    .gradle\n    .idea\n    .vs\n    vendor\n    Pods\n    .dart_tool\n    .pub-cache\n    coverage\n    .nyc_output\n    .turbo\n    .parcel-cache\n    .cache\n    .tmp\n    .temp\n    .DS_Store\n    bundle\n    .bundle\n    .swc\n    .terraform\n    .terragrunt-cache\n    .serverless\n    elm-stuff\n    .stack-work\n    .cabal-sandbox\n    .cargo\n    bower_components\n    .godot\n    .import\n  generated_filter: enabled\n  generated_skip_events: 0\n  language_coverage: 0 languages\n  stale_files: 0 (tracked in store, not indexed)\n",
+        "error": null,
+        "isError": false
+      },
+      "symbol": {
+        "ms": 5313.0,
+        "text": "v * symbol - fn Probe  5.3s \n26 results for 'Probe':\n  src/Backend/Levelmaster.Domain/Entities/Probe.cs:18 (class_def)  // public class Probe : BaseEntityProperties {\n  src/Backend/Levelmaster.SharedLibrary/DTOs/Probe/CreateProbeDto.cs:8 (type_alias)  // namespace Levelmaster.SharedLibrary.DTOs.Probe\r\n  src/Backend/Levelmaster.SharedLibrary/DTOs/Probe/ProbeSearchRequest.cs:1 (type_alias)  // namespace Levelmaster.SharedLibrary.DTOs.Probe\n  src/Backend/Levelmaster.SharedLibrary/DTOs/Probe/_ProbeDto.cs:10 (type_alias)  // namespace Levelmaster.SharedLibrary.DTOs.Probe\r\n  src/Frontend/Levelmaster.UI.Blazor/Levelmaster.UI.Blazor.Components/Common/Constants.cs:118 (class_def)  // public static class Probe\r\n  src/Backend/Levelmaster.Domain/Entities/Probe.cs:41 (method)  // public Probe() { }\r\n  src/Backend/Levelmaster.Domain/Entities/Probe.cs:47 (method) (string?)  // public Probe(string? serial)\r\n  src/Backend/Levelmaster.Application/Helpers/CacheTags.cs:22 (constant)  // \"probe\";\r\n  src/Backend/Levelmaster.Application/Helpers/EntityDtoHelper.cs:36 (variable) -> bool  // public bool Probe { get; set; } = false;\r\n  src/Backend/Levelmaster.Domain/Entities/Container.cs:20 (variable) -> Probe?  // public Probe? Probe { get; private set; }\r\n  src/Backend/Levelmaster.Domain/Entities/Probe.cs:128 (variable) -> Probe?  // public Probe? Probe { get; private set; }\r\n  src/Backend/Levelmaster.",
+        "error": null,
+        "isError": false,
+        "response_chars": 3506
+      },
+      "search": {
+        "ms": 15.0,
+        "text": "v * search  'Probe' - 5 results\n5 results for 'Probe':\n  src/Backend/Levelmaster.Application/Services/ProbeService.cs:7: using Levelmaster.SharedLibrary.DTOs.Probe;\r\n  src/Backend/Levelmaster.ApiClient/ApiClient.cs:24: using Levelmaster.SharedLibrary.DTOs.Probe;\r\n  src/Backend/Levelmaster.Application/Helpers/EntityDtoHelper.cs:8: using Levelmaster.SharedLibrary.DTOs.Probe;\r\n  src/Backend/Levelmaster.Application/Services/ContainerService.cs:30:         Task<EntityResponse<ContainerDto>?> UpdateContainerAsync(ContainerDto container, bool overrideProbeLink = false);\r\n  src/Backend/Levelmaster.Application/Services/DataAppService.cs:9: using Levelmaster.SharedLibrary.DTOs.Probe;\r\n\n(+more matches exist \u00e2\u20ac\u201d refine query, add path_glob, or raise max_results)\nindex: root=C:\\repos\\lm-asp-net scan=ready seq=423\n-> next: add scope=true to see enclosing functions",
+        "error": null,
+        "isError": false,
+        "response_chars": 862
+      },
+      "callers": {
+        "ms": 32.0,
+        "text": "v * callers   506.6us \n21 references for 'Probe':\n  src/Backend/Levelmaster.Application/Helpers/EntityDtoHelper.cs:299:             if (depthClone.Probe)\r  [in GetConcentratorDto (method, L239-L337)]\n  src/Backend/Levelmaster.Infrastructure/Persistence/Repositories/EfProbeRepository.cs:21: public class EfProbeRepository : EfBaseEntityRepository<Probe>, IProbeRepository {  [in EfProbeRepository (class_def, L21-L279)]\n  src/Backend/Levelmaster.Infrastructure/Persistence/Repositories/EfProbeRepository.cs:43: public async Task<Probe?> GetBySerialNumberAsync(string? probeSerial, params Expression<Func<Probe, object>>[]? includes)\r  [in GetBySerialNumberAsync (method, L43-L77)]\n  src/Backend/Levelmaster.Infrastructure/Persistence/Repositories/EfProbeRepository.cs:79: public async Task<List<Probe>?> GetConcentratorProbesAsync(int? concentratorId, string? searchQuery = null, int page = 0, int pageSize = 10)\r  [in GetConcentratorProbesAsync (method, L79-L112)]\n  src/Backend/Levelmaster.Infrastructure/Persistence/Repositories/EfProbeRepository.cs:114: public override IQueryable<Probe> GetSearchQuery(string? searchQuery) \r  [in GetSearchQuery (method, L114-L131)]\n  src/Backend/Levelmaster.Infrastructure/Persistence/Repositories/EfProbeRepository.cs:134: public async Task<List<Probe>?> SearchFilteredAsync(string? searchQuery = null, int? concentratorId = null, int? siteId = null, int? clie",
+        "error": null,
+        "isError": false,
+        "response_chars": 4514
+      },
+      "deps": {
+        "ms": 15.0,
+        "text": "v * deps  src/Backend/Levelmaster.Domain/Entities/Probe.cs\nsrc/Backend/Levelmaster.Domain/Entities/Probe.cs is imported by:\n  src/Backend/Levelmaster.Domain/Entities/Site.cs\n  src/Backend/Levelmaster.Infrastructure/Persistence/Repositories/EfConcentratorRepository.cs\n  src/Backend/Levelmaster.Domain/Entities/Reading.cs\n  src/Backend/Levelmaster.Domain/Entities/SimCard.cs\n  src/Backend/Levelmaster.Domain/Interfaces/IConcentratorRepository.cs\n  src/Backend/Levelmaster.Domain/Interfaces/IProbeRepository.cs\n  src/Backend/Levelmaster.Infrastructure/Persistence/LMAppDbContext.cs\n  src/Backend/Levelmaster.Infrastructure/Persistence/Repositories/EfProbeDimensionRepository.cs\n  src/Backend/Levelmaster.Domain/Interfaces/IContainerRepository.cs\n  src/Backend/Levelmaster.Infrastructure/Persistence/Repositories/EfProbeRepository.cs\n  src/Backend/Levelmaster.Infrastructure/Persistence/Repositories/EfContainerRepository.cs\n  src/Backend/Levelmaster.Domain/Entities/SimCardChangeLog.cs\n(12 files)\n\nindex: root=C:\\repos\\lm-asp-net scan=ready seq=423",
+        "error": null,
+        "isError": false,
+        "response_chars": 1046
+      },
+      "stderr_tail": [
+        "info: codedb mcp: ctx.root=C:\\repos\\lm-asp-net files=0 data=C:\\Users\\jwvol/.codedb/projects/214dac628d408310 scan=walking",
+        "info: codedb dispatch: codedb_symbol total 5314ms (project=default)"
+      ]
+    },
+    {
+      "root": "C:\\repos\\pro",
+      "head": "ef069993ee0a62873bf82200aba1aaaa8a04de08",
+      "initialize_ms": 313.0,
+      "initialize_ok": true,
+      "status": {
+        "ms": 15.0,
+        "text": "v * status  0 files - seq 0\ncodedb status:\n  seq: 0\n  files: 0\n  outlines: 0\n  contents_cached: 0\n  trigram_index: heap (0 files)\n  index_memory: 0KB\n  scan: walking\n  memory_budget: 6144MB\n  ignore_patterns: 0\n  codedbignore_hash: none\n  built_in_skip_dirs: 51\n    .git\n    .claude\n    .codedb\n    node_modules\n    .zig-cache\n    zig-out\n    .next\n    .nuxt\n    .svelte-kit\n    dist\n    build\n    .build\n    .output\n    out\n    __pycache__\n    .venv\n    venv\n    .env\n    .tox\n    .mypy_cache\n    .pytest_cache\n    .ruff_cache\n    target\n    .gradle\n    .idea\n    .vs\n    vendor\n    Pods\n    .dart_tool\n    .pub-cache\n    coverage\n    .nyc_output\n    .turbo\n    .parcel-cache\n    .cache\n    .tmp\n    .temp\n    .DS_Store\n    bundle\n    .bundle\n    .swc\n    .terraform\n    .terragrunt-cache\n    .serverless\n    elm-stuff\n    .stack-work\n    .cabal-sandbox\n    .cargo\n    bower_components\n    .godot\n    .import\n  generated_filter: enabled\n  generated_skip_events: 0\n  language_coverage: 0 languages\n  stale_files: 0 (tracked in store, not indexed)\n",
+        "error": null,
+        "isError": false
+      },
+      "symbol": {
+        "ms": 14328.0,
+        "text": "v * symbol - fn Startup  14.3s \n2 results for 'Startup':\n  src/Startup.cs:25 (class_def)  // public class Startup\r\n  src/Startup.cs:27 (method) (IConfiguration)  // public Startup(IConfiguration configuration)\r\n\nindex: root=C:\\repos\\pro scan=ready seq=832\n-> next: codedb_edit to modify this symbol",
+        "error": null,
+        "isError": false,
+        "response_chars": 298
+      },
+      "search": {
+        "ms": 32.0,
+        "text": "v * search  'Startup' - 5 results   1.0ms \n5 results for 'Startup':\n  src/Startup.cs:25:     public class Startup\r\n  src/Program.cs:46:                 webBuilder.UseStartup<Startup>();\r\n  src/Models/Domains.cs:875:         @Astartupcompanyformedinthepast24months = 110760002,\r\n  .github/skills/scaffold-view/SKILL.md:318: ## Grid Startup Contract\r\n  AGENTS.md:92: - **Blast radius includes cross-language usages**: DI registrations in `Startup.cs` (`AddTransient<IFoo, Foo>()`), Razor `@model`/`@inherits` directives, and `Html.Kendo().Form<T>()` generic args all appear in `codedb_deps` / references output.\r\n\n(+more matches exist \u00e2\u20ac\u201d refine query, add path_glob, or raise max_results)\nindex: root=C:\\repos\\pro scan=ready seq=832\n-> next: add scope=true to see enclosing functions",
+        "error": null,
+        "isError": false,
+        "response_chars": 782
+      },
+      "callers": {
+        "ms": 15.0,
+        "text": "v * callers   7.2ms \n1 references for 'Startup':\n  src/Program.cs:46:                 webBuilder.UseStartup<Startup>();\r  [in CreateHostBuilder (method, L42-L67)]\n\nindex: root=C:\\repos\\pro scan=ready seq=832",
+        "error": null,
+        "isError": false,
+        "response_chars": 207
+      },
+      "deps": {
+        "ms": 16.0,
+        "text": "v * deps  src/Startup.cs\nsrc/Startup.cs is imported by:\n  (none)\n\nindex: root=C:\\repos\\pro scan=ready seq=832",
+        "error": null,
+        "isError": false,
+        "response_chars": 109
+      },
+      "stderr_tail": [
+        "info: codedb mcp: ctx.root=C:\\repos\\pro files=0 data=C:\\Users\\jwvol/.codedb/projects/7010d7ff3c33f471 scan=walking",
+        "info: codedb dispatch: codedb_symbol total 14310ms (project=default)"
+      ]
+    },
+    {
+      "root": "C:\\repos\\invest",
+      "head": "c7642d58ccd51116a2ec9627f28466aecd8b4ae2",
+      "initialize_ms": 297.0,
+      "initialize_ok": true,
+      "status": {
+        "ms": 15.0,
+        "text": "v * status  0 files - seq 0   509.0us \ncodedb status:\n  seq: 0\n  files: 0\n  outlines: 0\n  contents_cached: 0\n  trigram_index: heap (0 files)\n  index_memory: 0KB\n  scan: walking\n  memory_budget: 6144MB\n  ignore_patterns: 0\n  codedbignore_hash: none\n  built_in_skip_dirs: 51\n    .git\n    .claude\n    .codedb\n    node_modules\n    .zig-cache\n    zig-out\n    .next\n    .nuxt\n    .svelte-kit\n    dist\n    build\n    .build\n    .output\n    out\n    __pycache__\n    .venv\n    venv\n    .env\n    .tox\n    .mypy_cache\n    .pytest_cache\n    .ruff_cache\n    target\n    .gradle\n    .idea\n    .vs\n    vendor\n    Pods\n    .dart_tool\n    .pub-cache\n    coverage\n    .nyc_output\n    .turbo\n    .parcel-cache\n    .cache\n    .tmp\n    .temp\n    .DS_Store\n    bundle\n    .bundle\n    .swc\n    .terraform\n    .terragrunt-cache\n    .serverless\n    elm-stuff\n    .stack-work\n    .cabal-sandbox\n    .cargo\n    bower_components\n    .godot\n    .import\n  generated_filter: enabled\n  generated_skip_events: 0\n  language_coverage: 0 languages\n  stale_files: 0 (tracked in store, not indexed)\n",
+        "error": null,
+        "isError": false
+      },
+      "symbol": {
+        "ms": 6438.0,
+        "text": "v * symbol - fn Startup  6.4s \n2 results for 'Startup':\n  src/Startup.cs:35 (class_def)  // public class Startup\r\n  src/Startup.cs:37 (method) (IConfiguration)  // public Startup(IConfiguration configuration)\r\n\nindex: root=C:\\repos\\invest scan=ready seq=426\n-> next: codedb_edit to modify this symbol",
+        "error": null,
+        "isError": false,
+        "response_chars": 300
+      },
+      "search": {
+        "ms": 15.0,
+        "text": "v * search  'Startup' - 5 results   513.8us \n5 results for 'Startup':\n  src/Startup.cs:35:     public class Startup\r\n  src/Program.cs:48:                 webBuilder.UseStartup<Startup>();\r\n  src/GlobalSuppressions.cs:15: [assembly: SuppressMessage(\"Style\", \"IDE0060:Remove unused parameter\", Justification = \"Stand Configuration Method called by external host.\", Scope = \"member\", Target = \"~M:MyCredoInvest.Startup.Configure(Microsoft.AspNetCore.Builder.IApplicationBuilder,Microsoft.AspNetCore.Hosting.IWebHostEnvironment)\")]\r\n  .github/skills/scaffold-view/SKILL.md:233: ## Grid Startup Contract\r\n  .github/skills/scaffold-view/SKILL.md:249: - [ ] Grid startup contract satisfied\r\n\n(+more matches exist \u00e2\u20ac\u201d refine query, add path_glob, or raise max_results)\nindex: root=C:\\repos\\invest scan=ready seq=426\n-> next: add scope=true to see enclosing functions",
+        "error": null,
+        "isError": false,
+        "response_chars": 858
+      },
+      "callers": {
+        "ms": 32.0,
+        "text": "v * callers   1.4ms \n1 references for 'Startup':\n  src/Program.cs:48:                 webBuilder.UseStartup<Startup>();\r  [in CreateHostBuilder (method, L44-L69)]\n\nindex: root=C:\\repos\\invest scan=ready seq=426",
+        "error": null,
+        "isError": false,
+        "response_chars": 210
+      },
+      "deps": {
+        "ms": 15.0,
+        "text": "v * deps  src/Startup.cs\nsrc/Startup.cs is imported by:\n  (none)\n\nindex: root=C:\\repos\\invest scan=ready seq=428",
+        "error": null,
+        "isError": false,
+        "response_chars": 112
+      },
+      "stderr_tail": [
+        "info: codedb mcp: ctx.root=C:\\repos\\invest files=0 data=C:\\Users\\jwvol/.codedb/projects/e534aa78b8462235 scan=walking",
+        "info: codedb dispatch: codedb_symbol total 6423ms (project=default)"
+      ]
+    },
+    {
+      "root": "C:\\repos\\autumn",
+      "head": "609d7bb954bb8ffae010d019b90d50a5b6985c79",
+      "initialize_ms": 296.0,
+      "initialize_ok": true,
+      "status": {
+        "ms": 32.0,
+        "text": "v * status  0 files - seq 0\ncodedb status:\n  seq: 0\n  files: 0\n  outlines: 0\n  contents_cached: 0\n  trigram_index: heap (0 files)\n  index_memory: 0KB\n  scan: walking\n  memory_budget: 6144MB\n  ignore_patterns: 0\n  codedbignore_hash: none\n  built_in_skip_dirs: 51\n    .git\n    .claude\n    .codedb\n    node_modules\n    .zig-cache\n    zig-out\n    .next\n    .nuxt\n    .svelte-kit\n    dist\n    build\n    .build\n    .output\n    out\n    __pycache__\n    .venv\n    venv\n    .env\n    .tox\n    .mypy_cache\n    .pytest_cache\n    .ruff_cache\n    target\n    .gradle\n    .idea\n    .vs\n    vendor\n    Pods\n    .dart_tool\n    .pub-cache\n    coverage\n    .nyc_output\n    .turbo\n    .parcel-cache\n    .cache\n    .tmp\n    .temp\n    .DS_Store\n    bundle\n    .bundle\n    .swc\n    .terraform\n    .terragrunt-cache\n    .serverless\n    elm-stuff\n    .stack-work\n    .cabal-sandbox\n    .cargo\n    bower_components\n    .godot\n    .import\n  generated_filter: enabled\n  generated_skip_events: 0\n  language_coverage: 0 languages\n  stale_files: 0 (tracked in store, not indexed)\n",
+        "error": null,
+        "isError": false
+      },
+      "symbol": {
+        "ms": 30000.0,
+        "text": "x * symbol - index scan still in progress (state=walking) \u00e2\u20ac\u201d refusing to answer from an incomplete index. Retry shortly, or poll codedb_status.  30.0s \nerror: index scan still in progress (state=walking) \u00e2\u20ac\u201d refusing to answer from an incomplete index. Retry shortly, or poll codedb_status.",
+        "error": null,
+        "isError": true,
+        "response_chars": 291
+      },
+      "search": {
+        "ms": 30031.0,
+        "text": "x * search - index scan still in progress (state=walking) \u00e2\u20ac\u201d refusing to answer from an incomplete index. Retry shortly, or poll codedb_status.  30.0s \nerror: index scan still in progress (state=walking) \u00e2\u20ac\u201d refusing to answer from an incomplete index. Retry shortly, or poll codedb_status.",
+        "error": null,
+        "isError": true,
+        "response_chars": 291
+      },
+      "callers": {
+        "ms": 30031.0,
+        "text": "x * callers - index scan still in progress (state=walking) \u00e2\u20ac\u201d refusing to answer from an incomplete index. Retry shortly, or poll codedb_status.  30.0s \nerror: index scan still in progress (state=walking) \u00e2\u20ac\u201d refusing to answer from an incomplete index. Retry shortly, or poll codedb_status.",
+        "error": null,
+        "isError": true,
+        "response_chars": 292
+      },
+      "stderr_tail": [
+        "info: codedb mcp: ctx.root=C:\\repos\\autumn files=0 data=C:\\Users\\jwvol/.codedb/projects/74d0a1695dcd031f scan=walking"
+      ]
+    },
+    {
+      "root": "C:\\repos\\credo_main\\src\\Autumn",
+      "head": "3ec899a545dc3f039a9b9b3965076323eef76219",
+      "initialize_ms": 328.0,
+      "initialize_ok": true,
+      "status": {
+        "ms": 16.0,
+        "text": "v * status  0 files - seq 0\ncodedb status:\n  seq: 0\n  files: 0\n  outlines: 0\n  contents_cached: 0\n  trigram_index: heap (0 files)\n  index_memory: 0KB\n  scan: walking\n  memory_budget: 6144MB\n  ignore_patterns: 0\n  codedbignore_hash: none\n  built_in_skip_dirs: 51\n    .git\n    .claude\n    .codedb\n    node_modules\n    .zig-cache\n    zig-out\n    .next\n    .nuxt\n    .svelte-kit\n    dist\n    build\n    .build\n    .output\n    out\n    __pycache__\n    .venv\n    venv\n    .env\n    .tox\n    .mypy_cache\n    .pytest_cache\n    .ruff_cache\n    target\n    .gradle\n    .idea\n    .vs\n    vendor\n    Pods\n    .dart_tool\n    .pub-cache\n    coverage\n    .nyc_output\n    .turbo\n    .parcel-cache\n    .cache\n    .tmp\n    .temp\n    .DS_Store\n    bundle\n    .bundle\n    .swc\n    .terraform\n    .terragrunt-cache\n    .serverless\n    elm-stuff\n    .stack-work\n    .cabal-sandbox\n    .cargo\n    bower_components\n    .godot\n    .import\n  generated_filter: enabled\n  generated_skip_events: 0\n  language_coverage: 0 languages\n  stale_files: 0 (tracked in store, not indexed)\n",
+        "error": null,
+        "isError": false
+      },
+      "tree_summary": "v * tree  1096 files  13.1s \nAPI.Mapping/\n  Account.fs  f_sharp  225L  42 sym - 29 functions; 12 imports\n  AccountCommon.fs  f_sharp  200L  25 sym - 13 functions; 7 imports\n  AnchorAccount.fs  f_sharp  168L  23 sym - 15 functions; 6 imports\n  AnchorClient.fs  f_sharp  370L  40 sym - 30 functions; 6 ",
+      "symbol": {
+        "ms": 31.0,
+        "text": "v * symbol - fn QueryProcess   1.5ms \n1 results for 'QueryProcess':\n  EquinoxLib/Compiler.fs:762 (function)  // let QueryProcess<'a> = \r\n\nindex: root=C:\\repos\\credo_main\\src\\Autumn scan=ready seq=1790\n-> next: codedb_edit to modify this symbol",
+        "error": null,
+        "isError": false,
+        "response_chars": 243
+      },
+      "search": {
+        "ms": 16.0,
+        "text": "v * search  'QueryProcess' - 5 results\n5 results for 'QueryProcess':\n  Bloomberg.Mapping/Security/Security2.fs:67:         QueryProcess<TermsAndConditions.Instrument_Loading>\r\n  BloombergRules.Mapping/Common.fs:186:     //    //    QueryProcess<Bloomberg.DescriptiveInfo>\r\n  EquinoxTests/CrossApply.fs:228:                 QueryProcess<Portfolio.AccountContact>\r\n  EquinoxTests/MappingRules.fs:1273:                         <@ QueryProcess<ETL.SlxContactAccountReferrer>                \r\n  MyCredoPro.ModelPortfolio.Mapping/DynamicModelLoader.fs:148:             QueryProcess<ETL.DynamicModel>                \r\n\n(+more matches exist \u00e2\u20ac\u201d refine query, add path_glob, or raise max_results)\nindex: root=C:\\repos\\credo_main\\src\\Autumn scan=ready seq=1796\n-> next: add scope=true to see enclosing functions",
+        "error": null,
+        "isError": false,
+        "response_chars": 801
+      },
+      "callers": {
+        "ms": 15.0,
+        "text": "v * callers   2.3ms \n0 call sites for 'QueryProcess':\n\nindex: root=C:\\repos\\credo_main\\src\\Autumn scan=ready seq=1802",
+        "error": null,
+        "isError": false,
+        "response_chars": 117
+      },
+      "stderr_tail": [
+        "info: codedb mcp: ctx.root=C:\\repos\\credo_main\\src\\Autumn files=0 data=C:\\Users\\jwvol/.codedb/projects/17bd90fa36b57baa scan=walking",
+        "info: codedb dispatch: codedb_tree total 13164ms (project=default)"
+      ]
+    }
+  ]
+}

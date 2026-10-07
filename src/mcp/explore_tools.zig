@@ -1026,6 +1026,68 @@ pub fn handleWord(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
     }
 }
 
+/// One candidate/filter/limit path for callers, relations and query steps.
+/// A max+1 request lets callers report truncation without starving the filter.
+pub fn collectCallers(explorer: *Explorer, alloc: std.mem.Allocator, name: []const u8, defs: []const explore_mod.SymbolResult, mode: []const u8, limit: usize, path_glob: ?[]const u8, include_generated: bool, file_set: ?[]const []const u8) ![]const Explorer.ScopedSearchResult {
+    var result: std.ArrayList(Explorer.ScopedSearchResult) = .empty;
+    errdefer {
+        for (result.items) |r| { alloc.free(r.path); alloc.free(r.line_text); if (r.scope_name) |n| alloc.free(n); }
+        result.deinit(alloc);
+    }
+    explorer.mu.lockShared();
+    defer explorer.mu.unlockShared();
+    var candidates = std.StringHashMap(void).init(alloc);
+    defer candidates.deinit();
+    const use_words = explorer.word_index_complete and name.len >= 2 and name.len <= 512 and std.mem.indexOfScalar(u8, name, '.') == null;
+    if (use_words) for (explorer.word_index.search(name)) |hit| {
+        try candidates.put(explorer.word_index.hitPath(hit), {});
+    };
+    var paths: std.ArrayList([]const u8) = .empty;
+    defer paths.deinit(alloc);
+    var iter = explorer.outlines.keyIterator();
+    while (iter.next()) |p| {
+        if (use_words and !candidates.contains(p.*)) continue;
+        if (path_glob) |g| if (!globMatch(g, p.*)) continue;
+        if (!include_generated and skip_rules.isGeneratedPath(p.*)) continue;
+        if (file_set) |set| {
+            var found = false;
+            for (set) |candidate| if (std.mem.eql(u8, p.*, candidate)) { found = true; break; };
+            if (!found) continue;
+        }
+        try paths.append(alloc, p.*);
+    }
+    std.mem.sort([]const u8, paths.items, {}, struct { fn less(_: void, a: []const u8, b: []const u8) bool { return std.mem.lessThan(u8, a, b); } }.less);
+    for (paths.items) |path| {
+        const lang = explore_mod.detectLanguage(path);
+        if (!langHasCallSites(lang)) continue;
+        const content = explorer.readContentForSearch(path, alloc) orelse continue;
+        defer content.deinit();
+        if (std.mem.indexOf(u8, content.data, name) == null) continue;
+        const code = try @import("../source_lexical.zig").mask(alloc, content.data, lang);
+        defer alloc.free(code);
+        var lines = std.mem.splitScalar(u8, content.data, '\n');
+        var masked_lines = std.mem.splitScalar(u8, code, '\n');
+        var line_num: u32 = 0;
+        while (lines.next()) |line| {
+            line_num += 1;
+            const masked = masked_lines.next() orelse break;
+            if (excludeAsDefinitionLine(path, line_num, line, name, defs)) continue;
+            const candidate = if (std.mem.eql(u8, mode, "text")) line else masked;
+            if (!callerLineMatches(candidate, name, lang, mode)) continue;
+            const scope = explorer.findEnclosingSymbolLocked(path, line_num);
+            const path_copy = try alloc.dupe(u8, path);
+            errdefer alloc.free(path_copy);
+            const text_copy = try alloc.dupe(u8, line);
+            errdefer alloc.free(text_copy);
+            const scope_name = if (scope) |s| try alloc.dupe(u8, s.name) else null;
+            errdefer if (scope_name) |n| alloc.free(n);
+            try result.append(alloc, .{ .path = path_copy, .line_num = line_num, .line_text = text_copy, .scope_name = scope_name, .scope_kind = if (scope) |s| s.kind else null, .scope_start = if (scope) |s| s.line_start else 0, .scope_end = if (scope) |s| s.line_end else 0 });
+            if (result.items.len >= limit) return result.toOwnedSlice(alloc);
+        }
+    }
+    return result.toOwnedSlice(alloc);
+}
+
 pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const name = getStr(args, "name") orelse {
         out.appendSlice(alloc, "error: missing 'name' argument") catch {};
@@ -1045,7 +1107,6 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
     }
     const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else 50;
     const include_generated = getBool(args, "include_generated");
-    const exclude_generated = !include_generated;
     const requested_mode = getStr(args, "match_mode");
     const json_mode = isJsonMode(args);
 
@@ -1074,14 +1135,11 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
     // In references mode, merge ranked content-search hits with the complete
     // structural type-reference set so recall isn't capped by content-search
     // ranking for common type names (e.g. an entity referenced in 600+ lines).
-    const orig = (if (std.mem.eql(u8, match_mode, "references"))
-        explorer.searchReferencesWithScope(name, alloc, max_results)
-    else
-        explorer.searchContentWithScope(name, alloc, max_results)) catch {
+    const orig = collectCallers(explorer, alloc, name, defs, match_mode, max_results + 1, getStr(args, "path_glob"), include_generated, null) catch {
         out.appendSlice(alloc, "error: search failed") catch {};
         return;
     };
-    const results = if (exclude_generated) filterGeneratedScoped(alloc, orig) else orig;
+    const results = orig[0..@min(orig.len, max_results)];
     defer {
         for (orig) |r| {
             alloc.free(r.line_text);
@@ -1089,23 +1147,17 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
             if (r.scope_name) |n2| alloc.free(n2);
         }
         alloc.free(orig);
-        if (results.ptr != orig.ptr) alloc.free(results);
     }
 
-    var shown: usize = 0;
-    for (results) |r| {
-        if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
-        if (excludeAsDefinitionLine(r.path, r.line_num, r.line_text, name, defs)) continue;
-        if (!callerLineMatches(r.line_text, name, explore_mod.detectLanguage(r.path), match_mode)) continue;
-        shown += 1;
-    }
+    const shown = results.len;
 
     if (json_mode) {
-        writeCallersJson(alloc, out, name, results, defs, match_mode, shown);
+        writeCallersJson(alloc, out, name, results, defs, match_mode, shown, orig.len > max_results);
         return;
     }
 
     const w = cio.listWriter(out, alloc);
+    if (orig.len > max_results) w.writeAll("truncated: true (more matching candidates exist)\n") catch {};
     const noun: []const u8 = if (std.mem.eql(u8, match_mode, "references"))
         "references"
     else if (std.mem.eql(u8, match_mode, "text"))
@@ -1114,9 +1166,6 @@ pub fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, 
         "call sites";
     w.print("{d} {s} for '{s}':\n", .{ shown, noun, name }) catch {};
     for (results) |r| {
-        if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
-        if (excludeAsDefinitionLine(r.path, r.line_num, r.line_text, name, defs)) continue;
-        if (!callerLineMatches(r.line_text, name, explore_mod.detectLanguage(r.path), match_mode)) continue;
         if (r.scope_name) |sn| {
             w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
                 r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
@@ -1230,12 +1279,16 @@ pub fn isTypeDefinitionKind(kind: explore_mod.SymbolKind) bool {
 pub fn effectiveMatchMode(requested: ?[]const u8, defs: []const explore_mod.SymbolResult) []const u8 {
     if (requested) |m| return m;
     for (defs) |d| {
+        // F# application and function-value uses are lexical references. Do not
+        // represent them as compiler-resolved invocations.
+        if (explore_mod.detectLanguage(d.path) == .f_sharp) return "references";
         if (isTypeDefinitionKind(d.symbol.kind)) return "references";
     }
     return "semantic";
 }
 
 pub fn isLikelyCallSite(line: []const u8, name: []const u8, lang: explore_mod.Language) bool {
+    if (lang == .f_sharp) return isLikelyTypeReference(line, name, lang);
     if (!langHasCallSites(lang)) return false;
     if (name.len == 0 or line.len < name.len) return false;
 
@@ -1408,7 +1461,8 @@ pub fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
             if (fwd) |deps| {
                 var result_list: std.ArrayList([]const u8) = .empty;
                 for (deps) |dep| {
-                    const d = alloc.dupe(u8, dep) catch continue;
+                    const resolved = @import("../explore/deps.zig").resolveLocalDependency(explorer, dep) orelse dep;
+                    const d = alloc.dupe(u8, resolved) catch continue;
                     result_list.append(alloc, d) catch {
                         alloc.free(d);
                         continue;
@@ -1498,10 +1552,7 @@ pub fn handleRelations(alloc: std.mem.Allocator, args: *const std.json.ObjectMap
     // definitions (class/interface/struct/enum/...).
     const match_mode = effectiveMatchMode(requested_mode, defs);
 
-    const callers = (if (std.mem.eql(u8, match_mode, "references"))
-        explorer.searchReferencesWithScope(name, alloc, max_results)
-    else
-        explorer.searchContentWithScope(name, alloc, max_results)) catch &.{};
+    const callers = collectCallers(explorer, alloc, name, defs, match_mode, max_results, getStr(args, "path_glob"), getBool(args, "include_generated"), null) catch &.{};
     defer {
         for (callers) |r| {
             alloc.free(r.line_text);
@@ -1665,9 +1716,9 @@ fn writeRelationsJson(
     const rel_why: []const u8 = if (rel_is_text)
         "text_mention"
     else if (rel_is_reference)
-        "type_reference"
+        "lexical_reference"
     else
-        "invocation";
+        "lexical_invocation";
     const rel_kind: []const u8 = if (rel_is_text)
         "caller_candidate"
     else if (rel_is_reference)
@@ -1929,17 +1980,19 @@ fn writeCallersJson(
     defs: []const explore_mod.SymbolResult,
     match_mode: []const u8,
     visible_total: usize,
+    truncated: bool,
 ) void {
     const w = cio.listWriter(out, alloc);
     const is_text = std.mem.eql(u8, match_mode, "text");
     const is_reference = std.mem.eql(u8, match_mode, "references");
-    const confidence: []const u8 = if (is_text) "low" else "high";
+    _ = defs;
+    const confidence: []const u8 = if (is_text) "low" else "medium";
     const why_matched: []const u8 = if (is_text)
         "text_mention"
     else if (is_reference)
-        "type_reference"
+        "lexical_reference"
     else
-        "invocation";
+        "lexical_invocation";
     const semantic_kind: []const u8 = if (is_text)
         "caller_candidate"
     else if (is_reference)
@@ -1953,10 +2006,6 @@ fn writeCallersJson(
     w.print("\",\"hits\":[", .{}) catch {};
     var first = true;
     for (results) |r| {
-        const lang = explore_mod.detectLanguage(r.path);
-        if (!langHasCallSites(lang)) continue;
-        if (excludeAsDefinitionLine(r.path, r.line_num, r.line_text, name, defs)) continue;
-        if (!callerLineMatches(r.line_text, name, lang, match_mode)) continue;
         if (!first) w.writeAll(",") catch {};
         first = false;
         writeSearchHitJson(
@@ -1972,7 +2021,7 @@ fn writeCallersJson(
             semantic_kind,
         );
     }
-    w.print("],\"summary\":{{\"total\":{d},\"truncated\":false}}}}", .{visible_total}) catch {};
+    w.print("],\"summary\":{{\"total\":{d},\"truncated\":{s}}}}}", .{ visible_total, if (truncated) "true" else "false" }) catch {};
 }
 
 fn writeSearchHitJson(

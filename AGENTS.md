@@ -21,10 +21,26 @@ python3 scripts/e2e_mcp_test.py \
     --project /path/to/codedb                          # E2E MCP scenarios
 ```
 
-`e2e_mcp_test.py` covers three scenarios:
+`e2e_mcp_test.py` covers eight scenarios:
 1. **issue-346 regression** — spawn from cwd=`/`, roots handshake, tools return real data
 2. **Normal mode** — explicit positional root (`codedb <path> mcp`), immediate scan
 3. **No-roots client** — spawn from `/` with no roots capability, stays alive gracefully
+4. **Root canonicalization** — localhost URI, percent encoding, trailing slash, and cache parity
+5. **Warm-start reconcile** — offline edits, additions, and deletions without force indexing
+6. **Worktree branch switching** — HEAD/ref changes trigger a bounded refresh
+7. **Memory budget** — partial indexing remains queryable and reports its terminal state
+8. **Force reindex** — all stale cache artifacts are removed before rebuilding
+
+For the full local release check, also run:
+
+```bash
+python3 scripts/test-plan-integration.py --binary zig-out/bin/codedb
+powershell -File scripts/test-installers.ps1
+bash scripts/test-installers.sh
+```
+
+These use isolated synthetic fixtures and a local telemetry endpoint. They do
+not register clients or contact an analytics service.
 
 ## Security-sensitive areas
 

@@ -455,8 +455,8 @@ pub fn appendRerankTrace(self: *const Explorer, query: []const u8, results: []co
     @memcpy(buf[pos..][0..close.len], close);
     pos += close.len;
 
-    var file = std.Io.Dir.cwd().openFile(io_inst, path, .{ .mode = .write_only }) catch blk: {
-        break :blk std.Io.Dir.cwd().createFile(io_inst, path, .{ .truncate = false }) catch return;
+    var file = std.Io.Dir.cwd().openFile(io_inst, path, .{ .mode = .read_write }) catch blk: {
+        break :blk std.Io.Dir.cwd().createFile(io_inst, path, .{ .read = true, .truncate = false }) catch return;
     };
     var current_size = file.length(io_inst) catch {
         file.close(io_inst);
@@ -464,7 +464,7 @@ pub fn appendRerankTrace(self: *const Explorer, query: []const u8, results: []co
     };
     if (current_size >= size_limit) {
         file.close(io_inst);
-        file = std.Io.Dir.cwd().createFile(io_inst, path, .{ .truncate = true }) catch return;
+        file = std.Io.Dir.cwd().createFile(io_inst, path, .{ .read = true, .truncate = true }) catch return;
         current_size = 0;
     }
     defer file.close(io_inst);

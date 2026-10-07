@@ -256,7 +256,7 @@ test "disk index: writeToDisk with null git_head, readGitHead returns null" {
     try testing.expect(retrieved == null);
 }
 
-test "disk index: v1 format (no git_head) still loads and readGitHead returns null" {
+test "disk index: legacy policy index is rejected and readGitHead returns null" {
     const alloc = testing.allocator;
 
     var tmp = testing.tmpDir(.{});
@@ -293,12 +293,9 @@ test "disk index: v1 format (no git_head) still loads and readGitHead returns nu
     const git_head = try TrigramIndex.readGitHead(io, dir_path, alloc);
     try testing.expect(git_head == null);
 
-    // readFromDisk on a v1 file must still succeed (backward compat)
+    // Old indexes predate mandatory secret filtering and must rebuild.
     const loaded = TrigramIndex.readFromDisk(io, dir_path, alloc);
-    try testing.expect(loaded != null);
-    var loaded_ti = loaded.?;
-    defer loaded_ti.deinit();
-    try testing.expectEqual(@as(u32, 0), loaded_ti.fileCount());
+    try testing.expect(loaded == null);
 }
 
 test "bm25-persistence: writeToDisk/readFromDisk preserves total_tokens and doc_lengths" {

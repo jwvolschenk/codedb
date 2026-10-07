@@ -78,6 +78,7 @@ const FileState = struct {
 };
 
 const FileMap = std.StringHashMap(FileState);
+const ContentSweep = struct { offset: usize = 0, next_ms: i64 = 0 };
 
 /// Background thread: polls for incremental FS changes.
 pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, root: []const u8, shutdown: *std.atomic.Value(bool), scan_done: *std.atomic.Value(bool)) void {
@@ -91,6 +92,7 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
     }
 
     var known = FileMap.init(backing);
+    var content_sweep = ContentSweep{};
     defer {
         var iter = known.iterator();
         while (iter.next()) |kv| {
@@ -179,7 +181,8 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
     var poll_cycle: usize = 0;
 
     while (!shutdown.load(.acquire)) {
-        drainNotifyFile(io, store, explorer, queue, &known, root, backing);
+        // Shared temporary notification files are untrusted. Polling is the
+        // supported update channel until an authenticated per-root queue exists.
 
         cio.sleepMs(2 * std.time.ns_per_s / 1_000_000);
         poll_cycle +%= 1;
@@ -248,7 +251,7 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
         var cycle_arena = std.heap.ArenaAllocator.init(backing);
         defer cycle_arena.deinit();
 
-        incrementalDiff(io, store, explorer, queue, &known, root, backing, cycle_arena.allocator()) catch |err| {
+        incrementalDiff(io, store, explorer, queue, &known, root, backing, cycle_arena.allocator(), &content_sweep) catch |err| {
             std.log.err("watcher: diff failed: {}", .{err});
         };
     }
@@ -289,7 +292,7 @@ fn headWatchMtimesChanged(io: std.Io, head_watch: ?git_mod.HeadWatchPaths, mtime
 fn hashFile(io: std.Io, dir: std.Io.Dir, path: []const u8, size: u64) !u64 {
     if (skip_rules.shouldSkipFile(path)) return 0;
     if (size > skip_rules.max_indexed_file_bytes) return 0;
-    const file = dir.openFile(io, path, .{}) catch return std.math.maxInt(u64);
+    const file = project_file.open(io, dir, path) catch return std.math.maxInt(u64);
     defer file.close(io);
 
     var hasher = std.hash.Wyhash.init(0);
@@ -309,7 +312,7 @@ fn pushEventOrWait(queue: *EventQueue, event: FsEvent) void {
     _ = queue.push(event);
 }
 
-fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, persistent: std.mem.Allocator, tmp: std.mem.Allocator) !void {
+fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, persistent: std.mem.Allocator, tmp: std.mem.Allocator, sweep: *ContentSweep) !void {
     const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
     defer dir.close(io);
 
@@ -320,8 +323,12 @@ fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
 
     var walker = try FilteredWalker.init(io, dir, tmp);
     defer walker.deinit();
+    const now = cio.milliTimestamp();
+    var walked: usize = 0;
 
     while (try walker.next()) |entry| {
+        const verify = now >= sweep.next_ms and walked >= sweep.offset and walked - sweep.offset < 64;
+        walked += 1;
         const stat = dir.statFile(io, entry.path, .{}) catch continue;
         const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
 
@@ -329,7 +336,7 @@ fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
             const old = known_entry.value_ptr;
             old.seen = true;
 
-            if (old.mtime == mtime) continue;
+            if (old.mtime == mtime and old.size == stat.size and !verify) continue;
 
             var hash: u64 = 0;
             if (old.size == stat.size) {
@@ -362,6 +369,15 @@ fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
         }
     }
 
+    if (now >= sweep.next_ms) {
+        if (sweep.offset + 64 >= walked) {
+            sweep.offset = 0;
+            sweep.next_ms = now + 60_000;
+            explorer.scan_metrics.verification_finished_ms.store(cio.milliTimestamp(), .release);
+        } else sweep.offset += 64;
+        explorer.scan_metrics.verification_pending.store(if (sweep.offset == 0) 0 else walked -| sweep.offset, .release);
+    }
+
     var to_remove: std.ArrayList([]const u8) = .empty;
     defer to_remove.deinit(tmp);
 
@@ -387,9 +403,9 @@ fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
 /// applies identical filtering — do not fork a second copy of this logic.
 pub fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator, skip_trigram: bool) !void {
     _ = allocator;
-    if (skip_rules.shouldSkipFile(path)) return;
+    if (skip_rules.shouldSkipFile(path)) { explorer.removeFile(path); return; }
     const stat = try dir.statFile(io, path, .{});
-    if (stat.size > skip_rules.max_indexed_file_bytes) return;
+    if (stat.size > skip_rules.max_indexed_file_bytes) { explorer.removeFile(path); return; }
     var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer content_arena.deinit();
     const content = try project_file.readAlloc(io, dir, path, content_arena.allocator(), .limited(skip_rules.max_indexed_file_bytes));
@@ -399,7 +415,7 @@ pub fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: 
     }
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {
-        if (c == 0) return;
+        if (c == 0) { explorer.removeFile(path); return; }
     }
     const effective_skip_trigram = skip_trigram or (content.len > 64 * 1024);
     if (effective_skip_trigram) {
@@ -409,85 +425,8 @@ pub fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: 
     }
 }
 
-fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, alloc: std.mem.Allocator) void {
-    // Portable notify path (#591 Task 7): %TEMP% on Windows, $TMPDIR/tmp on
-    // POSIX — the old hardcoded /tmp/codedb-notify simply never worked on
-    // Windows (and ignored per-user TMPDIR on macOS).
-    var notify_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const notify_path = std.fmt.bufPrint(&notify_buf, "{s}/codedb-notify", .{cio.tempDir()}) catch return;
-    const file = std.Io.Dir.cwd().openFile(io, notify_path, .{ .mode = .read_write }) catch return;
-    defer file.close(io);
-
-    if (comptime builtin.os.tag != .windows) {
-        cio.flockFd(file.handle, cio.LOCK_EX);
-        defer cio.flockFd(file.handle, cio.LOCK_UN);
-    }
-
-    const file_len = file.length(io) catch return;
-    if (file_len == 0) return;
-    const cap: u64 = 64 * 1024;
-    const read_len: usize = @intCast(@min(file_len, cap));
-    const data = alloc.alloc(u8, read_len) catch return;
-    defer alloc.free(data);
-    const n = file.readPositionalAll(io, data, 0) catch return;
-    if (n == 0) return;
-    const data_slice = data[0..n];
-
-    var keep: std.ArrayList(u8) = .empty;
-    defer keep.deinit(alloc);
-    {
-        var scan = std.mem.splitScalar(u8, data_slice, '\n');
-        while (scan.next()) |line| {
-            const path = std.mem.trim(u8, line, " \t\r");
-            if (path.len == 0) continue;
-            if (notifyLineBelongsToOtherRoot(path, root)) {
-                keep.appendSlice(alloc, path) catch {};
-                keep.append(alloc, '\n') catch {};
-            }
-        }
-    }
-    file.setLength(io, 0) catch return;
-    if (keep.items.len > 0) {
-        file.writePositionalAll(io, keep.items, 0) catch {};
-    }
-
-    const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch return;
-    defer dir.close(io);
-
-    var lines = std.mem.splitScalar(u8, data_slice, '\n');
-    while (lines.next()) |line| {
-        const path = std.mem.trim(u8, line, " \t\r");
-        if (path.len == 0) continue;
-        if (notifyLineBelongsToOtherRoot(path, root)) continue;
-
-        const rel = if (std.mem.startsWith(u8, path, root))
-            std.mem.trimStart(u8, path[root.len..], "/")
-        else
-            path;
-
-        const stat = dir.statFile(io, rel, .{}) catch continue;
-        const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
-        if (known.getPtr(rel)) |existing| {
-            if (existing.mtime == mtime and existing.size == stat.size) continue;
-        }
-
-        indexFileContent(io, explorer, dir, rel, alloc, false) catch |err| {
-            if (err == error.SensitiveContent) _ = store.recordDelete(rel, 0) catch {};
-            continue;
-        };
-
-        const hash = hashFile(io, dir, rel, stat.size) catch continue;
-        if (known.getPtr(rel)) |existing| {
-            existing.mtime = mtime;
-            existing.size = stat.size;
-            existing.hash = hash;
-        }
-
-        if (FsEvent.init(rel, .modified, store.currentSeq())) |ev| {
-            _ = queue.push(ev);
-        }
-    }
-}
+// Shared temporary notification-file ingestion was removed: it lacked portable
+// ownership guarantees. Polling and bounded content verification are authoritative.
 
 /// True when `line` is an absolute path outside `root` — i.e. it belongs to a
 /// different project's watcher and must not be consumed here. Relative lines

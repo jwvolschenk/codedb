@@ -491,7 +491,7 @@ test "MCP 2026-07-28: discover_result is well-formed JSON advertising our versio
     defer parsed.deinit();
     const obj = &parsed.value.object;
     try testing.expectEqualStrings("complete", obj.get("resultType").?.string);
-    try testing.expect(obj.get("supportedVersions").?.array.items.len == 4);
+    try testing.expect(obj.get("supportedVersions").?.array.items.len == 5);
     try testing.expectEqualStrings("2026-07-28", obj.get("supportedVersions").?.array.items[0].string);
     try testing.expect(obj.get("_meta") != null);
 }

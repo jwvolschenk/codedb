@@ -72,7 +72,7 @@ pub fn canonicalizeRoot(io: std.Io, alloc: std.mem.Allocator, raw: []const u8) e
     // stays "/" (it will be denied by root_policy, but canonicalizeRoot itself
     // must leave it intact rather than returning an empty string).
     var end = rp.len;
-    while (end > 1 and (rp[end - 1] == '/' or rp[end - 1] == '\\')) end -= 1;
+    while (end > (if (@import("builtin").os.tag == .windows and rp.len >= 3 and rp[1] == ':') @as(usize, 3) else 1) and (rp[end - 1] == '/' or rp[end - 1] == '\\')) end -= 1;
     return alloc.dupe(u8, rp[0..end]) catch return error.OutOfMemory;
 }
 
@@ -102,6 +102,7 @@ pub fn cacheKey(canonical_root: []const u8) u64 {
 /// unchanged). Factored out so the fold logic is unit-testable on every
 /// platform — only the `cacheKey` dispatch above is gated on `builtin.os.tag`.
 pub fn foldForKey(byte: u8) u8 {
+    if (byte == '\\') return '/';
     if (byte >= 'A' and byte <= 'Z') return byte + 32;
     return byte;
 }
@@ -139,19 +140,7 @@ fn parseFileUri(alloc: std.mem.Allocator, uri: []const u8) UriError![]u8 {
             break :blk raw_path;
         } else {
             // Non-localhost authority.
-            switch (@import("builtin").os.tag) {
-                .windows => {
-                    // UNC path: //authority/path. Build it; percent-decoding is
-                    // applied below to the combined string via a decode of the
-                    // full reconstructed buffer.
-                    // NOTE: untested on this Linux box; see plan risk note
-                    // (Windows e2e needs a Windows CI runner).
-                    const combined = std.fmt.allocPrint(alloc, "//{s}{s}", .{ authority, raw_path }) catch return error.OutOfMemory;
-                    defer alloc.free(combined);
-                    return percentDecode(alloc, combined);
-                },
-                else => return error.InvalidUri,
-            }
+            return error.InvalidUri; // Network roots are intentionally unsupported.
         }
     };
 

@@ -2,8 +2,13 @@ const std = @import("std");
 const cio = @import("cio.zig");
 
 pub fn isExactOrChild(path: []const u8, prefix: []const u8) bool {
-    if (!std.mem.startsWith(u8, path, prefix)) return false;
-    return path.len == prefix.len or path[prefix.len] == '/';
+    if (path.len < prefix.len) return false;
+    for (path[0..prefix.len], prefix) |a, b| {
+        if (@import("builtin").os.tag == .windows) {
+            if (@import("root_resolve.zig").foldForKey(a) != @import("root_resolve.zig").foldForKey(b)) return false;
+        } else if (a != b) return false;
+    }
+    return path.len == prefix.len or path[prefix.len] == '/' or (@import("builtin").os.tag == .windows and path[prefix.len] == '\\');
 }
 
 pub fn isIndexableRoot(path: []const u8) bool {

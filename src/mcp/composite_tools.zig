@@ -444,17 +444,17 @@ pub fn handleIndex(
         const in_repo_snap = std.fmt.allocPrint(alloc, "{s}/codedb.snapshot", .{abs_path}) catch null;
         if (in_repo_snap) |snap| {
             defer alloc.free(snap);
-            if (std.Io.Dir.cwd().deleteFile(io, snap)) {
+            if (cio.posixGetenv("CODEDB_CACHE_DIR") == null) if (std.Io.Dir.cwd().deleteFile(io, snap)) {
                 force_report.appendSlice(alloc, "codedb.snapshot (repo)") catch {};
-            } else |_| {}
+            } else |_| {};
         }
         // Every artifact in the canonical central cache dir (cacheKey matches
         // getDataDir, so this is the dir the next scan will actually use).
-        if (cio.getHomeDir()) |home_dir| {
-            const hash = root_resolve.cacheKey(abs_path);
+        if (@import("../cli/disk_cache.zig").getDataDir(io, alloc, abs_path)) |cache_dir| {
+            defer alloc.free(cache_dir);
             const artifacts = [_][]const u8{ "codedb.snapshot", "trigram.postings", "trigram.lookup", "word.index", "data.log" };
             for (artifacts) |artifact| {
-                const p = std.fmt.allocPrint(alloc, "{s}/.codedb/projects/{x}/{s}", .{ home_dir, hash, artifact }) catch continue;
+                const p = std.fmt.allocPrint(alloc, "{s}/{s}", .{ cache_dir, artifact }) catch continue;
                 defer alloc.free(p);
                 if (std.Io.Dir.cwd().deleteFile(io, p)) {
                     if (force_report.items.len > 0) force_report.appendSlice(alloc, ", ") catch {};
@@ -462,7 +462,7 @@ pub fn handleIndex(
                     force_report.appendSlice(alloc, " (cache)") catch {};
                 } else |_| {}
             }
-        }
+        } else |_| {}
     }
 
     const exe_path = std.process.executablePathAlloc(io, alloc) catch {
@@ -471,7 +471,12 @@ pub fn handleIndex(
     };
     defer alloc.free(exe_path);
 
-    const snapshot_path = std.fmt.allocPrint(alloc, "{s}/codedb.snapshot", .{abs_path}) catch {
+    const data_dir = @import("../cli/disk_cache.zig").getDataDir(io, alloc, abs_path) catch {
+        out.appendSlice(alloc, "error: cannot open cache directory") catch {};
+        return;
+    };
+    defer alloc.free(data_dir);
+    const snapshot_path = std.fmt.allocPrint(alloc, "{s}/codedb.snapshot", .{if (cio.posixGetenv("CODEDB_CACHE_DIR") != null) data_dir else abs_path}) catch {
         out.appendSlice(alloc, "error: alloc failed") catch {};
         return;
     };
@@ -499,6 +504,13 @@ pub fn handleIndex(
     }
 
     cache.invalidate(abs_path);
+    if (std.mem.eql(u8, abs_path, cache.default_path) and default_store.currentSeq() != 0) {
+        @import("../watcher/reconcile.zig").reconcileAll(io, default_explorer, default_store, abs_path, alloc) catch |err| {
+            const w = cio.listWriter(out, alloc);
+            w.print("error: snapshot built but live reconciliation failed: {s}", .{@errorName(err)}) catch {};
+            return;
+        };
+    }
     if (std.mem.eql(u8, abs_path, cache.default_path) and
         default_store.currentSeq() == 0 and
         (getScanState() == .loading_snapshot or getScanState() == .lazy))
@@ -545,8 +557,8 @@ pub fn handleIndex(
         out.appendSlice(alloc, "\nforce: deleted ") catch {};
         out.appendSlice(alloc, if (force_report.items.len > 0) force_report.items else "nothing (no artifacts found)") catch {};
     }
-    if (cio.getHomeDir()) |home_dir| {
-        const cache_line = std.fmt.allocPrint(alloc, "\ncache: {s}/.codedb/projects/{x}/", .{ home_dir, root_resolve.cacheKey(abs_path) }) catch null;
+    {
+        const cache_line = std.fmt.allocPrint(alloc, "\ncache: {s}/", .{data_dir}) catch null;
         if (cache_line) |cl| {
             defer alloc.free(cl);
             out.appendSlice(alloc, cl) catch {};

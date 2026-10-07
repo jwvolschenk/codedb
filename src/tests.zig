@@ -1,4 +1,5 @@
 comptime {
+    _ = @import("tests/upstream_plan.zig");
     _ = @import("tests/agent.zig");
     _ = @import("tests/bloom.zig");
     _ = @import("tests/concurrency.zig");

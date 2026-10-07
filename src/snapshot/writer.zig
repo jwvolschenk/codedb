@@ -443,7 +443,9 @@ pub fn writeSnapshotDual(
     output_path: []const u8,
     allocator: std.mem.Allocator,
 ) !void {
-    try writeSnapshot(io, explorer, root_path, output_path, allocator);
+    if (cio.posixGetenv("CODEDB_CACHE_DIR") == null or !isRootSnapshot(output_path, root_path)) {
+        try writeSnapshot(io, explorer, root_path, output_path, allocator);
+    }
     writeProjectCacheSnapshot(io, explorer, root_path, allocator) catch {};
 }
 
@@ -456,15 +458,10 @@ pub fn writeProjectCacheSnapshot(
     // cacheKey, not raw Wyhash — must agree with disk_cache.getDataDir or the
     // central snapshot lands in a dir the loader never looks in (#591; the
     // divergence is only visible on macOS/Windows where cacheKey case-folds).
-    const hash = root_resolve.cacheKey(root_path);
-    const home_raw = cio.getHomeDir() orelse return;
-    const home = allocator.dupe(u8, home_raw) catch return;
-    defer allocator.free(home);
-    const secondary = std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch return;
-    defer allocator.free(secondary);
-
-    const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash }) catch return;
+    const dir_path = try @import("../cli/disk_cache.zig").getDataDir(io, allocator, root_path);
     defer allocator.free(dir_path);
+    const secondary = try std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{dir_path});
+    defer allocator.free(secondary);
     std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
 
     const proj_txt = std.fmt.allocPrint(allocator, "{s}/project.txt", .{dir_path}) catch return;

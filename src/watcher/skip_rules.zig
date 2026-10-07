@@ -70,6 +70,11 @@ pub const skip_dirs = [_][]const u8{
     ".git",
     ".claude",
     ".codedb",
+    ".worktrees",
+    ".devenv",
+    ".jj",
+    ".graff",
+    ".harness",
     "node_modules",
     ".zig-cache",
     "zig-out",
@@ -166,6 +171,7 @@ pub fn shouldSkip(path: []const u8) bool {
     var rest = path;
     while (true) {
         for (skip_dirs) |skip| {
+            if (isOptionalToolDir(skip) and !excludeToolDirs()) continue;
             if (rest.len >= skip.len and
                 std.mem.eql(u8, rest[0..skip.len], skip) and
                 (rest.len == skip.len or rest[skip.len] == '/'))
@@ -180,9 +186,22 @@ pub fn shouldSkip(path: []const u8) bool {
 
 pub fn shouldSkipDir(name: []const u8) bool {
     for (skip_dirs) |skip| {
+        if (isOptionalToolDir(skip) and !excludeToolDirs()) continue;
         if (std.mem.eql(u8, name, skip)) return true;
     }
     return false;
+}
+
+fn isOptionalToolDir(name: []const u8) bool {
+    for ([_][]const u8{ ".worktrees", ".devenv", ".jj", ".graff", ".harness" }) |d| {
+        if (std.mem.eql(u8, name, d)) return true;
+    }
+    return false;
+}
+
+fn excludeToolDirs() bool {
+    const v = @import("../cio.zig").posixGetenv("CODEDB_EXCLUDE_TOOL_DIRS") orelse return true;
+    return !std.mem.eql(u8, v, "0") and !std.ascii.eqlIgnoreCase(v, "false");
 }
 
 const skip_extensions = [_][]const u8{

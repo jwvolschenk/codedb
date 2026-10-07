@@ -590,6 +590,8 @@ test "regression-142: trigram disk roundtrip preserves results" {
 }
 
 test "issue-164: mmap trigram index returns same candidates as heap index" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // POSIX mmap only; heap persistence tested separately.
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();

@@ -25,7 +25,7 @@ pub fn findSymbol(self: *Explorer, name: []const u8, allocator: std.mem.Allocato
             var param_types: []const []const u8 = &.{};
             if (self.outlines.getPtr(loc.path)) |outline| {
                 for (outline.symbols.items) |sym| {
-                    if (sym.line_start == loc.line_start and symbolNameMatches(sym.name, name)) {
+                    if (sym.line_start == loc.line_start and (symbolNameMatches(sym.name, name) or std.mem.endsWith(u8, name, sym.name))) {
                         detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null;
                         decorators = try Explorer.cloneDecorators(allocator, sym.decorators);
                         return_type = if (sym.return_type) |rt| try allocator.dupe(u8, rt) else null;
@@ -106,7 +106,7 @@ pub fn findAllSymbols(self: *Explorer, name: []const u8, allocator: std.mem.Allo
             var param_types: []const []const u8 = &.{};
             if (self.outlines.getPtr(loc.path)) |outline| {
                 for (outline.symbols.items) |sym| {
-                    if (sym.line_start == loc.line_start and symbolNameMatches(sym.name, name)) {
+                    if (sym.line_start == loc.line_start and (symbolNameMatches(sym.name, name) or std.mem.endsWith(u8, name, sym.name))) {
                         detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null;
                         decorators = try Explorer.cloneDecorators(allocator, sym.decorators);
                         return_type = if (sym.return_type) |rt| try allocator.dupe(u8, rt) else null;
@@ -166,6 +166,10 @@ pub fn findAllSymbols(self: *Explorer, name: []const u8, allocator: std.mem.Allo
 pub fn getImportedBy(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
     self.mu.lockShared();
     defer self.mu.unlockShared();
+    return getImportedByLocked(self, path, allocator);
+}
+
+fn getImportedByLocked(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
     const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
     const stem = dependency_graph.fileStem(basename);
     // Ambiguity guard (mirrors upstream #572/#588): a bare basename/stem
@@ -180,19 +184,83 @@ pub fn getImportedBy(self: *Explorer, path: []const u8, allocator: std.mem.Alloc
         if (std.mem.eql(u8, kb, basename)) basename_count += 1;
         if (std.mem.eql(u8, dependency_graph.fileStem(kb), stem)) stem_count += 1;
     }
-    return self.dep_graph.getImportedBy(path, allocator, basename_count > 1, stem_count > 1);
+    const legacy = try self.dep_graph.getImportedBy(path, allocator, basename_count > 1, stem_count > 1);
+    defer allocator.free(legacy);
+    var results: std.ArrayList([]const u8) = .empty;
+    errdefer { for (results.items) |p| allocator.free(p); results.deinit(allocator); }
+    try results.appendSlice(allocator, legacy);
+    var edges = self.dep_graph.reverse.iterator();
+    while (edges.next()) |edge| {
+        if (!std.mem.startsWith(u8, edge.key_ptr.*, "local:")) continue;
+        const resolved = resolveLocalDependency(self, edge.key_ptr.*) orelse continue;
+        if (!std.mem.eql(u8, path, resolved)) continue;
+        var importers = edge.value_ptr.keyIterator();
+        while (importers.next()) |importer| {
+            var exists = false;
+            for (results.items) |p| if (std.mem.eql(u8, p, importer.*)) { exists = true; break; };
+            if (!exists) try results.append(allocator, try allocator.dupe(u8, importer.*));
+        }
+    }
+    return results.toOwnedSlice(allocator);
+}
+
+/// Resolve local imports against the current indexed corpus, independent of
+/// scan order. Multiple candidates remain unresolved rather than first-hit.
+pub fn resolveLocalDependency(self: *Explorer, key: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, key, "local:")) return self.outlines.getKey(key);
+    const base = key[6..];
+    if (self.outlines.getKey(base)) |exact| return exact;
+    var resolved: ?[]const u8 = null;
+    for ([_][]const u8{ ".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs", ".cts", ".cjs", "/index.ts", "/index.tsx", "/index.js", "/index.jsx" }) |suffix| {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const candidate = std.fmt.bufPrint(&buf, "{s}{s}", .{base, suffix}) catch continue;
+        if (self.outlines.getKey(candidate)) |found| {
+            if (resolved != null) return null;
+            resolved = found;
+        }
+    }
+    return resolved;
+}
+
+// Resolve each hop against the current corpus. Local import keys never
+// become basename guesses, and deletions/ambiguity stop traversal.
+fn transitiveResolved(self: *Explorer, path: []const u8, allocator: std.mem.Allocator, depth_limit: ?u32, forward: bool) ![]const []const u8 {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var seen = std.StringHashMap(void).init(a);
+    const Node = struct { path: []const u8, depth: u32 };
+    var queue: std.ArrayList(Node) = .empty;
+    try queue.append(a, .{ .path = path, .depth = 0 });
+    try seen.put(path, {});
+    var result: std.ArrayList([]const u8) = .empty;
+    errdefer { for (result.items) |p| allocator.free(p); result.deinit(allocator); }
+    var head: usize = 0;
+    while (head < queue.items.len) : (head += 1) {
+        const node = queue.items[head];
+        if (node.depth >= (depth_limit orelse 128)) continue;
+        const edges = if (forward) self.dep_graph.getForwardDeps(node.path) orelse &.{} else try getImportedByLocked(self, node.path, a);
+        for (edges) |edge| {
+            const resolved = if (forward) resolveLocalDependency(self, edge) orelse edge else edge;
+            if (seen.contains(resolved)) continue;
+            try seen.put(resolved, {});
+            try result.append(allocator, try allocator.dupe(u8, resolved));
+            if (self.outlines.contains(resolved)) try queue.append(a, .{ .path = resolved, .depth = node.depth + 1 });
+        }
+    }
+    return result.toOwnedSlice(allocator);
 }
 
 pub fn getTransitiveDependents(self: *Explorer, path: []const u8, allocator: std.mem.Allocator, max_depth: ?u32) ![]const []const u8 {
     self.mu.lockShared();
     defer self.mu.unlockShared();
-    return self.dep_graph.getTransitiveDependents(path, allocator, max_depth);
+    return transitiveResolved(self, path, allocator, max_depth, false);
 }
 
 pub fn getTransitiveDependencies(self: *Explorer, path: []const u8, allocator: std.mem.Allocator, max_depth: ?u32) ![]const []const u8 {
     self.mu.lockShared();
     defer self.mu.unlockShared();
-    return self.dep_graph.getTransitiveDependencies(path, allocator, max_depth);
+    return transitiveResolved(self, path, allocator, max_depth, true);
 }
 
 pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator, limit: usize) ![]const []const u8 {
@@ -244,6 +312,8 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
 }
 
 pub fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !void {
+    var temporary = std.heap.ArenaAllocator.init(self.allocator);
+    defer temporary.deinit();
     var deps: std.ArrayList([]const u8) = .empty;
     errdefer deps.deinit(self.allocator);
 
@@ -271,7 +341,9 @@ pub fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) 
             }
         }
 
-        const dep_key = resolveDependencyKey(path, imp, self.allocator) orelse continue;
+        const is_js = outline.language == .javascript or outline.language == .typescript;
+        const alias = if (is_js) self.tsconfig_paths.resolve(temporary.allocator(), imp) else null;
+        const dep_key = if (alias) |key| DependencyKey{ .key = key } else resolveDependencyKey(path, imp, temporary.allocator()) orelse continue;
         const gop = try seen.getOrPut(dep_key.key);
         if (gop.found_existing) continue;
         try deps.append(self.allocator, dep_key.key);
@@ -467,12 +539,14 @@ pub fn resolveDependencyKey(path: []const u8, imp: []const u8, allocator: std.me
         defer allocator.free(joined);
 
         const normalized = parse_utils.normalizePath(joined, allocator) orelse return null;
-        allocator.free(normalized);
-        const basename = if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |sep| trimmed[sep + 1 ..] else trimmed;
-        if (basename.len == 0) return null;
-        return .{ .key = basename };
+        if (!@import("../path_safety.zig").isPathSafe(normalized)) return null;
+        const lang = @import("types.zig").detectLanguage(path);
+        if (lang == .javascript or lang == .typescript) return .{ .key = std.fmt.allocPrint(allocator, "local:{s}", .{normalized}) catch return null };
+        return .{ .key = normalized };
     }
 
+    const lang = @import("types.zig").detectLanguage(path);
+    if (lang == .javascript or lang == .typescript) return .{ .key = std.fmt.allocPrint(allocator, "external:{s}", .{trimmed}) catch return null };
     return .{ .key = trimmed };
 }
 
@@ -497,6 +571,23 @@ pub fn rebuildSymbolIndexFor(self: *Explorer, path: []const u8, outline: *FileOu
             .line_start = sym.line_start,
             .line_end = sym.line_end,
         }) catch {};
+
+        if (outline.language == .c_sharp or outline.language == .f_sharp) {
+            if (qualifiedName(outline, sym, self.allocator)) |qualified| {
+                defer self.allocator.free(qualified);
+                if (!std.mem.eql(u8, qualified, sym.name)) {
+                    const alias = self.symbol_index.getOrPut(qualified) catch continue;
+                    if (!alias.found_existing) {
+                        alias.key_ptr.* = self.allocator.dupe(u8, qualified) catch {
+                            _ = self.symbol_index.remove(qualified);
+                            continue;
+                        };
+                        alias.value_ptr.* = .empty;
+                    }
+                    alias.value_ptr.append(self.allocator, .{ .path = path, .kind = sym.kind, .line_start = sym.line_start, .line_end = sym.line_end }) catch {};
+                }
+            } else |_| {}
+        }
 
         // For SQL files, also register the bare object name as an alias.
         // This enables codedb_symbol(name="vPosition") to find [Holding].[vPosition].
@@ -532,6 +623,27 @@ pub fn rebuildSymbolIndexFor(self: *Explorer, path: []const u8, outline: *FileOu
             }
         }
     }
+}
+
+/// Lexical identity, not compiler binding. A qualified lookup retains every
+/// matching path/line (including partial types and same-name overloads).
+pub fn qualifiedName(outline: *const FileOutline, sym: Symbol, alloc: std.mem.Allocator) ![]u8 {
+    var name: std.ArrayList(u8) = .empty;
+    errdefer name.deinit(alloc);
+    for (outline.symbols.items) |parent| {
+        if (parent.line_start >= sym.line_start) continue;
+        const detail = parent.detail orelse "";
+        const namespace = std.mem.startsWith(u8, detail, "namespace ");
+        const module = outline.language == .f_sharp and std.mem.startsWith(u8, detail, "module ");
+        const file_scope = (namespace and (std.mem.endsWith(u8, detail, ";") or outline.language == .f_sharp)) or (module and std.mem.indexOfScalar(u8, detail, '=') == null);
+        const container = parent.kind == .class_def or parent.kind == .struct_def or parent.kind == .interface_def or namespace or module;
+        if (!container or (!file_scope and parent.line_end < sym.line_start)) continue;
+        if (namespace and file_scope) name.clearRetainingCapacity();
+        try name.appendSlice(alloc, parent.name);
+        try name.append(alloc, '.');
+    }
+    try name.appendSlice(alloc, sym.name);
+    return name.toOwnedSlice(alloc);
 }
 
 /// Rebuild TypeIndex and TypeGraph from all loaded outlines.

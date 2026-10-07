@@ -45,9 +45,11 @@ detect_platform() {
 
 # ── Check or install Zig ─────────────────────────────────────────────────
 ensure_zig() {
+    [ "$ZIG_VERSION" = "0.16.0" ] || die "Only the verified Zig 0.16.0 toolchain is supported"
     if command -v zig >/dev/null 2>&1; then
         local current
         current="$(zig version 2>/dev/null | head -1)"
+        [ "$current" = "$ZIG_VERSION" ] || die "Expected Zig $ZIG_VERSION, found $current"
         ok "Zig found: ${current}"
         return
     fi
@@ -55,17 +57,22 @@ ensure_zig() {
     info "Zig not found — installing Zig ${ZIG_VERSION}..."
 
     local platform="$1"
-    local zig_archive="zig-${platform}-${ZIG_VERSION}.tar.xz"
+    local zig_platform="${platform/darwin/macos}"
+    local zig_archive="zig-${zig_platform}-${ZIG_VERSION}.tar.xz"
     local zig_url="https://ziglang.org/download/${ZIG_VERSION}/${zig_archive}"
     local zig_dir="${BUILD_DIR}/zig"
 
     mkdir -p "$zig_dir"
     info "Downloading ${zig_url}..."
-    curl -fsSL "$zig_url" -o "${BUILD_DIR}/${zig_archive}"
-    tar -xf "${BUILD_DIR}/${zig_archive}" -C "$zig_dir"
-    rm -f "${BUILD_DIR}/${zig_archive}"
+    (
+        tmp="$(mktemp "${BUILD_DIR}/zig-download.XXXXXXXX")"
+        trap 'rm -f "$tmp"' EXIT
+        curl -fsSL "$zig_url" -o "$tmp"
+        bash "${SCRIPT_DIR}/verify-sha256.sh" "$tmp" "$zig_archive" "${SCRIPT_DIR}/zig-0.16.0-sha256.txt"
+        tar -xf "$tmp" -C "$zig_dir"
+    )
 
-    export PATH="${zig_dir}/zig-${platform}-${ZIG_VERSION}:${PATH}"
+    export PATH="${zig_dir}/zig-${zig_platform}-${ZIG_VERSION}:${PATH}"
     ok "Zig installed: $(zig version)"
 }
 
@@ -131,4 +138,4 @@ main() {
     echo ""
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi

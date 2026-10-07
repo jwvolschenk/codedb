@@ -320,6 +320,13 @@ coverage/
 
 All matching is **case-insensitive**.
 
+Nested `.gitignore` files and `.git/info/exclude` are applied during cold scans,
+live reconciliation, and live listings. A later negation can re-include a file
+when its parent directory is still traversable. `.codedbignore` is evaluated
+after Git rules, but mandatory sensitive-file and security exclusions always
+win. Use `CODEDB_EXCLUDE_TOOL_DIRS=0` when a project intentionally contains
+`.worktrees`, `.devenv`, `.jj`, `.graff`, or `.harness` source directories.
+
 **Tips:**
 - Use `*.ext` for file types, not full paths
 - Use directory names without trailing path for broad matching (`vendor/` not `src/vendor/`)
@@ -393,6 +400,20 @@ max_index_memory_mb = 6144
 ```
 
 </details>
+
+### Telemetry and local-only operation
+
+Telemetry is disabled by default. Set `CODEDB_TELEMETRY=1` (or `true`/`yes`)
+to record aggregate local events. `CODEDB_NO_TELEMETRY=1` and the MCP
+`--no-telemetry` option override opt-in. No upload destination is configured
+by default; an explicit `CODEDB_TELEMETRY_URL` is required, and failed uploads
+remain on disk. See [`docs/telemetry.md`](docs/telemetry.md) for the event
+fields and local mock-endpoint test.
+
+MCP exposes the full compatibility tool set by default. Set
+`CODEDB_TOOL_PROFILE=navigation` for the smaller read-only navigation profile;
+tool availability remains explicit and additive. The profile does not enable
+remote queries or hosted embeddings.
 
 ### Settings reference
 

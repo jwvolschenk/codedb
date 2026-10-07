@@ -46,7 +46,8 @@ pub const DependencyGraph = struct {
         gop.value_ptr.* = deps;
 
         // Add reverse edges: for each dep, record that `path` depends on it
-        for (deps.items) |dep| {
+        for (deps.items) |*dep_ptr| {
+            const dep = dep_ptr.*;
             const rev_gop = try self.reverse.getOrPut(dep);
             if (!rev_gop.found_existing) {
                 // The map must OWN this key (#586 pattern): `dep` is a slice
@@ -61,6 +62,9 @@ pub const DependencyGraph = struct {
                 rev_gop.value_ptr.* = std.StringHashMap(void).init(self.allocator);
             }
             try rev_gop.value_ptr.put(path, {});
+            // Forward edges share the reverse map's stable, owned intern key.
+            // Resolved relative imports need not borrow parser storage.
+            dep_ptr.* = rev_gop.key_ptr.*;
         }
     }
 
@@ -151,6 +155,11 @@ pub const DependencyGraph = struct {
         if (!std.mem.eql(u8, stem, basename)) {
             if (stem_set) |rev_set| total += reverseSetAdditionalCount(rev_set, exact_set, basename_set);
         }
+        var local_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const local = std.fmt.bufPrint(&local_buf, "local:{s}", .{path}) catch return total;
+        if (self.reverse.get(local)) |set| total += set.count();
+        const extension = std.mem.lastIndexOfScalar(u8, local, '.') orelse return total;
+        if (self.reverse.get(local[0..extension])) |set| total += set.count();
         return total;
     }
 

@@ -27,6 +27,8 @@ pub const ManifestKind = enum {
     cargo_toml,
     requirements_txt,
     build_zig_zon,
+    dotnet_project,
+    dotnet_solution,
 
     pub fn label(self: ManifestKind) []const u8 {
         return switch (self) {
@@ -35,6 +37,8 @@ pub const ManifestKind = enum {
             .cargo_toml => "Cargo.toml (cargo)",
             .requirements_txt => "requirements.txt (pip)",
             .build_zig_zon => "build.zig.zon (zig)",
+            .dotnet_project => ".NET project (unevaluated local facts)",
+            .dotnet_solution => ".NET solution membership",
         };
     }
 };
@@ -66,6 +70,8 @@ pub fn detectManifestKind(basename: []const u8) ?ManifestKind {
     if (std.mem.eql(u8, basename, "Cargo.toml")) return .cargo_toml;
     if (std.mem.eql(u8, basename, "requirements.txt")) return .requirements_txt;
     if (std.mem.eql(u8, basename, "build.zig.zon")) return .build_zig_zon;
+    if (std.mem.endsWith(u8, basename, ".csproj") or std.mem.endsWith(u8, basename, ".fsproj")) return .dotnet_project;
+    if (std.mem.endsWith(u8, basename, ".sln")) return .dotnet_solution;
     return null;
 }
 
@@ -78,6 +84,8 @@ pub fn parseManifest(kind: ManifestKind, content: []const u8, alloc: std.mem.All
         .cargo_toml => parseCargoToml(content, alloc),
         .requirements_txt => parseRequirementsTxt(content, alloc),
         .build_zig_zon => parseBuildZigZon(content, alloc),
+        .dotnet_project => parseDotnetProject(content, alloc),
+        .dotnet_solution => parseDotnetSolution(content, alloc),
     };
 }
 
@@ -90,6 +98,67 @@ pub fn freeDependencies(deps: []Dependency, alloc: std.mem.Allocator) void {
 }
 
 const DepList = std.ArrayList(Dependency);
+
+// Read declarations only: no XML entities, MSBuild tasks, imports, conditions,
+// globs or property expressions are evaluated. Source order retains F# Compile
+// ordering. These facts cannot imply that a conditional project is active.
+fn parseDotnetProject(content: []const u8, alloc: std.mem.Allocator) ParseError![]Dependency {
+    var out: DepList = .empty;
+    errdefer { for (out.items) |d| { alloc.free(d.name); alloc.free(d.spec); } out.deinit(alloc); }
+    var offset: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, content, offset, '<')) |start| {
+        if (out.items.len >= 4096) break;
+        if (std.mem.startsWith(u8, content[start..], "<!--")) {
+            offset = (std.mem.indexOfPos(u8, content, start + 4, "-->") orelse break) + 3;
+            continue;
+        }
+        const end = std.mem.indexOfScalarPos(u8, content, start, '>') orelse break;
+        offset = end + 1;
+        const tag = content[start + 1..end];
+        var kind: ?[]const u8 = null;
+        for ([_][]const u8{"ProjectReference", "PackageReference", "Compile"}) |k| {
+            if (std.mem.startsWith(u8, tag, k) and tag.len > k.len and std.ascii.isWhitespace(tag[k.len])) { kind = k; break; }
+        }
+        const k = kind orelse continue;
+        const name = xmlAttribute(tag[k.len..], "Include") orelse continue;
+        if (name.len > 4096) continue;
+        const spec = if (std.mem.eql(u8, k, "PackageReference")) xmlAttribute(tag, "Version") orelse "unevaluated" else k;
+        try appendDep(&out, alloc, name, spec, if (std.mem.eql(u8, k, "PackageReference")) .runtime else .build);
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+fn xmlAttribute(tag: []const u8, key: []const u8) ?[]const u8 {
+    var offset: usize = 0;
+    while (std.mem.indexOfPos(u8, tag, offset, key)) |start| {
+        offset = start + key.len;
+        if (start > 0 and !std.ascii.isWhitespace(tag[start - 1])) continue;
+        var rest = std.mem.trimStart(u8, tag[offset..], " \t\r\n");
+        if (rest.len == 0 or rest[0] != '=') continue;
+        rest = std.mem.trimStart(u8, rest[1..], " \t\r\n");
+        if (rest.len == 0 or (rest[0] != '"' and rest[0] != '\'')) continue;
+        const end = std.mem.indexOfScalarPos(u8, rest, 1, rest[0]) orelse return null;
+        return rest[1..end];
+    }
+    return null;
+}
+
+fn parseDotnetSolution(content: []const u8, alloc: std.mem.Allocator) ParseError![]Dependency {
+    var out: DepList = .empty;
+    errdefer { for (out.items) |d| { alloc.free(d.name); alloc.free(d.spec); } out.deinit(alloc); }
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (out.items.len >= 4096) break;
+        if (!std.mem.startsWith(u8, std.mem.trimStart(u8, line, " \t"), "Project(")) continue;
+        const equals = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        var fields = std.mem.splitScalar(u8, line[equals + 1..], ',');
+        _ = fields.next() orelse continue;
+        const path = std.mem.trim(u8, fields.next() orelse continue, " \t\r\"");
+        if (!std.mem.endsWith(u8, path, ".csproj") and !std.mem.endsWith(u8, path, ".fsproj")) continue;
+        try appendDep(&out, alloc, path, "solution_member", .build);
+    }
+    return out.toOwnedSlice(alloc);
+}
 
 fn appendDep(list: *DepList, alloc: std.mem.Allocator, name: []const u8, spec: []const u8, group: DepGroup) ParseError!void {
     const n = try alloc.dupe(u8, name);
