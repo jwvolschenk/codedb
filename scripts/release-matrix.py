@@ -118,7 +118,7 @@ def resources(proc):
     return {'rss': counters.WorkingSetSize, 'peak_rss': counters.PeakWorkingSetSize, 'cpu_s': seconds}
 
 class MCP:
-    def __init__(self, binary, root, cache, roots=False):
+    def __init__(self, binary, root, cache, roots=False, workers=None):
         cache.mkdir(parents=True, exist_ok=True)
         env = {**os.environ, 'HOME': str(cache), 'USERPROFILE': str(cache),
                'CODEDB_CACHE_DIR': str(cache / '.codedb'), 'CODEDB_NO_AUTO_UPDATE': '1',
@@ -126,7 +126,7 @@ class MCP:
                'CODEDB_MAX_MEMORY_MB': '4096', 'NO_COLOR': '1'}
         # Explicitly identical worker settings in both variants. Autumn's
         # eight-worker partial runs are retained separately as diagnostics.
-        env['CODEDB_SCAN_WORKERS'] = '1' if root.name == 'autumn' else '8'
+        env['CODEDB_SCAN_WORKERS'] = str(workers) if workers is not None else '1' if root.name == 'autumn' else '8'
         env.pop('CODEDB_TELEMETRY_URL', None)
         self.started = time.perf_counter()
         self.proc = subprocess.Popen([str(binary), str(root), 'mcp', '--no-telemetry'], cwd=REPO,
@@ -145,7 +145,11 @@ class MCP:
                 self.stderr.append(line.rstrip())
         threading.Thread(target=read, daemon=True).start()
         threading.Thread(target=errors, daemon=True).start()
-        self.init = self.rpc('initialize', {'protocolVersion': '2025-11-25', 'capabilities': {'roots': {'listChanged': True}} if roots else {}, 'clientInfo': {'name': 'release-matrix', 'version': '1'}})
+        try:
+            self.init = self.rpc('initialize', {'protocolVersion': '2025-11-25', 'capabilities': {'roots': {'listChanged': True}} if roots else {}, 'clientInfo': {'name': 'release-matrix', 'version': '1'}})
+        except Exception:
+            self.close()
+            raise
         self.raw_block = 1 if self.init.get('result', {}).get('serverInfo', {}).get('version') == '3.0.1' else 0
         self.send({'jsonrpc': '2.0', 'method': 'notifications/initialized', 'params': {}})
 
@@ -196,6 +200,10 @@ class MCP:
         try:
             self.proc.stdin.close()
             self.proc.wait(timeout=3)
+        except (BrokenPipeError, OSError):
+            if self.proc.poll() is None:
+                self.proc.terminate()
+                self.proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             self.proc.terminate()
             self.proc.wait(timeout=10)
@@ -320,7 +328,11 @@ def extended(names):
                     with concurrent.futures.ThreadPoolExecutor(max_workers=count) as pool:
                         futures=[pool.submit(MCP,binaries()[variant],root,cache) for _ in range(count)]
                         # Keep ownership even if a later startup fails.
-                        for future in futures: processes.append(future.result())
+                        startup_errors=[]
+                        for future in futures:
+                            try: processes.append(future.result())
+                            except Exception as exc: startup_errors.append(repr(exc))
+                        if startup_errors: raise RuntimeError('; '.join(startup_errors))
                         row['ready']=list(pool.map(lambda p:p.ready(),processes))
                         row['all_ready_ms']=(time.perf_counter()-start)*1000
                         before=[resources(p.proc) for p in processes]

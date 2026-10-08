@@ -40,7 +40,7 @@ def five_roots():
             if d.is_dir():shutil.copytree(d,cache/'.codedb'/'projects'/d.name,dirs_exist_ok=True)
     questions=json.loads((m.PRIVATE/'golden.json').read_text())
     default=m.PRIVATE/'corpus'/'lm-asp-net'
-    p=m.MCP(m.binaries()['candidate'],default,cache)
+    p=m.MCP(m.binaries()['candidate'],default,cache,workers=1)
     try:
         p.ready()
         for name in m.ROOTS:
@@ -94,15 +94,21 @@ def synthetic():
         after=p.call('codedb_tree')
         check('roots change cannot broaden explicitly pinned child','child.ts' in after['text'] and 'parent.ts' not in after['text'],after)
         explicit=p.call('codedb_tree',{'project':str(parent)})
-        check('explicit parent selection has parent-relative paths','parent.ts' in explicit['text'] and 'child/child.ts' in explicit['text'],explicit)
+        # codedb_tree renders directories on their own line and indents the
+        # child entry; accept that stable presentation as the parent-relative
+        # path evidence instead of requiring a flattened `child/child.ts`.
+        child_relative = 'child/child.ts' in explicit['text'] or ('child/\n  child.ts' in explicit['text'])
+        check('explicit parent selection has parent-relative paths','parent.ts' in explicit['text'] and child_relative,explicit)
         back=p.call('codedb_tree')
         check('secondary selection leaves default child isolated','parent.ts' not in back['text'])
     finally:p.close()
     # Junction swaps remain entirely within this owned synthetic directory.
     link=child/'swap'
     assert link.parent.resolve()==child.resolve() and child.is_relative_to(BASE)
-    command="New-Item -ItemType Junction -Path $args[0] -Target $args[1] | Out-Null"
-    made=subprocess.run(['pwsh','-NoProfile','-Command',command,str(link),str(sibling)],capture_output=True,text=True)
+    junction_script=BASE/'create-junction.ps1'
+    junction_script.write_text('param([string]$Link, [string]$Target)\n$ErrorActionPreference = "Stop"\nNew-Item -ItemType Junction -Path $Link -Target $Target | Out-Null\n')
+    command=['pwsh','-NoProfile','-File',str(junction_script),'-Link',str(link),'-Target',str(sibling)]
+    made=subprocess.run(command,capture_output=True,text=True)
     if made.returncode:
         check('junction creation available',False,{'limitation':made.stderr});return
     p=m.MCP(m.binaries()['candidate'],child,BASE/'race-cache')
@@ -121,7 +127,7 @@ def synthetic():
                     (link/'outside.ts').write_text('export const safeCanary = 1;\n')
                     time.sleep(.015)
                     (link/'outside.ts').unlink();link.rmdir()
-                    r=subprocess.run(['pwsh','-NoProfile','-Command',command,str(link),str(sibling)],capture_output=True,text=True)
+                    r=subprocess.run(command,capture_output=True,text=True)
                     if r.returncode:raise RuntimeError(r.stderr)
             except Exception as exc:failures.append(str(exc))
         worker=threading.Thread(target=swap);worker.start()

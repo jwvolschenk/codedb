@@ -1,0 +1,71 @@
+
+[1mcodedb MCP E2E test harness[0m
+  binary : C:\repos\codedb\.build\release-candidate\bin\codedb.exe
+  project: C:\repos\codedb
+
+[36m── Scenario 1: issue-346 regression (spawn from /, roots handshake) ──[0m
+
+[36m── Scenario 2: normal mode (explicit --root) ──[0m
+
+[36m── Scenario 3: no-roots client (spawn from /, no scan) ──[0m
+
+[36m── Scenario 4: issue-591 root canonicalization (localhost + %20 + trailing slash) ──[0m
+
+[36m── Scenario 5: issue-591 warm-start reconcile (offline edits, no force) ──[0m
+
+[36m── Scenario 6: issue-591 worktree branch-switch detection ──[0m
+
+[36m── Scenario 7: issue-591 memory budget backstop (CODEDB_MAX_MEMORY_MB=1) ──[0m
+
+[36m── Scenario 8: issue-591 force reindex deletes all artifacts ──[0m
+
+  [32mPASS[0m  [S1] initialize does not crash (no transport-closed)
+  [32mPASS[0m  [S1] server sends roots/list request
+  [32mPASS[0m  [S1] scan completes and files > 0
+  [32mPASS[0m  [S1] codedb_tree returns non-empty result  18342 chars
+  [32mPASS[0m  [S1] codedb_search finds 'DeferredScan' in project
+  [32mPASS[0m  [S1] codedb_hot returns recent files  142 chars
+  [32mPASS[0m  [S1] codedb_outline works on src/mcp.zig
+  [32mPASS[0m  [S1] codedb_symbol finds 'DeferredScan'
+  [32mPASS[0m  [S2] initialize succeeds
+  [32mPASS[0m  [S2] server does NOT send roots/list (scan is immediate)  no roots/list request (correct)
+  [32mPASS[0m  [S2] scan completes without roots handshake
+  [32mPASS[0m  [S2] codedb_search works
+  [32mPASS[0m  [S2] codedb_manifest lists build.zig.zon
+  [32mPASS[0m  [S2] codedb_manifest path=build.zig.zon returns dependencies
+  [32mPASS[0m  [S3] initialize succeeds with no roots capability
+  [32mPASS[0m  [S3] server does NOT send roots/list  correctly skipped roots/list
+  [32mPASS[0m  [S3] codedb_status responds (0 files is fine)  responded: codedb status:
+  seq: 0
+  files: 0
+  outlines: 0
+  contents_cached: 0
+  trigram_
+  [32mPASS[0m  [S3] codedb_search responds (may return empty)  responded (empty results expected)
+  [32mPASS[0m  [S3] process is still alive
+  [32mPASS[0m  [S4] initialize succeeds
+  [32mPASS[0m  [S4] server sends roots/list
+  [32mPASS[0m  [S4] scan completes on the canonicalized root (files > 0)
+  [32mPASS[0m  [S4] codedb_search finds the file content
+  [32mPASS[0m  [S4] project.txt names the realpath (CLI/MCP cache-dir parity)  project.txt == C:\repos\codedb\.build\release-e2e-home-final\.codedb-e2e-591-40032-1791463252\space dir
+  [32mPASS[0m  [S5] first run: initialize + scan
+  [32mPASS[0m  [S5] first run: snapshot persisted
+  [32mPASS[0m  [S5] second run: initialize + ready
+  [32mPASS[0m  [S5] edited-while-down content visible (no force)
+  [32mPASS[0m  [S5] created-while-down file visible (no force)
+  [32mPASS[0m  [S5] deleted-while-down file evicted (no force)
+  [32mPASS[0m  [S6] server ready on the worktree
+  [32mPASS[0m  [S6] feat-branch file not indexed yet
+  [32mPASS[0m  [S6] branch switch detected; feat file searchable (≤30s)
+  [32mPASS[0m  [S6] HEAD-change rescan actually triggered (stderr log)
+  [32mPASS[0m  [S7] server survives hitting the budget (initialize + terminal scan state)
+  [32mPASS[0m  [S7] codedb_status reports scan=budget_exceeded
+  [32mPASS[0m  [S7] status shows budget limit + override hint
+  [32mPASS[0m  [S7] queries still answer (partial index, no crash)
+  [32mPASS[0m  [S8] server ready
+  [32mPASS[0m  [S8] canonical cache dir found via project.txt
+  [32mPASS[0m  [S8] force=true deletes trigram.postings and reports deletions
+  [32mPASS[0m  [S8] response reports the cache dir
+
+[1mResults: 42/42 passed[0m
+[32mAll tests passed.[0m

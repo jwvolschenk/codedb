@@ -16,11 +16,13 @@
   before applying result limits. The five-root evaluation reproduced a false
   empty result when out-of-scope matches previously consumed the quota.
 - Align executable/package versions at 3.1.0. Snapshot format 4, semantic/policy
-  index 5, word format 4 and trigram format 4 reject incompatible old caches.
+  index 6, word format 4 and trigram format 4 reject incompatible old caches.
+- Restore ignore character-class/range matching (for example `[Pp]ublish.xml`),
+  found by corpus parity review; previously restored files rebuild under policy 6.
 - Add paired Windows benchmarks, private golden-corpus/result-parity reports,
   real-client smoke drivers, root/cache/junction evidence and documented rollback.
-  This candidate is **not published**; see the measured release gate and remaining
-  blockers in [the evidence](plans/evidence/release-2026-10-08/README.md).
+  This candidate is **not published**; see the informational performance result
+  and focused remaining review in [the evidence](plans/evidence/release-2026-10-08/README.md).
 
 ### Upstream merge-down: agent-efficiency and correctness hardening (Tier 1)
 

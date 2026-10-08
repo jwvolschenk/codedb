@@ -1,0 +1,34 @@
+PASS legacy initialize
+PASS legacy envelope
+PASS tool annotations
+PASS lexical callers at limit 1
+PASS lexical callers at limit 50
+PASS reject .ENV
+PASS reject ../outside.ts
+PASS reject C:relative.ts
+PASS reject watch.ts:stream
+PASS nested ignore at startup
+PASS same-size same-mtime edit converges
+PASS forced rebuild completes
+PASS forced rebuild refreshes populated default explorer
+PASS 2025-11-25 negotiation
+PASS navigation profile reduces tool count
+PASS navigation profile read-only tools
+PASS invalid metadata rejected
+PASS telemetry session initialize
+PASS telemetry opt-in=0 disable=0 HTTP=200
+PASS disabled telemetry creates no file
+PASS telemetry session initialize
+PASS telemetry opt-in=1 disable=1 HTTP=200
+PASS disabled telemetry creates no file
+PASS telemetry session initialize
+PASS telemetry opt-in=1 disable=0 HTTP=503
+PASS isolated telemetry file
+PASS retain failed upload; clear successful upload
+PASS telemetry excludes queries secrets and paths
+PASS telemetry session initialize
+PASS telemetry opt-in=true disable=0 HTTP=200
+PASS isolated telemetry file
+PASS retain failed upload; clear successful upload
+PASS telemetry excludes queries secrets and paths
+All plan integration checks passed

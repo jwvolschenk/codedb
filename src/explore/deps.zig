@@ -222,6 +222,32 @@ pub fn resolveLocalDependency(self: *Explorer, key: []const u8) ?[]const u8 {
     return resolved;
 }
 
+/// Resolve a dependency edge to an indexed path when the parser recorded a
+/// language-level module name (for example F# `open Metadata`).  Bare names
+/// are only resolved when exactly one indexed file has the matching basename
+/// or stem; ambiguous names remain as-is so a short import cannot point at an
+/// arbitrary file.
+pub fn resolveDependency(self: *Explorer, key: []const u8) ?[]const u8 {
+    if (resolveLocalDependency(self, key)) |resolved| return resolved;
+    if (self.outlines.getKey(key)) |exact| return exact;
+    if (key.len == 0 or std.mem.indexOfScalar(u8, key, '/') != null) return null;
+
+    var found: ?[]const u8 = null;
+    var it = self.outlines.keyIterator();
+    while (it.next()) |path_ptr| {
+        const path = path_ptr.*;
+        const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| path[sep + 1 ..] else path;
+        const stem = dependency_graph.fileStem(basename);
+        if (!std.mem.eql(u8, basename, key) and !std.mem.eql(u8, stem, key)) continue;
+        if (found) |previous| {
+            if (!std.mem.eql(u8, previous, path)) return null;
+        } else {
+            found = path;
+        }
+    }
+    return found;
+}
+
 // Resolve each hop against the current corpus. Local import keys never
 // become basename guesses, and deletions/ambiguity stop traversal.
 fn transitiveResolved(self: *Explorer, path: []const u8, allocator: std.mem.Allocator, depth_limit: ?u32, forward: bool) ![]const []const u8 {
@@ -241,7 +267,7 @@ fn transitiveResolved(self: *Explorer, path: []const u8, allocator: std.mem.Allo
         if (node.depth >= (depth_limit orelse 128)) continue;
         const edges = if (forward) self.dep_graph.getForwardDeps(node.path) orelse &.{} else try getImportedByLocked(self, node.path, a);
         for (edges) |edge| {
-            const resolved = if (forward) resolveLocalDependency(self, edge) orelse edge else edge;
+            const resolved = if (forward) resolveDependency(self, edge) orelse edge else edge;
             if (seen.contains(resolved)) continue;
             try seen.put(resolved, {});
             try result.append(allocator, try allocator.dupe(u8, resolved));

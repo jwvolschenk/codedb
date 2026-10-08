@@ -83,9 +83,12 @@ def main():
             rows={v:[r.get(metric) for r in extended.get('updates',[]) if r['root']==name and r['variant']==v] for v in grouped}
             if all(rows.values()) and all(x is not None for values in rows.values() for x in values):compare(name,metric,rows['baseline'],rows['candidate'])
         for count in (1,4,8):
-            for metric in ('aggregate_rss_bytes','sum_process_peak_rss_bytes','all_ready_ms'):
+            for metric in ('aggregate_rss_bytes','sum_process_peak_rss_bytes','all_ready_ms','idle_cpu_s'):
                 rows={v:[r[metric] for r in extended.get('concurrency',[]) if r['root']==name and r['variant']==v and r['agents']==count and metric in r] for v in grouped}
                 if all(rows.values()):compare(name,f'{count}_agents_{metric}',rows['baseline'],rows['candidate'])
+            for statistic in ('median','p95'):
+                rows={v:[r['query_ms'][statistic] for r in extended.get('concurrency',[]) if r['root']==name and r['variant']==v and r['agents']==count and 'query_ms' in r] for v in grouped}
+                if all(rows.values()):compare(name,f'{count}_agents_query_{statistic}_ms',rows['baseline'],rows['candidate'])
     failures=[r for r in report['comparisons'] if r['gate']=='FAIL']
     report['gate']='FAIL' if failures else 'PASS'
     m.save(m.PRIVATE/'parity-performance.json',report)

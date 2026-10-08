@@ -1,0 +1,165 @@
+{
+  "binary_sha256": "a272e06bff41aa09795ca90a94dbca091a12270b9ce7e6ea46d0bcfce610d58c",
+  "clients": [
+    {
+      "client": "codex",
+      "version": "codex-cli 0.162.0-alpha.2",
+      "profile": "full",
+      "protocol": "2025-06-18",
+      "handshake": "initialize",
+      "tools": 26,
+      "passed": true,
+      "calls": [
+        {
+          "tool": "codedb_status",
+          "passed": true
+        },
+        {
+          "tool": "codedb_symbol",
+          "passed": true
+        },
+        {
+          "tool": "codedb_read",
+          "passed": true
+        }
+      ],
+      "wire_sha256": "33924e819342e7e2cb1d0681a9a93baae3c532fef6501ee1f1c4fb59116b1604",
+      "registration": "isolated temporary configuration; production registration unchanged"
+    },
+    {
+      "client": "codex",
+      "version": "codex-cli 0.162.0-alpha.2",
+      "profile": "navigation",
+      "protocol": "2025-06-18",
+      "handshake": "initialize",
+      "tools": 22,
+      "passed": true,
+      "calls": [
+        {
+          "tool": "codedb_status",
+          "passed": true
+        },
+        {
+          "tool": "codedb_symbol",
+          "passed": true
+        },
+        {
+          "tool": "codedb_read",
+          "passed": true
+        }
+      ],
+      "wire_sha256": "219b02c0add9a1a1bcfca9aca39d2af80db6653756c7123b8760ad01eda7b35a",
+      "registration": "isolated temporary configuration; production registration unchanged"
+    },
+    {
+      "client": "claude",
+      "version": "2.1.268 (Claude Code)",
+      "profile": "full",
+      "protocol": "2025-11-25",
+      "handshake": "initialize",
+      "tools": 26,
+      "passed": true,
+      "calls": [
+        {
+          "tool": "codedb_status",
+          "passed": true
+        },
+        {
+          "tool": "codedb_symbol",
+          "passed": true
+        },
+        {
+          "tool": "codedb_read",
+          "passed": true
+        }
+      ],
+      "wire_sha256": "3f1b20a4f311d8138709e5e844205e8f336c9a589ed16bedacbbbfa4d1a097d1",
+      "registration": "isolated temporary configuration; production registration unchanged"
+    },
+    {
+      "client": "claude",
+      "version": "2.1.268 (Claude Code)",
+      "profile": "navigation",
+      "protocol": "2025-11-25",
+      "handshake": "initialize",
+      "tools": 22,
+      "passed": true,
+      "calls": [
+        {
+          "tool": "codedb_status",
+          "passed": true
+        },
+        {
+          "tool": "codedb_symbol",
+          "passed": true
+        },
+        {
+          "tool": "codedb_read",
+          "passed": true
+        }
+      ],
+      "wire_sha256": "1d6f20e76ae4cb10754f184b4ac198930dbefbf1bca3c7493f2f5539c0c2a677",
+      "registration": "isolated temporary configuration; production registration unchanged"
+    },
+    {
+      "client": "copilot",
+      "version": "bundled runtime 1.0.90-0",
+      "profile": "full",
+      "protocol": "2026-07-28",
+      "handshake": "server/discover",
+      "tools": 26,
+      "passed": true,
+      "calls": [
+        {
+          "tool": "codedb_status",
+          "passed": true
+        },
+        {
+          "tool": "codedb_symbol",
+          "passed": true
+        },
+        {
+          "tool": "codedb_read",
+          "passed": true
+        }
+      ],
+      "wire_sha256": "75b13dd44a0781b48c4de69d882f53a5b373a4ce30493d92fd01a4b506c8eafa",
+      "registration": "isolated temporary configuration; production registration unchanged"
+    },
+    {
+      "client": "copilot",
+      "version": "bundled runtime 1.0.90-0",
+      "profile": "navigation",
+      "protocol": "2026-07-28",
+      "handshake": "server/discover",
+      "tools": 22,
+      "passed": true,
+      "calls": [
+        {
+          "tool": "codedb_status",
+          "passed": true
+        },
+        {
+          "tool": "codedb_symbol",
+          "passed": true
+        },
+        {
+          "tool": "codedb_read",
+          "passed": true
+        }
+      ],
+      "wire_sha256": "ee1d7051989e32cfa2478a6607e35ecd399a11eccaf137537c2bd2f757e9d448",
+      "registration": "isolated temporary configuration; production registration unchanged"
+    }
+  ],
+  "unavailable": [
+    {
+      "client": "ChatGPT",
+      "reason": "No accessible local candidate registration or supported local stdio client surface in this session. Codex is tested separately; no ChatGPT pass inferred."
+    },
+    {
+      "client": "OpenCode",
+      "reason": "Not found on PATH or targeted user install locations; not installed for this test."
+    }
+  ]
+}

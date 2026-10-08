@@ -1,0 +1,3020 @@
+{
+  "gate": "FAIL",
+  "threshold_percent": 10,
+  "config": {
+    "memory_mb": 4096,
+    "workers": {
+      "autumn": 1,
+      "others": 8
+    },
+    "optimization": "ReleaseFast",
+    "compiler": "0.16.0"
+  },
+  "comparisons": [
+    {
+      "root": "lm-asp-net",
+      "metric": "cold_ms",
+      "baseline": 827.592999994522,
+      "candidate": 1023.8827000066522,
+      "delta_percent": 23.718144065190195,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 827.592999994522,
+        "p95": 5452.044099998602,
+        "min": 825.7262000042829,
+        "max": 5452.044099998602,
+        "stdev": 2670.4671493042497
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1023.8827000066522,
+        "p95": 1071.8984000050114,
+        "min": 1021.3925999996718,
+        "max": 1071.8984000050114,
+        "stdev": 28.467946532186428
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "warm_ms",
+      "baseline": 542.34720000386,
+      "candidate": 668.3852999994997,
+      "delta_percent": 23.23937507094027,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 542.34720000386,
+        "p95": 543.5607999970671,
+        "min": 513.8182999944547,
+        "max": 543.5607999970671,
+        "stdev": 16.832445193215175
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 668.3852999994997,
+        "p95": 702.3312000019359,
+        "min": 654.7113000051468,
+        "max": 702.3312000019359,
+        "stdev": 24.51855514545792
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "cold_peak_rss_bytes",
+      "baseline": 784564224,
+      "candidate": 783872000,
+      "delta_percent": -0.08823038048698661,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 784564224,
+        "p95": 784715776,
+        "min": 784437248,
+        "max": 784715776,
+        "stdev": 139444.58879425906
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 783872000,
+        "p95": 783994880,
+        "min": 783638528,
+        "max": 783994880,
+        "stdev": 181013.54327231983
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "warm_rss_bytes",
+      "baseline": 429957120,
+      "candidate": 430555136,
+      "delta_percent": 0.13908735829284424,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 429957120,
+        "p95": 429957120,
+        "min": 429948928,
+        "max": 429957120,
+        "stdev": 4729.653405201414
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 430555136,
+        "p95": 430555136,
+        "min": 430497792,
+        "max": 430555136,
+        "stdev": 33107.5738364099
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "idle_cpu_s",
+      "baseline": 1.234375,
+      "candidate": 1.890625,
+      "delta_percent": 53.16455696202531,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1.234375,
+        "p95": 1.390625,
+        "min": 1.125,
+        "max": 1.390625,
+        "stdev": 0.1335000585205864
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1.890625,
+        "p95": 1.921875,
+        "min": 1.71875,
+        "max": 1.921875,
+        "stdev": 0.109375
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-01_median_ms",
+      "baseline": 0.2521,
+      "candidate": 0.2224,
+      "delta_percent": -11.7810392701309,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.2521,
+        "p95": 0.4151,
+        "min": 0.24955,
+        "max": 0.4151,
+        "stdev": 0.09485278505839108
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2224,
+        "p95": 0.2247,
+        "min": 0.21515,
+        "max": 0.2247,
+        "stdev": 0.004984225115301272
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-01_p95_ms",
+      "baseline": 0.3784,
+      "candidate": 0.2941,
+      "delta_percent": -22.278012684989434,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.3784,
+        "p95": 0.7016,
+        "min": 0.2952,
+        "max": 0.7016,
+        "stdev": 0.2146863759068097
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2941,
+        "p95": 0.3356,
+        "min": 0.2827,
+        "max": 0.3356,
+        "stdev": 0.027840677673744468
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-02_median_ms",
+      "baseline": 0.16699999999999998,
+      "candidate": 0.14450000000000002,
+      "delta_percent": -13.473053892215548,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.16699999999999998,
+        "p95": 0.18869999999999998,
+        "min": 0.15885,
+        "max": 0.18869999999999998,
+        "stdev": 0.015429058083153785
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.14450000000000002,
+        "p95": 0.1462,
+        "min": 0.12229999999999999,
+        "max": 0.1462,
+        "stdev": 0.01333504155724059
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-02_p95_ms",
+      "baseline": 0.2321,
+      "candidate": 0.1656,
+      "delta_percent": -28.651443343386475,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.2321,
+        "p95": 0.249,
+        "min": 0.2132,
+        "max": 0.249,
+        "stdev": 0.017909308566589982
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1656,
+        "p95": 0.2353,
+        "min": 0.1555,
+        "max": 0.2353,
+        "stdev": 0.04345139046490151
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-03_median_ms",
+      "baseline": 0.1573,
+      "candidate": 0.14575,
+      "delta_percent": -7.342657342657343,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.1573,
+        "p95": 0.15755,
+        "min": 0.1429,
+        "max": 0.15755,
+        "stdev": 0.008386944219042671
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.14575,
+        "p95": 0.15475,
+        "min": 0.113,
+        "max": 0.15475,
+        "stdev": 0.02197204663506186
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-03_p95_ms",
+      "baseline": 0.1941,
+      "candidate": 0.2043,
+      "delta_percent": 5.255023183925811,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.1941,
+        "p95": 0.3464,
+        "min": 0.185,
+        "max": 0.3464,
+        "stdev": 0.09067162363900479
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2043,
+        "p95": 0.2318,
+        "min": 0.1617,
+        "max": 0.2318,
+        "stdev": 0.03532001321253056
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-04_median_ms",
+      "baseline": 0.72475,
+      "candidate": 0.2569,
+      "delta_percent": -64.55329423939288,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.72475,
+        "p95": 0.84145,
+        "min": 0.7094,
+        "max": 0.84145,
+        "stdev": 0.07221693591764562
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2569,
+        "p95": 0.2593,
+        "min": 0.24545,
+        "max": 0.2593,
+        "stdev": 0.0074014075237979725
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-04_p95_ms",
+      "baseline": 0.9931,
+      "candidate": 0.3285,
+      "delta_percent": -66.9217601450005,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.9931,
+        "p95": 1.516,
+        "min": 0.9122,
+        "max": 1.516,
+        "stdev": 0.3277559203635128
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.3285,
+        "p95": 0.342,
+        "min": 0.2864,
+        "max": 0.342,
+        "stdev": 0.02900005747120744
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-05_median_ms",
+      "baseline": 0.3209,
+      "candidate": 0.43055,
+      "delta_percent": 34.169523215955124,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.3209,
+        "p95": 0.47975,
+        "min": 0.31984999999999997,
+        "max": 0.47975,
+        "stdev": 0.09201669685442965
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.43055,
+        "p95": 0.46615,
+        "min": 0.41800000000000004,
+        "max": 0.46615,
+        "stdev": 0.0249776066374129
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-05_p95_ms",
+      "baseline": 0.4266,
+      "candidate": 0.5414,
+      "delta_percent": 26.910454758556025,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.4266,
+        "p95": 0.5833,
+        "min": 0.3604,
+        "max": 0.5833,
+        "stdev": 0.11447105893339739
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.5414,
+        "p95": 0.579,
+        "min": 0.4634,
+        "max": 0.579,
+        "stdev": 0.058964848285511025
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-06_median_ms",
+      "baseline": 0.18114999999999998,
+      "candidate": 0.1673,
+      "delta_percent": -7.645597571073681,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.18114999999999998,
+        "p95": 0.221,
+        "min": 0.17459999999999998,
+        "max": 0.221,
+        "stdev": 0.025112695992266554
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1673,
+        "p95": 0.1883,
+        "min": 0.15635,
+        "max": 0.1883,
+        "stdev": 0.016236301918848395
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-06_p95_ms",
+      "baseline": 0.3622,
+      "candidate": 0.2278,
+      "delta_percent": -37.106570955273334,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.3622,
+        "p95": 0.4248,
+        "min": 0.2469,
+        "max": 0.4248,
+        "stdev": 0.0902415831716916
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2278,
+        "p95": 0.3395,
+        "min": 0.2218,
+        "max": 0.3395,
+        "stdev": 0.06628999421732766
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-07_median_ms",
+      "baseline": 0.16065000000000002,
+      "candidate": 0.14375,
+      "delta_percent": -10.519763460939945,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.16065000000000002,
+        "p95": 0.21565,
+        "min": 0.15375,
+        "max": 0.21565,
+        "stdev": 0.03392201841478973
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.14375,
+        "p95": 0.15245,
+        "min": 0.1281,
+        "max": 0.15245,
+        "stdev": 0.01233919905558434
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-07_p95_ms",
+      "baseline": 0.2772,
+      "candidate": 0.1813,
+      "delta_percent": -34.5959595959596,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.2772,
+        "p95": 0.3339,
+        "min": 0.1868,
+        "max": 0.3339,
+        "stdev": 0.07419058790259943
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1813,
+        "p95": 0.2126,
+        "min": 0.1757,
+        "max": 0.2126,
+        "stdev": 0.019885757047025738
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-08_median_ms",
+      "baseline": 0.10345,
+      "candidate": 0.1061,
+      "delta_percent": 2.5616239729337797,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.10345,
+        "p95": 0.14975,
+        "min": 0.09785,
+        "max": 0.14975,
+        "stdev": 0.028485844437778792
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1061,
+        "p95": 0.10830000000000001,
+        "min": 0.06555,
+        "max": 0.10830000000000001,
+        "stdev": 0.024071785005132743
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-08_p95_ms",
+      "baseline": 0.1363,
+      "candidate": 0.1369,
+      "delta_percent": 0.44020542920029104,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.1363,
+        "p95": 0.1764,
+        "min": 0.1219,
+        "max": 0.1764,
+        "stdev": 0.02824187198705733
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1369,
+        "p95": 0.1484,
+        "min": 0.1063,
+        "max": 0.1484,
+        "stdev": 0.021760131739797284
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-09_median_ms",
+      "baseline": 0.13885,
+      "candidate": 0.1333,
+      "delta_percent": -3.9971191933741435,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.13885,
+        "p95": 0.19205,
+        "min": 0.12625,
+        "max": 0.19205,
+        "stdev": 0.034925253518526295
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1333,
+        "p95": 0.13385000000000002,
+        "min": 0.11485000000000001,
+        "max": 0.13385000000000002,
+        "stdev": 0.010814380857604998
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-09_p95_ms",
+      "baseline": 0.1875,
+      "candidate": 0.1863,
+      "delta_percent": -0.6400000000000072,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.1875,
+        "p95": 0.3283,
+        "min": 0.1814,
+        "max": 0.3283,
+        "stdev": 0.08310782153323475
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1863,
+        "p95": 0.1911,
+        "min": 0.1424,
+        "max": 0.1911,
+        "stdev": 0.026838840014675246
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-10_median_ms",
+      "baseline": 0.173,
+      "candidate": 0.15895,
+      "delta_percent": -8.121387283236981,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.173,
+        "p95": 0.26949999999999996,
+        "min": 0.1709,
+        "max": 0.26949999999999996,
+        "stdev": 0.05633030563855775
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.15895,
+        "p95": 0.16349999999999998,
+        "min": 0.1168,
+        "max": 0.16349999999999998,
+        "stdev": 0.025749482195441
+      }
+    },
+    {
+      "root": "lm-asp-net",
+      "metric": "lm-asp-net-10_p95_ms",
+      "baseline": 0.2479,
+      "candidate": 0.2278,
+      "delta_percent": -8.108108108108114,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.2479,
+        "p95": 0.4825,
+        "min": 0.2377,
+        "max": 0.4825,
+        "stdev": 0.13848480061003085
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2278,
+        "p95": 0.3087,
+        "min": 0.1615,
+        "max": 0.3087,
+        "stdev": 0.07372057605128524
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "cold_ms",
+      "baseline": 1839.3152999997255,
+      "candidate": 1883.6664999980712,
+      "delta_percent": 2.411288591920724,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1839.3152999997255,
+        "p95": 13717.699599998014,
+        "min": 1639.302099996712,
+        "max": 13717.699599998014,
+        "stdev": 6916.450257979871
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1883.6664999980712,
+        "p95": 1884.696900000563,
+        "min": 1878.7617000052705,
+        "max": 1884.696900000563,
+        "stdev": 3.1713663227550883
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "warm_ms",
+      "baseline": 744.5920999962254,
+      "candidate": 1031.0049000036088,
+      "delta_percent": 38.465731775670896,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 744.5920999962254,
+        "p95": 768.4064999994007,
+        "min": 744.2799999989802,
+        "max": 768.4064999994007,
+        "stdev": 13.84022552917042
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1031.0049000036088,
+        "p95": 1034.3127000014647,
+        "min": 1029.6820000003208,
+        "max": 1034.3127000014647,
+        "stdev": 2.3851969780680045
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "cold_peak_rss_bytes",
+      "baseline": 1129316352,
+      "candidate": 1120907264,
+      "delta_percent": -0.7446175719591497,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1129316352,
+        "p95": 1129447424,
+        "min": 1129177088,
+        "max": 1129447424,
+        "stdev": 135188.6852859119
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1120907264,
+        "p95": 1121144832,
+        "min": 1120882688,
+        "max": 1121144832,
+        "stdev": 144776.84617829375
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "warm_rss_bytes",
+      "baseline": 452579328,
+      "candidate": 454750208,
+      "delta_percent": 0.4796683952829506,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 452579328,
+        "p95": 452624384,
+        "min": 452575232,
+        "max": 452624384,
+        "stdev": 27272.511973291592
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 454750208,
+        "p95": 454840320,
+        "min": 454615040,
+        "max": 454840320,
+        "stdev": 113388.44677185296
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "idle_cpu_s",
+      "baseline": 2.8125,
+      "candidate": 3.53125,
+      "delta_percent": 25.555555555555554,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 2.8125,
+        "p95": 2.90625,
+        "min": 2.71875,
+        "max": 2.90625,
+        "stdev": 0.09375
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 3.53125,
+        "p95": 3.53125,
+        "min": 3.328125,
+        "max": 3.53125,
+        "stdev": 0.11727427342914273
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-01_median_ms",
+      "baseline": 0.249,
+      "candidate": 0.23545,
+      "delta_percent": -5.441767068273096,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.249,
+        "p95": 0.25825,
+        "min": 0.2474,
+        "max": 0.25825,
+        "stdev": 0.005857260451781176
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.23545,
+        "p95": 0.23995,
+        "min": 0.22970000000000002,
+        "max": 0.23995,
+        "stdev": 0.005137687547266108
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-01_p95_ms",
+      "baseline": 0.5222,
+      "candidate": 0.2999,
+      "delta_percent": -42.56989659134432,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.5222,
+        "p95": 0.5713,
+        "min": 0.4399,
+        "max": 0.5713,
+        "stdev": 0.06639535626332112
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2999,
+        "p95": 0.4609,
+        "min": 0.284,
+        "max": 0.4609,
+        "stdev": 0.097866763169798
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-02_median_ms",
+      "baseline": 0.26255,
+      "candidate": 0.2463,
+      "delta_percent": -6.189297276709205,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.26255,
+        "p95": 0.26555,
+        "min": 0.26065,
+        "max": 0.26555,
+        "stdev": 0.0024704925284917112
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2463,
+        "p95": 0.24835000000000002,
+        "min": 0.24525,
+        "max": 0.24835000000000002,
+        "stdev": 0.0015766525721709803
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-02_p95_ms",
+      "baseline": 0.3346,
+      "candidate": 0.3078,
+      "delta_percent": -8.009563658099218,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.3346,
+        "p95": 0.3707,
+        "min": 0.3006,
+        "max": 0.3707,
+        "stdev": 0.03505524211869032
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.3078,
+        "p95": 0.3227,
+        "min": 0.2739,
+        "max": 0.3227,
+        "stdev": 0.025008865094868535
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-03_median_ms",
+      "baseline": 0.2595,
+      "candidate": 0.2551,
+      "delta_percent": -1.6955684007707195,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.2595,
+        "p95": 0.27305,
+        "min": 0.25780000000000003,
+        "max": 0.27305,
+        "stdev": 0.008357182539588323
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2551,
+        "p95": 0.2552,
+        "min": 0.25345,
+        "max": 0.2552,
+        "stdev": 0.0009827681991870256
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-03_p95_ms",
+      "baseline": 0.3632,
+      "candidate": 0.3355,
+      "delta_percent": -7.626651982378851,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.3632,
+        "p95": 0.3694,
+        "min": 0.3581,
+        "max": 0.3694,
+        "stdev": 0.00565891626845048
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.3355,
+        "p95": 0.3413,
+        "min": 0.3267,
+        "max": 0.3413,
+        "stdev": 0.007351190379795645
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-04_median_ms",
+      "baseline": 5.63215,
+      "candidate": 0.2842,
+      "delta_percent": -94.95396962083751,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 5.63215,
+        "p95": 5.6339500000000005,
+        "min": 5.5952,
+        "max": 5.6339500000000005,
+        "stdev": 0.021871233008985518
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2842,
+        "p95": 0.28575,
+        "min": 0.28154999999999997,
+        "max": 0.28575,
+        "stdev": 0.0021238722497677253
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-04_p95_ms",
+      "baseline": 6.0688,
+      "candidate": 0.3621,
+      "delta_percent": -94.03341682045874,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 6.0688,
+        "p95": 7.5898,
+        "min": 5.8995,
+        "max": 7.5898,
+        "stdev": 0.9308792957915294
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.3621,
+        "p95": 0.4389,
+        "min": 0.313,
+        "max": 0.4389,
+        "stdev": 0.06345583766158425
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-05_median_ms",
+      "baseline": 4.380850000000001,
+      "candidate": 0.18275,
+      "delta_percent": -95.82843512103815,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 4.380850000000001,
+        "p95": 4.399,
+        "min": 4.3733,
+        "max": 4.399,
+        "stdev": 0.013209308586497897
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.18275,
+        "p95": 0.18475,
+        "min": 0.17845,
+        "max": 0.18475,
+        "stdev": 0.003219213154380016
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-05_p95_ms",
+      "baseline": 4.6639,
+      "candidate": 0.2381,
+      "delta_percent": -94.89483050665753,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 4.6639,
+        "p95": 5.2655,
+        "min": 4.6157,
+        "max": 5.2655,
+        "stdev": 0.36205106453832364
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2381,
+        "p95": 0.3007,
+        "min": 0.2363,
+        "max": 0.3007,
+        "stdev": 0.03667278736792901
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-06_median_ms",
+      "baseline": 0.17525000000000002,
+      "candidate": 0.15945,
+      "delta_percent": -9.015691868758925,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.17525000000000002,
+        "p95": 0.18130000000000002,
+        "min": 0.16135,
+        "max": 0.18130000000000002,
+        "stdev": 0.010229165818058363
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.15945,
+        "p95": 0.16285,
+        "min": 0.15925,
+        "max": 0.16285,
+        "stdev": 0.0020231987873991298
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-06_p95_ms",
+      "baseline": 0.2614,
+      "candidate": 0.2225,
+      "delta_percent": -14.881407804131609,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.2614,
+        "p95": 0.3445,
+        "min": 0.1978,
+        "max": 0.3445,
+        "stdev": 0.07356568493530118
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2225,
+        "p95": 0.2259,
+        "min": 0.1744,
+        "max": 0.2259,
+        "stdev": 0.028802256856017373
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-07_median_ms",
+      "baseline": 0.16615000000000002,
+      "candidate": 0.14825,
+      "delta_percent": -10.773397532350304,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.16615000000000002,
+        "p95": 0.20545,
+        "min": 0.14505,
+        "max": 0.20545,
+        "stdev": 0.030653602289671154
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.14825,
+        "p95": 0.15175,
+        "min": 0.14429999999999998,
+        "max": 0.15175,
+        "stdev": 0.003727264412407583
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-07_p95_ms",
+      "baseline": 0.2599,
+      "candidate": 0.218,
+      "delta_percent": -16.121585225086577,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.2599,
+        "p95": 0.2679,
+        "min": 0.2308,
+        "max": 0.2679,
+        "stdev": 0.019524429142316398
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.218,
+        "p95": 0.2251,
+        "min": 0.2095,
+        "max": 0.2251,
+        "stdev": 0.007810463067791394
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-08_median_ms",
+      "baseline": 0.0905,
+      "candidate": 0.10264999999999999,
+      "delta_percent": 13.425414364640886,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.0905,
+        "p95": 0.10195,
+        "min": 0.08990000000000001,
+        "max": 0.10195,
+        "stdev": 0.006790495809094746
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.10264999999999999,
+        "p95": 0.1064,
+        "min": 0.0992,
+        "max": 0.1064,
+        "stdev": 0.003601041516006167
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-08_p95_ms",
+      "baseline": 0.1228,
+      "candidate": 0.1357,
+      "delta_percent": 10.504885993485335,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.1228,
+        "p95": 0.1426,
+        "min": 0.1218,
+        "max": 0.1426,
+        "stdev": 0.011730870953741385
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1357,
+        "p95": 0.1377,
+        "min": 0.1317,
+        "max": 0.1377,
+        "stdev": 0.003055050463303881
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-09_median_ms",
+      "baseline": 0.17554999999999998,
+      "candidate": 0.17105,
+      "delta_percent": -2.5633722586157703,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.17554999999999998,
+        "p95": 0.17559999999999998,
+        "min": 0.1459,
+        "max": 0.17559999999999998,
+        "stdev": 0.0171328874779861
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.17105,
+        "p95": 0.17209999999999998,
+        "min": 0.16965,
+        "max": 0.17209999999999998,
+        "stdev": 0.0012291596044994772
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-09_p95_ms",
+      "baseline": 0.2315,
+      "candidate": 0.2291,
+      "delta_percent": -1.0367170626349953,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.2315,
+        "p95": 0.2554,
+        "min": 0.2125,
+        "max": 0.2554,
+        "stdev": 0.02149658887668771
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2291,
+        "p95": 0.2307,
+        "min": 0.2074,
+        "max": 0.2307,
+        "stdev": 0.01301499135612467
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-10_median_ms",
+      "baseline": 0.25205,
+      "candidate": 0.22085,
+      "delta_percent": -12.378496330093236,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.25205,
+        "p95": 0.26005,
+        "min": 0.22710000000000002,
+        "max": 0.26005,
+        "stdev": 0.017186259046110052
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.22085,
+        "p95": 0.2223,
+        "min": 0.2198,
+        "max": 0.2223,
+        "stdev": 0.0012553220038433713
+      }
+    },
+    {
+      "root": "pro",
+      "metric": "pro-10_p95_ms",
+      "baseline": 0.3423,
+      "candidate": 0.2895,
+      "delta_percent": -15.425065731814202,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.3423,
+        "p95": 0.5711,
+        "min": 0.261,
+        "max": 0.5711,
+        "stdev": 0.16079030858025412
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2895,
+        "p95": 0.308,
+        "min": 0.272,
+        "max": 0.308,
+        "stdev": 0.018002314665990397
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "cold_ms",
+      "baseline": 824.9312999978429,
+      "candidate": 822.6490000015474,
+      "delta_percent": -0.27666546248171775,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 824.9312999978429,
+        "p95": 6244.973699998809,
+        "min": 821.4625000036904,
+        "max": 6244.973699998809,
+        "stdev": 3130.2647754584095
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 822.6490000015474,
+        "p95": 823.8097999928868,
+        "min": 818.1786000059219,
+        "max": 823.8097999928868,
+        "stdev": 2.9732795034544997
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "warm_ms",
+      "baseline": 498.673999994935,
+      "candidate": 626.3164000047254,
+      "delta_percent": 25.59636155305609,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 498.673999994935,
+        "p95": 498.9142999984324,
+        "min": 489.221700001508,
+        "max": 498.9142999984324,
+        "stdev": 5.527962463056949
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 626.3164000047254,
+        "p95": 663.3984000000055,
+        "min": 604.3275999982143,
+        "max": 663.3984000000055,
+        "stdev": 29.85504274051513
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "cold_peak_rss_bytes",
+      "baseline": 771416064,
+      "candidate": 761212928,
+      "delta_percent": -1.3226501853090822,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 771416064,
+        "p95": 771571712,
+        "min": 771325952,
+        "max": 771571712,
+        "stdev": 124327.82609429529
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 761212928,
+        "p95": 761298944,
+        "min": 761032704,
+        "max": 761298944,
+        "stdev": 135869.53302831852
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "warm_rss_bytes",
+      "baseline": 429268992,
+      "candidate": 429535232,
+      "delta_percent": 0.06202171714280169,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 429268992,
+        "p95": 429268992,
+        "min": 429264896,
+        "max": 429268992,
+        "stdev": 2364.826702600707
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 429535232,
+        "p95": 429539328,
+        "min": 429531136,
+        "max": 429539328,
+        "stdev": 4096.0
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "idle_cpu_s",
+      "baseline": 1.171875,
+      "candidate": 1.703125,
+      "delta_percent": 45.333333333333336,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1.171875,
+        "p95": 1.171875,
+        "min": 1.015625,
+        "max": 1.171875,
+        "stdev": 0.09021097956087902
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1.703125,
+        "p95": 1.796875,
+        "min": 1.640625,
+        "max": 1.796875,
+        "stdev": 0.07864410870073697
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-01_median_ms",
+      "baseline": 0.154,
+      "candidate": 0.14179999999999998,
+      "delta_percent": -7.92207792207793,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.154,
+        "p95": 0.1618,
+        "min": 0.15275,
+        "max": 0.1618,
+        "stdev": 0.004904164896629532
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.14179999999999998,
+        "p95": 0.14229999999999998,
+        "min": 0.1404,
+        "max": 0.14229999999999998,
+        "stdev": 0.0009848857801796021
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-01_p95_ms",
+      "baseline": 0.2152,
+      "candidate": 0.1972,
+      "delta_percent": -8.364312267658002,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.2152,
+        "p95": 0.2232,
+        "min": 0.2115,
+        "max": 0.2232,
+        "stdev": 0.005980245256955055
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1972,
+        "p95": 0.1991,
+        "min": 0.153,
+        "max": 0.1991,
+        "stdev": 0.026084669827314277
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-02_median_ms",
+      "baseline": 0.1649,
+      "candidate": 0.15835,
+      "delta_percent": -3.9721043056397787,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.1649,
+        "p95": 0.17685,
+        "min": 0.16455,
+        "max": 0.17685,
+        "stdev": 0.0070025590560404
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.15835,
+        "p95": 0.16005,
+        "min": 0.15225,
+        "max": 0.16005,
+        "stdev": 0.00410162569395762
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-02_p95_ms",
+      "baseline": 0.2278,
+      "candidate": 0.2072,
+      "delta_percent": -9.043020193151897,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.2278,
+        "p95": 0.2381,
+        "min": 0.2023,
+        "max": 0.2381,
+        "stdev": 0.01842995749678586
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2072,
+        "p95": 0.212,
+        "min": 0.1852,
+        "max": 0.212,
+        "stdev": 0.014290323066093824
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-03_median_ms",
+      "baseline": 0.1615,
+      "candidate": 0.1598,
+      "delta_percent": -1.0526315789473717,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.1615,
+        "p95": 0.1648,
+        "min": 0.15885,
+        "max": 0.1648,
+        "stdev": 0.0029809114937101645
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1598,
+        "p95": 0.16144999999999998,
+        "min": 0.154,
+        "max": 0.16144999999999998,
+        "stdev": 0.003912905995974512
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-03_p95_ms",
+      "baseline": 0.2243,
+      "candidate": 0.1955,
+      "delta_percent": -12.83994650022291,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.2243,
+        "p95": 0.2345,
+        "min": 0.1826,
+        "max": 0.2345,
+        "stdev": 0.027497090755205348
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1955,
+        "p95": 0.2558,
+        "min": 0.1851,
+        "max": 0.2558,
+        "stdev": 0.038172284884891744
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-04_median_ms",
+      "baseline": 1.52435,
+      "candidate": 0.18030000000000002,
+      "delta_percent": -88.17200774100436,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1.52435,
+        "p95": 1.53245,
+        "min": 1.5216500000000002,
+        "max": 1.53245,
+        "stdev": 0.005620498198558526
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.18030000000000002,
+        "p95": 0.1842,
+        "min": 0.17704999999999999,
+        "max": 0.1842,
+        "stdev": 0.003579920855735974
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-04_p95_ms",
+      "baseline": 1.7973,
+      "candidate": 0.2174,
+      "delta_percent": -87.90407833973181,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1.7973,
+        "p95": 1.8124,
+        "min": 1.7536,
+        "max": 1.8124,
+        "stdev": 0.03053724501871986
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2174,
+        "p95": 0.2278,
+        "min": 0.2096,
+        "max": 0.2278,
+        "stdev": 0.009130899919139037
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-05_median_ms",
+      "baseline": 1.288,
+      "candidate": 0.18335,
+      "delta_percent": -85.76475155279503,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1.288,
+        "p95": 1.31325,
+        "min": 1.2799,
+        "max": 1.31325,
+        "stdev": 0.017394419603232906
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.18335,
+        "p95": 0.19165,
+        "min": 0.17735,
+        "max": 0.19165,
+        "stdev": 0.007180761333823397
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-05_p95_ms",
+      "baseline": 1.4802,
+      "candidate": 0.2834,
+      "delta_percent": -80.85393865693825,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1.4802,
+        "p95": 1.512,
+        "min": 1.3929,
+        "max": 1.512,
+        "stdev": 0.061667576569863665
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2834,
+        "p95": 0.3169,
+        "min": 0.2517,
+        "max": 0.3169,
+        "stdev": 0.032604140841310345
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-06_median_ms",
+      "baseline": 0.17685,
+      "candidate": 0.16335,
+      "delta_percent": -7.633587786259543,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.17685,
+        "p95": 0.186,
+        "min": 0.1763,
+        "max": 0.186,
+        "stdev": 0.005448470733456614
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.16335,
+        "p95": 0.16805,
+        "min": 0.1479,
+        "max": 0.16805,
+        "stdev": 0.010542098146637287
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-06_p95_ms",
+      "baseline": 0.266,
+      "candidate": 0.2261,
+      "delta_percent": -15.000000000000002,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.266,
+        "p95": 0.3172,
+        "min": 0.2225,
+        "max": 0.3172,
+        "stdev": 0.047402144817859586
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2261,
+        "p95": 0.2517,
+        "min": 0.2193,
+        "max": 0.2517,
+        "stdev": 0.017084886108292705
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-07_median_ms",
+      "baseline": 0.1546,
+      "candidate": 0.1452,
+      "delta_percent": -6.0802069857697205,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.1546,
+        "p95": 0.15839999999999999,
+        "min": 0.1517,
+        "max": 0.15839999999999999,
+        "stdev": 0.0033600595232822807
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1452,
+        "p95": 0.15805000000000002,
+        "min": 0.14505,
+        "max": 0.15805000000000002,
+        "stdev": 0.007462629116694297
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-07_p95_ms",
+      "baseline": 0.2127,
+      "candidate": 0.1698,
+      "delta_percent": -20.169252468265164,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.2127,
+        "p95": 0.2578,
+        "min": 0.174,
+        "max": 0.2578,
+        "stdev": 0.041940712122391685
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1698,
+        "p95": 0.2263,
+        "min": 0.1622,
+        "max": 0.2263,
+        "stdev": 0.03502099370377716
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-08_median_ms",
+      "baseline": 0.1112,
+      "candidate": 0.12135,
+      "delta_percent": 9.127697841726622,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.1112,
+        "p95": 0.1116,
+        "min": 0.10944999999999999,
+        "max": 0.1116,
+        "stdev": 0.0011434596626029323
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.12135,
+        "p95": 0.12545,
+        "min": 0.11835,
+        "max": 0.12545,
+        "stdev": 0.0035641735835019827
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-08_p95_ms",
+      "baseline": 0.1526,
+      "candidate": 0.1612,
+      "delta_percent": 5.6356487549148016,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.1526,
+        "p95": 0.1699,
+        "min": 0.1472,
+        "max": 0.1699,
+        "stdev": 0.01185847095258631
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1612,
+        "p95": 0.1707,
+        "min": 0.1585,
+        "max": 0.1707,
+        "stdev": 0.0064080678315178
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-09_median_ms",
+      "baseline": 0.13419999999999999,
+      "candidate": 0.12555,
+      "delta_percent": -6.445603576751113,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.13419999999999999,
+        "p95": 0.14445,
+        "min": 0.12290000000000001,
+        "max": 0.14445,
+        "stdev": 0.010779262497963385
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.12555,
+        "p95": 0.12780000000000002,
+        "min": 0.1094,
+        "max": 0.12780000000000002,
+        "stdev": 0.010036973315364224
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-09_p95_ms",
+      "baseline": 0.1733,
+      "candidate": 0.1851,
+      "delta_percent": 6.809001731102127,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.1733,
+        "p95": 0.2218,
+        "min": 0.1568,
+        "max": 0.2218,
+        "stdev": 0.03378732503962593
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1851,
+        "p95": 0.1991,
+        "min": 0.1614,
+        "max": 0.1991,
+        "stdev": 0.019056844789558776
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-10_median_ms",
+      "baseline": 0.1365,
+      "candidate": 0.13155,
+      "delta_percent": -3.6263736263736357,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.1365,
+        "p95": 0.1419,
+        "min": 0.13479999999999998,
+        "max": 0.1419,
+        "stdev": 0.003707200201409871
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.13155,
+        "p95": 0.13175,
+        "min": 0.12719999999999998,
+        "max": 0.13175,
+        "stdev": 0.002571154085879219
+      }
+    },
+    {
+      "root": "invest",
+      "metric": "invest-10_p95_ms",
+      "baseline": 0.2148,
+      "candidate": 0.1679,
+      "delta_percent": -21.834264432029794,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.2148,
+        "p95": 0.2554,
+        "min": 0.1747,
+        "max": 0.2554,
+        "stdev": 0.040350258156960216
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1679,
+        "p95": 0.1857,
+        "min": 0.1539,
+        "max": 0.1857,
+        "stdev": 0.01593779574888991
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "cold_ms",
+      "baseline": 15368.901000001642,
+      "candidate": 19441.12899999891,
+      "delta_percent": 26.49654649995359,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 15368.901000001642,
+        "p95": 65082.74290000554,
+        "min": 15189.376100002846,
+        "max": 65082.74290000554,
+        "stdev": 28754.264484559255
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 19441.12899999891,
+        "p95": 20594.76580000046,
+        "min": 18326.40459999675,
+        "max": 20594.76580000046,
+        "stdev": 1134.2362252458895
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "warm_ms",
+      "baseline": 3543.8115000069956,
+      "candidate": 5696.8256999971345,
+      "delta_percent": 60.7541964347113,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 3543.8115000069956,
+        "p95": 3667.0558999976492,
+        "min": 3511.90709999355,
+        "max": 3667.0558999976492,
+        "stdev": 81.93312619853063
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 5696.8256999971345,
+        "p95": 6100.45739999623,
+        "min": 5633.111700000882,
+        "max": 6100.45739999623,
+        "stdev": 253.43967932686505
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "cold_peak_rss_bytes",
+      "baseline": 1171537920,
+      "candidate": 1184505856,
+      "delta_percent": 1.1069156003076674,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1171537920,
+        "p95": 1171869696,
+        "min": 1171316736,
+        "max": 1171869696,
+        "stdev": 278317.09662182094
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1184505856,
+        "p95": 1184645120,
+        "min": 1183707136,
+        "max": 1184645120,
+        "stdev": 506155.78701160115
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "warm_rss_bytes",
+      "baseline": 536596480,
+      "candidate": 539992064,
+      "delta_percent": 0.6328002747986616,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 536596480,
+        "p95": 536625152,
+        "min": 536588288,
+        "max": 536625152,
+        "stdev": 19356.940805130685
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 539992064,
+        "p95": 540069888,
+        "min": 539963392,
+        "max": 540069888,
+        "stdev": 55106.044096813916
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "idle_cpu_s",
+      "baseline": 31.84375,
+      "candidate": 23.4375,
+      "delta_percent": -26.39842983316978,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 31.84375,
+        "p95": 36.109375,
+        "min": 31.671875,
+        "max": 36.109375,
+        "stdev": 2.513845126038661
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 23.4375,
+        "p95": 25.609375,
+        "min": 22.234375,
+        "max": 25.609375,
+        "stdev": 1.7105153113048517
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-01_median_ms",
+      "baseline": 2.3514999999999997,
+      "candidate": 2.0202,
+      "delta_percent": -14.088879438656166,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 2.3514999999999997,
+        "p95": 2.447,
+        "min": 2.0136,
+        "max": 2.447,
+        "stdev": 0.22771774195261998
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 2.0202,
+        "p95": 3.0140000000000002,
+        "min": 1.9758499999999999,
+        "max": 3.0140000000000002,
+        "stdev": 0.5869924452949403
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-01_p95_ms",
+      "baseline": 2.603,
+      "candidate": 2.2239,
+      "delta_percent": -14.563964656165973,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 2.603,
+        "p95": 3.3894,
+        "min": 2.3133,
+        "max": 3.3894,
+        "stdev": 0.5568276603522255
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 2.2239,
+        "p95": 4.4218,
+        "min": 2.1556,
+        "max": 4.4218,
+        "stdev": 1.2891270780389859
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-02_median_ms",
+      "baseline": 2.0973499999999996,
+      "candidate": 1.93665,
+      "delta_percent": -7.662049729420439,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 2.0973499999999996,
+        "p95": 2.1883,
+        "min": 2.03345,
+        "max": 2.1883,
+        "stdev": 0.07781777324836091
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1.93665,
+        "p95": 2.2093499999999997,
+        "min": 1.935,
+        "max": 2.2093499999999997,
+        "stdev": 0.15792188733674614
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-02_p95_ms",
+      "baseline": 2.4746,
+      "candidate": 2.3995,
+      "delta_percent": -3.0348339125515156,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 2.4746,
+        "p95": 2.9265,
+        "min": 2.3761,
+        "max": 2.9265,
+        "stdev": 0.2935007155016831
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 2.3995,
+        "p95": 2.5313,
+        "min": 2.2114,
+        "max": 2.5313,
+        "stdev": 0.16077357784578084
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-03_median_ms",
+      "baseline": 1.7340499999999999,
+      "candidate": 1.6485,
+      "delta_percent": -4.93353709523946,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1.7340499999999999,
+        "p95": 2.0007,
+        "min": 1.65625,
+        "max": 2.0007,
+        "stdev": 0.18064738442612457
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1.6485,
+        "p95": 1.9338,
+        "min": 1.55195,
+        "max": 1.9338,
+        "stdev": 0.19854781749828762
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-03_p95_ms",
+      "baseline": 2.2443,
+      "candidate": 1.9295,
+      "delta_percent": -14.026645279151628,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 2.2443,
+        "p95": 2.4985,
+        "min": 1.9922,
+        "max": 2.4985,
+        "stdev": 0.253150725853196
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1.9295,
+        "p95": 4.61,
+        "min": 1.7593,
+        "max": 4.61,
+        "stdev": 1.598986073527013
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-04_median_ms",
+      "baseline": 190.60989999999998,
+      "candidate": 2.9684,
+      "delta_percent": -98.44268319746247,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 190.60989999999998,
+        "p95": 195.7017,
+        "min": 186.17635,
+        "max": 195.7017,
+        "stdev": 4.766464193805846
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 2.9684,
+        "p95": 3.26145,
+        "min": 2.9442500000000003,
+        "max": 3.26145,
+        "stdev": 0.17657735085036616
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-04_p95_ms",
+      "baseline": 231.1403,
+      "candidate": 3.2176,
+      "delta_percent": -98.60794504463306,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 231.1403,
+        "p95": 238.534,
+        "min": 229.1848,
+        "max": 238.534,
+        "stdev": 4.931164848525479
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 3.2176,
+        "p95": 6.3481,
+        "min": 3.0864,
+        "max": 6.3481,
+        "stdev": 1.8464348792560579
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-05_median_ms",
+      "baseline": 184.74945,
+      "candidate": 0.8017000000000001,
+      "delta_percent": -99.56606095444398,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 184.74945,
+        "p95": 190.67725000000002,
+        "min": 176.28515,
+        "max": 190.67725000000002,
+        "stdev": 7.233207330776589
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.8017000000000001,
+        "p95": 1.02945,
+        "min": 0.7720499999999999,
+        "max": 1.02945,
+        "stdev": 0.14083320216956416
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-05_p95_ms",
+      "baseline": 223.9881,
+      "candidate": 1.1724,
+      "delta_percent": -99.47657933613438,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 223.9881,
+        "p95": 237.3007,
+        "min": 220.2561,
+        "max": 237.3007,
+        "stdev": 8.95983195452534
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1.1724,
+        "p95": 1.2878,
+        "min": 1.088,
+        "max": 1.2878,
+        "stdev": 0.10030001661681483
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-06_median_ms",
+      "baseline": 0.18585000000000002,
+      "candidate": 0.19865,
+      "delta_percent": 6.887274683884836,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.18585000000000002,
+        "p95": 0.1968,
+        "min": 0.18465,
+        "max": 0.1968,
+        "stdev": 0.006695334196289229
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.19865,
+        "p95": 0.20435,
+        "min": 0.18015,
+        "max": 0.20435,
+        "stdev": 0.012651613862797634
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-06_p95_ms",
+      "baseline": 0.2442,
+      "candidate": 0.2494,
+      "delta_percent": 2.129402129402136,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.2442,
+        "p95": 0.3753,
+        "min": 0.2352,
+        "max": 0.3753,
+        "stdev": 0.07841791887062549
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2494,
+        "p95": 0.3112,
+        "min": 0.2398,
+        "max": 0.3112,
+        "stdev": 0.038749967741922034
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-07_median_ms",
+      "baseline": 0.25065,
+      "candidate": 0.44645,
+      "delta_percent": 78.11689607021745,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.25065,
+        "p95": 0.2834,
+        "min": 0.23365,
+        "max": 0.2834,
+        "stdev": 0.0252871014550897
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.44645,
+        "p95": 0.4971,
+        "min": 0.4128,
+        "max": 0.4971,
+        "stdev": 0.04243472438149366
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-07_p95_ms",
+      "baseline": 0.3574,
+      "candidate": 0.6785,
+      "delta_percent": 89.84331281477336,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.3574,
+        "p95": 0.3886,
+        "min": 0.3101,
+        "max": 0.3886,
+        "stdev": 0.03952421198877131
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.6785,
+        "p95": 0.6972,
+        "min": 0.6493,
+        "max": 0.6972,
+        "stdev": 0.024141043887951515
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-08_median_ms",
+      "baseline": 0.0873,
+      "candidate": 0.0917,
+      "delta_percent": 5.040091638029787,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.0873,
+        "p95": 0.09715,
+        "min": 0.08685,
+        "max": 0.09715,
+        "stdev": 0.0058211539520384905
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.0917,
+        "p95": 0.10525000000000001,
+        "min": 0.08845,
+        "max": 0.10525000000000001,
+        "stdev": 0.00891071452428667
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-08_p95_ms",
+      "baseline": 0.1348,
+      "candidate": 0.1439,
+      "delta_percent": 6.750741839762608,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.1348,
+        "p95": 0.2241,
+        "min": 0.1137,
+        "max": 0.2241,
+        "stdev": 0.058605830199164766
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1439,
+        "p95": 0.1515,
+        "min": 0.1393,
+        "max": 0.1515,
+        "stdev": 0.00616116872029974
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-09_median_ms",
+      "baseline": 0.249,
+      "candidate": 0.2422,
+      "delta_percent": -2.7309236947791193,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.249,
+        "p95": 0.25965,
+        "min": 0.2485,
+        "max": 0.25965,
+        "stdev": 0.006298081718534087
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.2422,
+        "p95": 0.3027,
+        "min": 0.24015,
+        "max": 0.3027,
+        "stdev": 0.03553626082374642
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-09_p95_ms",
+      "baseline": 0.5041,
+      "candidate": 0.4405,
+      "delta_percent": -12.616544336441182,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.5041,
+        "p95": 0.5044,
+        "min": 0.3436,
+        "max": 0.5044,
+        "stdev": 0.09275144203730741
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.4405,
+        "p95": 0.4943,
+        "min": 0.3611,
+        "max": 0.4943,
+        "stdev": 0.06700875564680586
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-10_median_ms",
+      "baseline": 2.0408999999999997,
+      "candidate": 1.9756,
+      "delta_percent": -3.1995688176784554,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 2.0408999999999997,
+        "p95": 2.1149,
+        "min": 1.9853,
+        "max": 2.1149,
+        "stdev": 0.0650173310228383
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1.9756,
+        "p95": 2.7695,
+        "min": 1.9657499999999999,
+        "max": 2.7695,
+        "stdev": 0.46122812414248976
+      }
+    },
+    {
+      "root": "autumn",
+      "metric": "autumn-10_p95_ms",
+      "baseline": 2.3292,
+      "candidate": 2.3373,
+      "delta_percent": 0.34775888717155645,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 2.3292,
+        "p95": 2.6424,
+        "min": 2.1958,
+        "max": 2.6424,
+        "stdev": 0.22925290256250466
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 2.3373,
+        "p95": 3.331,
+        "min": 2.2318,
+        "max": 3.331,
+        "stdev": 0.6064666217800724
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "cold_ms",
+      "baseline": 3999.4328999891877,
+      "candidate": 4244.703899996239,
+      "delta_percent": 6.132644455860592,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 3999.4328999891877,
+        "p95": 21671.49580000114,
+        "min": 3771.587000010186,
+        "max": 21671.49580000114,
+        "stdev": 10269.375637821657
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 4244.703899996239,
+        "p95": 4328.35779999732,
+        "min": 4188.451399997575,
+        "max": 4328.35779999732,
+        "stdev": 70.39900508574833
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "warm_ms",
+      "baseline": 1477.424600001541,
+      "candidate": 2032.5111000129255,
+      "delta_percent": 37.571223601583824,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1477.424600001541,
+        "p95": 1584.8920999997063,
+        "min": 1458.1785000045784,
+        "max": 1584.8920999997063,
+        "stdev": 68.28373689329206
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 2032.5111000129255,
+        "p95": 2043.373699998483,
+        "min": 2013.3215000023483,
+        "max": 2043.373699998483,
+        "stdev": 15.217158909270033
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "cold_peak_rss_bytes",
+      "baseline": 1943646208,
+      "candidate": 1945911296,
+      "delta_percent": 0.11653808139964195,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1943646208,
+        "p95": 1944006656,
+        "min": 1943478272,
+        "max": 1944006656,
+        "stdev": 269973.73707331857
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1945911296,
+        "p95": 1946333184,
+        "min": 1945395200,
+        "max": 1946333184,
+        "stdev": 469779.833187136
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "warm_rss_bytes",
+      "baseline": 518340608,
+      "candidate": 480473088,
+      "delta_percent": -7.3055283370736745,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 518340608,
+        "p95": 518590464,
+        "min": 518328320,
+        "max": 518590464,
+        "stdev": 147929.31443541992
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 480473088,
+        "p95": 480477184,
+        "min": 480456704,
+        "max": 480477184,
+        "stdev": 10836.997370120564
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "idle_cpu_s",
+      "baseline": 5.671875,
+      "candidate": 7.03125,
+      "delta_percent": 23.96694214876034,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 5.671875,
+        "p95": 6.4375,
+        "min": 5.546875,
+        "max": 6.4375,
+        "stdev": 0.4821859135316308
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 7.03125,
+        "p95": 7.21875,
+        "min": 6.90625,
+        "max": 7.21875,
+        "stdev": 0.15728821740147395
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-01_median_ms",
+      "baseline": 0.78235,
+      "candidate": 0.9028499999999999,
+      "delta_percent": 15.402313542532099,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.78235,
+        "p95": 0.8714999999999999,
+        "min": 0.74065,
+        "max": 0.8714999999999999,
+        "stdev": 0.06684351751167295
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.9028499999999999,
+        "p95": 0.95755,
+        "min": 0.7827999999999999,
+        "max": 0.95755,
+        "stdev": 0.08938834282686607
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-01_p95_ms",
+      "baseline": 1.1281,
+      "candidate": 1.2832,
+      "delta_percent": 13.74878113642406,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1.1281,
+        "p95": 1.3539,
+        "min": 0.9597,
+        "max": 1.3539,
+        "stdev": 0.19779528137277025
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1.2832,
+        "p95": 1.3756,
+        "min": 1.2197,
+        "max": 1.3756,
+        "stdev": 0.07839517417120348
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-02_median_ms",
+      "baseline": 0.855,
+      "candidate": 0.889,
+      "delta_percent": 3.9766081871345005,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.855,
+        "p95": 0.95035,
+        "min": 0.8091999999999999,
+        "max": 0.95035,
+        "stdev": 0.07200993565705598
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.889,
+        "p95": 0.908,
+        "min": 0.8513,
+        "max": 0.908,
+        "stdev": 0.028859371672531886
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-02_p95_ms",
+      "baseline": 1.3364,
+      "candidate": 1.4271,
+      "delta_percent": 6.786890152648906,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1.3364,
+        "p95": 1.4158,
+        "min": 1.292,
+        "max": 1.4158,
+        "stdev": 0.06271916240937316
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1.4271,
+        "p95": 1.5037,
+        "min": 1.2922,
+        "max": 1.5037,
+        "stdev": 0.10708082617039026
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-03_median_ms",
+      "baseline": 0.8216,
+      "candidate": 0.8802,
+      "delta_percent": 7.132424537487836,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.8216,
+        "p95": 0.90385,
+        "min": 0.7718,
+        "max": 0.90385,
+        "stdev": 0.06668621171826553
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.8802,
+        "p95": 0.9309000000000001,
+        "min": 0.8133,
+        "max": 0.9309000000000001,
+        "stdev": 0.05898567622736898
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-03_p95_ms",
+      "baseline": 1.4261,
+      "candidate": 1.4016,
+      "delta_percent": -1.717972091718667,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1.4261,
+        "p95": 1.5145,
+        "min": 1.2972,
+        "max": 1.5145,
+        "stdev": 0.10927721628958163
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1.4016,
+        "p95": 1.4926,
+        "min": 1.003,
+        "max": 1.4926,
+        "stdev": 0.2604070915573025
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-04_median_ms",
+      "baseline": 3.90075,
+      "candidate": 1.7985,
+      "delta_percent": -53.89348202268794,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 3.90075,
+        "p95": 3.9556,
+        "min": 3.891,
+        "max": 3.9556,
+        "stdev": 0.034825146565855745
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1.7985,
+        "p95": 1.8876,
+        "min": 1.7364000000000002,
+        "max": 1.8876,
+        "stdev": 0.07600072368076494
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-04_p95_ms",
+      "baseline": 5.3761,
+      "candidate": 2.2705,
+      "delta_percent": -57.76678261193058,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 5.3761,
+        "p95": 5.4296,
+        "min": 4.5274,
+        "max": 5.4296,
+        "stdev": 0.5061486573461725
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 2.2705,
+        "p95": 2.4283,
+        "min": 1.9701,
+        "max": 2.4283,
+        "stdev": 0.2327689269067789
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-05_median_ms",
+      "baseline": 1.02675,
+      "candidate": 1.0602,
+      "delta_percent": 3.2578524470416426,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1.02675,
+        "p95": 1.2235,
+        "min": 0.9975,
+        "max": 1.2235,
+        "stdev": 0.12291062132026398
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1.0602,
+        "p95": 1.0892,
+        "min": 1.018,
+        "max": 1.0892,
+        "stdev": 0.03580335179840007
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-05_p95_ms",
+      "baseline": 1.3682,
+      "candidate": 1.4087,
+      "delta_percent": 2.960093553574028,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1.3682,
+        "p95": 1.5914,
+        "min": 1.237,
+        "max": 1.5914,
+        "stdev": 0.17917916545551077
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1.4087,
+        "p95": 1.5475,
+        "min": 1.1763,
+        "max": 1.5475,
+        "stdev": 0.1875564981545562
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-06_median_ms",
+      "baseline": 0.82925,
+      "candidate": 0.8174,
+      "delta_percent": -1.4290021103406714,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.82925,
+        "p95": 0.8691,
+        "min": 0.8061,
+        "max": 0.8691,
+        "stdev": 0.03186676691058149
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.8174,
+        "p95": 0.8189500000000001,
+        "min": 0.8162,
+        "max": 0.8189500000000001,
+        "stdev": 0.0013787071238422536
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-06_p95_ms",
+      "baseline": 1.009,
+      "candidate": 1.0928,
+      "delta_percent": 8.30525272547078,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1.009,
+        "p95": 1.1586,
+        "min": 0.9671,
+        "max": 1.1586,
+        "stdev": 0.1006710981364563
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1.0928,
+        "p95": 1.2921,
+        "min": 1.0536,
+        "max": 1.2921,
+        "stdev": 0.12789278061459658
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-07_median_ms",
+      "baseline": 0.28245,
+      "candidate": 0.41995,
+      "delta_percent": 48.681182510178814,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.28245,
+        "p95": 0.30525,
+        "min": 0.2811,
+        "max": 0.30525,
+        "stdev": 0.013570095799219707
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.41995,
+        "p95": 0.46485,
+        "min": 0.39365,
+        "max": 0.46485,
+        "stdev": 0.03600263879217744
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-07_p95_ms",
+      "baseline": 0.3395,
+      "candidate": 0.5603,
+      "delta_percent": 65.03681885125184,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.3395,
+        "p95": 0.472,
+        "min": 0.3266,
+        "max": 0.472,
+        "stdev": 0.08048169564151422
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.5603,
+        "p95": 0.736,
+        "min": 0.5083,
+        "max": 0.736,
+        "stdev": 0.11931874678076926
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-08_median_ms",
+      "baseline": 0.0978,
+      "candidate": 0.10350000000000001,
+      "delta_percent": 5.828220858895716,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.0978,
+        "p95": 0.0984,
+        "min": 0.09765,
+        "max": 0.0984,
+        "stdev": 0.00039686269665968946
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.10350000000000001,
+        "p95": 0.11125,
+        "min": 0.0964,
+        "max": 0.11125,
+        "stdev": 0.007427370553118603
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-08_p95_ms",
+      "baseline": 0.1274,
+      "candidate": 0.1317,
+      "delta_percent": 3.375196232339084,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.1274,
+        "p95": 0.1325,
+        "min": 0.1095,
+        "max": 0.1325,
+        "stdev": 0.012079045216130844
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1317,
+        "p95": 0.1322,
+        "min": 0.1233,
+        "max": 0.1322,
+        "stdev": 0.005000333322222965
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-09_median_ms",
+      "baseline": 0.163,
+      "candidate": 0.1607,
+      "delta_percent": -1.411042944785279,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.163,
+        "p95": 0.1638,
+        "min": 0.158,
+        "max": 0.1638,
+        "stdev": 0.003143246729100343
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.1607,
+        "p95": 0.17085,
+        "min": 0.16065000000000002,
+        "max": 0.17085,
+        "stdev": 0.00587459218442721
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-09_p95_ms",
+      "baseline": 0.2083,
+      "candidate": 0.259,
+      "delta_percent": 24.33989438310129,
+      "gate": "FAIL",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.2083,
+        "p95": 0.21,
+        "min": 0.2031,
+        "max": 0.21,
+        "stdev": 0.003594903800289142
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.259,
+        "p95": 0.2765,
+        "min": 0.2201,
+        "max": 0.2765,
+        "stdev": 0.028868725869586526
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-10_median_ms",
+      "baseline": 0.8358,
+      "candidate": 0.8971,
+      "delta_percent": 7.334290500119645,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 0.8358,
+        "p95": 0.8804000000000001,
+        "min": 0.7979499999999999,
+        "max": 0.8804000000000001,
+        "stdev": 0.041271024944869075
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 0.8971,
+        "p95": 1.5051,
+        "min": 0.78285,
+        "max": 1.5051,
+        "stdev": 0.38823577994993375
+      }
+    },
+    {
+      "root": "credo-autumn",
+      "metric": "credo-autumn-10_p95_ms",
+      "baseline": 1.3182,
+      "candidate": 1.4423,
+      "delta_percent": 9.414352905477163,
+      "gate": "PASS",
+      "baseline_variability": {
+        "n": 3,
+        "median": 1.3182,
+        "p95": 1.3791,
+        "min": 1.1934,
+        "max": 1.3791,
+        "stdev": 0.0946646185224448
+      },
+      "candidate_variability": {
+        "n": 3,
+        "median": 1.4423,
+        "p95": 1.8715,
+        "min": 1.1117,
+        "max": 1.8715,
+        "stdev": 0.38096479277399553
+      }
+    }
+  ],
+  "golden_human_review": "pending",
+  "binaries": {
+    "baseline": "d0ff145aa44276ffd6682c7f8cb65420258b74eb1c6b6f3ccc4d16701f4717f5",
+    "candidate": "a272e06bff41aa09795ca90a94dbca091a12270b9ce7e6ea46d0bcfce610d58c"
+  }
+}

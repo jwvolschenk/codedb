@@ -1,0 +1,55 @@
+{
+  "date": "2026-10-08",
+  "platform": "Windows-11-10.0.28000-SP0",
+  "python": "3.12.14",
+  "source_head": "1933eb205685b3327fdd5e293b2d2e0e21ef8df9",
+  "branch": "feature/upstream-changes-2026-10",
+  "baseline_commit": "915b9b961c8daa7cc804524888532cea0c040030",
+  "compiler": "0.16.0",
+  "optimization": "ReleaseFast",
+  "checks": {
+    "unit": {
+      "command": "Zig 0.16.0 build test",
+      "exit_code": 0,
+      "log": "unit.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "result": "passed; successful Zig invocation emits no text"
+    },
+    "build": {
+      "command": "Zig 0.16.0 build -Doptimize=ReleaseFast --prefix .build/release-candidate",
+      "exit_code": 0,
+      "log": "build.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "e2e": {
+      "command": "e2e_mcp_test.py with isolated HOME/USERPROFILE/CODEDB_CACHE_DIR",
+      "exit_code": 0,
+      "log": "e2e.log",
+      "sha256": "0d4a914b4325b3962952906596986a6441d93ce81f02a7f04e5cd30383d8fb23",
+      "result": "42/42"
+    },
+    "integration": {
+      "command": "test-plan-integration.py with isolated synthetic fixtures and loopback telemetry",
+      "exit_code": 0,
+      "log": "integration.log",
+      "sha256": "1118deee8acf8a0209e4f9135b68d439675c3491adb476112f8e0a1827de4bad"
+    },
+    "installers-powershell": {
+      "command": "pwsh -NoProfile -File scripts/test-installers.ps1",
+      "exit_code": 0,
+      "log": "installers-powershell.log",
+      "sha256": "08c6b025a9d896cca366eb2622267cbacfd9f96fde719ee384c5dfaf856371c5"
+    },
+    "installers-bash": {
+      "command": "Git Bash scripts/test-installers.sh",
+      "exit_code": 0,
+      "log": "installers-bash.log",
+      "sha256": "54e267d3a0a2a3c6fa8fda552fdb8d96bceaf8114dc14a3af286862eb2ebb0b7"
+    }
+  },
+  "hashes": {
+    "zig_archive": "68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e",
+    "baseline": "d0ff145aa44276ffd6682c7f8cb65420258b74eb1c6b6f3ccc4d16701f4717f5",
+    "candidate": "a272e06bff41aa09795ca90a94dbca091a12270b9ce7e6ea46d0bcfce610d58c"
+  }
+}

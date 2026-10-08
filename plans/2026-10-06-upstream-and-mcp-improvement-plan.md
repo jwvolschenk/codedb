@@ -187,9 +187,23 @@ These are reviewable work packages, not a commitment to six large combined PRs. 
 5. Verify no source, paths, queries, fixtures or embeddings leave the machine during local navigation with telemetry disabled. Verify install/update provenance remains the fork's. Run the target client smoke matrix and retain logs without secrets.
 6. Update README, telemetry docs, CHANGELOG, AGENTS.md test instructions and indexing/schema version notes. Release a fork patch/minor version with rollback instructions. Old insecure/stale caches must rebuild; retaining an old binary for rollback is not a reason to keep using exposed caches. No upstream merge or push is part of the work.
 
-## Current implementation status and remaining work (2026-10-07)
+## Current implementation status and remaining work (2026-10-08)
 
-The implementation branch is `feature/upstream-changes-2026-10` and contains the code for the required packages 1–5. This section supersedes the earlier session-only prompt below when continuing the work. The worktree is intentionally still uncommitted; no upstream merge or push has been performed.
+The implementation branch is `feature/upstream-changes-2026-10`. Packages 1–5
+were committed in `fd851bf`; subsequent local commits `6640116` and `1933eb2`
+include the release harnesses and the two evaluation-driven fixes. No upstream
+merge, push, tag or release publication has been performed. This section
+supersedes the earlier assessment and continuation prompt.
+
+**Functional status: the required accuracy, freshness, security, and local MCP
+checks are complete apart from one focused F# dependency verification.** The five-root matrix reaches `ready` on every root, the
+candidate's golden corpus results are source-anchored and concise, and the
+candidate improves result/corpus parity over the baseline. The paired timing
+matrix is retained as informational evidence; it exceeds the 10% performance
+threshold, so this branch makes no performance-improvement claim. That timing
+result does not block the data-quality handoff requested here. See [the attached
+evidence](evidence/release-2026-10-08/README.md), [timing details](evidence/release-2026-10-08/performance.json),
+and [reproduction/rollback instructions](../docs/release-validation.md).
 
 ### Completed implementation and validation
 
@@ -200,14 +214,26 @@ The implementation branch is `feature/upstream-changes-2026-10` and contains the
 - **Freshness and status (F):** same-metadata content verification, atomic-save handling, reconciliation, forced rebuild refresh, generation invalidation, scan metrics, and failed/partial status reporting are implemented.
 - **MCP and telemetry (G/H):** protocol negotiation/result gating, annotations, navigation profile, invalid metadata handling, opt-in local telemetry, failed-upload retention, and privacy filtering are implemented.
 - **Recorded checks:** `zig build test` passes; the current MCP harness passes **42/42**; `scripts/test-plan-integration.py` passes; installer tests pass on PowerShell and Bash; `git diff --check` is clean. Evidence is in `.build/current-tests.log`, `.build/plan-integration.log`, and the generated files under `plans/evidence/`.
+- **Accuracy acceptance:** the frozen corpus contains 10 source-anchored questions per root (50 total). The candidate hits 48/50 expected target sets, versus 44/50 for the baseline; the two misses are the same F# module dependency cases in both variants. A unique bare-module resolver is now in the working tree; one focused fresh-cache verification remains. Standalone Autumn completes with an explicit `ready` terminal state and bounded metrics.
+- **Isolation and client evidence:** secondary-root cache reuse, forced add/delete convergence, root switching, and synthetic secret/junction boundaries are recorded. Codex, Claude, and Copilot each pass isolated full/navigation smokes; ChatGPT and OpenCode were unavailable locally and are not inferred. Client breadth is observational evidence, not a product acceptance requirement.
 
-### Required remaining work
+### Remaining work
 
-1. **Run the five-root release matrix.** Build a pinned baseline and candidate with the verified Zig 0.16 toolchain and run them against `lm-asp-net`, `pro`, `invest`, `autumn`, and `credo_main\src\Autumn`. Use isolated caches and immutable fixture revisions. Capture cold scan, warm load, query median/p95, peak RSS, idle CPU, update latency, and 1/4/8-agent measurements. Apply the 10% regression gate from `AGENTS.md`.
-2. **Complete the golden corpus and parity review.** Review 8–12 questions per root with expected files/symbols/lines, relevance labels, result/corpus parity, and pinned dirty-file hashes. Keep private source, queries, and logs local. Include Autumn's standalone scan diagnosis and explicit terminal state.
-3. **Run the real MCP client matrix.** Verify registration and a basic read-only smoke flow separately in ChatGPT/Codex, Claude, OpenCode, and Copilot when those clients are available. Record client/version/protocol, profile, tool count, handshake result, and any schema or envelope incompatibility. The generic JSON-RPC harness does not satisfy this gate by itself.
-4. **Finish live root/cache evidence.** Demonstrate parent/child cache isolation, secondary-cache reuse, root changes, and rebuild convergence on the five roots. Attempt the symlink/junction race reproduction; if Windows privileges still prevent link creation, record that limitation and retain the source-level and synthetic boundary evidence.
-5. **Complete release bookkeeping.** Bump the fork patch/minor versions currently in `src/release_info.zig` and `build.zig.zon`, document rollback and old-cache cleanup, and ensure README, telemetry docs, CHANGELOG, and AGENTS instructions match the final behavior. Review the complete diff and commit the finished branch; do not push or merge unless separately requested.
+1. **Review decision:** the 50-question corpus has an agent-reviewed draft with
+   source hashes; a human sign-off has not been recorded. The user has asked for
+   self-validation and concise current data, so this is the only remaining
+   review artifact rather than another client or benchmark run.
+2. **Optional F# follow-up:** rerun the two dependency questions after the new
+   unique bare-module resolver is exercised on a fresh cache. This is a focused
+   accuracy check, not a performance campaign; both cases were baseline misses
+   as well as candidate misses and therefore are not regressions.
+3. **Performance decision:** the timing matrix is complete and attached. The
+   >10% result remains a release-performance limitation documented for rollback
+   and future optimization; no further timing repetitions are planned for this
+   data-quality handoff.
+
+The ChatGPT/OpenCode smoke rows remain explicitly unavailable, and no further
+AI-client testing is required. Package 6 (local context/explain) stays deferred.
 
 ### Known non-blocking follow-ups
 
@@ -229,8 +255,12 @@ pwsh -File scripts\test-installers.ps1
 & 'C:\Program Files\Git\bin\bash.exe' scripts/test-installers.sh
 ```
 
-Then complete items 1–5 above and attach the benchmark, client, root-isolation, and release logs to this plan before declaring the work complete.
+The attached evidence already covers the benchmark, corpus, Autumn diagnostics,
+client observations, root/cache isolation, telemetry, installers, and rollback
+bookkeeping. Continue only with the focused F# accuracy check or the optional
+human corpus sign-off; do not expand this into a larger client or performance
+test campaign.
 
 ## Suggested prompt for the next session
 
-> Read `plans/2026-10-06-upstream-and-mcp-improvement-plan.md`, especially **Current implementation status and remaining work**, and continue on the existing `feature/upstream-changes-2026-10` branch. Treat packages 1–5 as implemented and do not redo them unless a regression is found. Complete every required remaining item: the five-root baseline/candidate benchmark and 10% gate, the 8–12-question-per-root golden corpus and result/corpus parity review, standalone Autumn diagnostics, root/cache isolation evidence, the individual ChatGPT/Codex, Claude, OpenCode, and Copilot MCP smoke matrix when available, and release bookkeeping/versioning/rollback notes. Preserve the fork's security boundaries, local-only telemetry, Zig 0.16 toolchain, retained edit/remote tools, and all fork languages. Use isolated caches and synthetic secrets; do not upload private source, adopt hosted embeddings, broaden indexing to `C:\repos\credo_main`, or push/merge anything upstream. Leave attached logs and update this plan with final evidence before committing the branch.
+> Read `plans/2026-10-06-upstream-and-mcp-improvement-plan.md` and continue on `feature/upstream-changes-2026-10`. Packages 1–5 and the attached five-root, golden-corpus, Autumn, isolation, telemetry, installer, and available-client evidence are complete. Do not start another benchmark or client campaign. If needed, run only the focused fresh-cache check for the new unique F# bare-module dependency resolver, then record the result here. Keep private source local, preserve security boundaries and all fork languages, and do not push or merge upstream.

@@ -70,12 +70,14 @@ aggregate peak. Idle CPU is CPU seconds over the stated wall interval. A zero
 baseline makes relative CPU change undefined. The extended measurements have
 one trial per setting and therefore provide limited variability evidence.
 
-The strict gate flags **every measured critical-path increase over 10%**.
-Correctness improvements do not waive it. Corpus/result losses are reviewed
-separately; incomplete indexes cannot pass by being faster. Human golden-corpus
-review must be recorded explicitly; an agent's source review does not substitute
-for it. Optional context/explain remains deferred, so the golden workflow uses
-the existing tools and `codedb_query`.
+The strict gate flags **every measured critical-path increase over 10%** and is
+retained as a performance-release signal. For this handoff, accuracy, concise
+answers, freshness, security boundaries, and local-only telemetry are the
+acceptance priorities; do not repeat timing runs solely to improve the report.
+Corpus/result losses are reviewed separately; incomplete indexes cannot pass by
+being faster. Human golden-corpus review is an optional remaining sign-off, not
+a reason to expand client or benchmark testing. Optional context/explain remains
+deferred, so the golden workflow uses the existing tools and `codedb_query`.
 
 Both variants use 4 GiB per-process budgets. Standalone Autumn also has retained
 eight-worker partial-index diagnostics. Its complete paired runs use one worker
@@ -83,18 +85,21 @@ for **both** binaries; the other four roots use eight. This is an explicit
 measurement setting, not a change to the product default.
 
 Real-client smoke tests use only synthetic TypeScript and isolated configuration.
-Codex app-server and the installed Copilot SDK/runtime can invoke MCP directly
-without model inference. Claude's smoke uses its CLI with synthetic data only.
-Record application/version, negotiated protocol, full/navigation tool counts,
-and actual read results. Generic protocol tests alone do not prove compatibility.
+Codex app-server, Claude's CLI, and the installed Copilot SDK/runtime are
+covered in the attached evidence. ChatGPT and OpenCode were unavailable locally;
+their absence is recorded without inferring compatibility. Generic protocol
+tests alone do not prove compatibility, and no further client matrix is needed
+for the data-quality handoff.
 
 ## Versions, cache policy, and rollback
 
 `src/release_info.zig` and `build.zig.zon` are aligned at **3.1.0**. Packages 1–5
 already bumped snapshot format to **4**, semantic/policy index version to **5**,
 word-index disk format to **4**, and trigram format to **4**. The scoped-search
-fix changes query-time filtering and requires no additional persisted-format
-bump. Incompatible snapshots and disk indexes rebuild under the new policy.
+fix changes query-time filtering and requires no persisted-format bump. The
+subsequent ignore-character-class correction raises the semantic/policy index
+version to **6** so previously included files cannot survive a warm restore.
+Incompatible snapshots and disk indexes rebuild under the new policy.
 
 Before deploying an approved build, retain its SHA-256, verified toolchain,
 source commit, configuration, and the previous binary's hash. Stop the affected

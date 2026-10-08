@@ -1,0 +1,8 @@
+PASS http
+PASS missing
+PASS malformed
+PASS duplicate
+PASS mismatch
+  ✓ Checksum verified
+  ✓ Installed to C:\Users\jwvol\AppData\Local\Temp\codedb-installer-test-a5b87fdadaa94e83940015f5c39520df\codedb.exe
+PASS success
