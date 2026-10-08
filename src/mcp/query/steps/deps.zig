@@ -54,12 +54,12 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
                 needs_free = true;
             } else {
                 ctx.explorer.mu.lockShared();
+                defer ctx.explorer.mu.unlockShared();
                 const fwd = ctx.explorer.dep_graph.getForwardDeps(path);
-                ctx.explorer.mu.unlockShared();
                 if (fwd) |deps| {
                     var res: std.ArrayList([]const u8) = .empty;
                     for (deps) |dep| {
-                        const resolved = @import("../../../explore/deps.zig").resolveDependency(ctx.explorer, dep) orelse dep;
+                        const resolved = @import("../../../explore/deps.zig").resolveDependency(ctx.explorer, path, dep) orelse dep;
                         const d = ctx.alloc.dupe(u8, resolved) catch continue;
                         res.append(ctx.alloc, d) catch {
                             ctx.alloc.free(d);

@@ -224,28 +224,36 @@ pub fn resolveLocalDependency(self: *Explorer, key: []const u8) ?[]const u8 {
 
 /// Resolve a dependency edge to an indexed path when the parser recorded a
 /// language-level module name (for example F# `open Metadata`).  Bare names
-/// are only resolved when exactly one indexed file has the matching basename
-/// or stem; ambiguous names remain as-is so a short import cannot point at an
-/// arbitrary file.
-pub fn resolveDependency(self: *Explorer, key: []const u8) ?[]const u8 {
+/// match a unique basename or stem. F# prefers a unique sibling F# source file
+/// before looking across the corpus, and never resolves modules to non-F# files.
+/// Ambiguous names remain unresolved within the selected scope.
+pub fn resolveDependency(self: *Explorer, importer: []const u8, key: []const u8) ?[]const u8 {
     if (resolveLocalDependency(self, key)) |resolved| return resolved;
     if (self.outlines.getKey(key)) |exact| return exact;
     if (key.len == 0 or std.mem.indexOfScalar(u8, key, '/') != null) return null;
 
+    const is_fsharp = @import("types.zig").detectLanguage(importer) == .f_sharp;
+    const importer_dir = std.fs.path.dirname(importer) orelse "";
     var found: ?[]const u8 = null;
-    var it = self.outlines.keyIterator();
-    while (it.next()) |path_ptr| {
-        const path = path_ptr.*;
+    var found_count: usize = 0;
+    var sibling: ?[]const u8 = null;
+    var sibling_count: usize = 0;
+    var it = self.outlines.iterator();
+    while (it.next()) |entry| {
+        if (is_fsharp and entry.value_ptr.language != .f_sharp) continue;
+        const path = entry.key_ptr.*;
         const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| path[sep + 1 ..] else path;
         const stem = dependency_graph.fileStem(basename);
         if (!std.mem.eql(u8, basename, key) and !std.mem.eql(u8, stem, key)) continue;
-        if (found) |previous| {
-            if (!std.mem.eql(u8, previous, path)) return null;
-        } else {
-            found = path;
+        found = path;
+        found_count += 1;
+        if (is_fsharp and std.mem.eql(u8, importer_dir, std.fs.path.dirname(path) orelse "")) {
+            sibling = path;
+            sibling_count += 1;
         }
     }
-    return found;
+    if (sibling_count > 0) return if (sibling_count == 1) sibling else null;
+    return if (found_count == 1) found else null;
 }
 
 // Resolve each hop against the current corpus. Local import keys never
@@ -267,7 +275,7 @@ fn transitiveResolved(self: *Explorer, path: []const u8, allocator: std.mem.Allo
         if (node.depth >= (depth_limit orelse 128)) continue;
         const edges = if (forward) self.dep_graph.getForwardDeps(node.path) orelse &.{} else try getImportedByLocked(self, node.path, a);
         for (edges) |edge| {
-            const resolved = if (forward) resolveDependency(self, edge) orelse edge else edge;
+            const resolved = if (forward) resolveDependency(self, node.path, edge) orelse edge else edge;
             if (seen.contains(resolved)) continue;
             try seen.put(resolved, {});
             try result.append(allocator, try allocator.dupe(u8, resolved));

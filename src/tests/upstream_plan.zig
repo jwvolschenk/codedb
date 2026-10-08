@@ -83,6 +83,47 @@ test "plan: exact relative imports survive duplicate basenames and deletion" {
     try t.expect(deps.resolveLocalDependency(&exp, "local:a/index") == null);
 }
 
+test "plan: FSharp dependencies prefer sibling sources and reject unrelated files and ambiguity" {
+    var exp = Explorer.init(t.allocator);
+    defer exp.deinit();
+    try exp.indexFile("app/Consumer.fs", "module Consumer\nopen Domain\nopen Metadata\nopen FSharp.Data\n");
+    try exp.indexFile("other/Domain.fs", "module Domain\nlet other = 1\n");
+    try exp.indexFile("tools/Domain.fsx", "module Domain\nlet tool = 1\n");
+    try exp.indexFile("lib/FSharp.Data.xml", "<doc />\n");
+    try exp.indexFile("shared/Metadata.fs", "module Metadata\nlet value = 1\n");
+    try exp.indexFile("lib/Metadata.xml", "<doc />\n");
+    try t.expect(deps.resolveDependency(&exp, "app/Consumer.fs", "Domain") == null);
+    try exp.indexFile("app/Domain.fs", "module Domain\nlet value = 1\n");
+
+    const args = try std.json.parseFromSlice(std.json.Value, t.allocator,
+        "{\"path\":\"app/Consumer.fs\",\"direction\":\"depends_on\",\"output_format\":\"json\"}", .{});
+    defer args.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(t.allocator);
+    tools.handleDeps(t.allocator, &args.value.object, &out, &exp);
+    const response = try std.json.parseFromSlice(std.json.Value, t.allocator, out.items, .{});
+    defer response.deinit();
+    const hits = response.value.object.get("hits").?.array.items;
+    try t.expectEqual(@as(usize, 3), hits.len);
+    for ([_][]const u8{ "app/Domain.fs", "shared/Metadata.fs", "FSharp.Data" }, hits) |expected, hit| {
+        try t.expectEqualStrings(expected, hit.object.get("path").?.string);
+    }
+    const transitive = try exp.getTransitiveDependencies("app/Consumer.fs", t.allocator, null);
+    defer { for (transitive) |p| t.allocator.free(p); t.allocator.free(transitive); }
+    try t.expectEqual(@as(usize, 3), transitive.len);
+    for ([_][]const u8{ "app/Domain.fs", "shared/Metadata.fs", "FSharp.Data" }, transitive) |expected, actual| {
+        try t.expectEqualStrings(expected, actual);
+    }
+
+    // Same-directory ambiguity must not fall through to a global candidate.
+    try exp.indexFile("app/Domain.fsx", "module Domain\nlet ambiguous = 1\n");
+    try t.expect(deps.resolveDependency(&exp, "app/Consumer.fs", "Domain") == null);
+    exp.removeFile("app/Domain.fsx");
+    try t.expectEqualStrings("app/Domain.fs", deps.resolveDependency(&exp, "app/Consumer.fs", "Domain").?);
+    exp.removeFile("app/Domain.fs");
+    try t.expect(deps.resolveDependency(&exp, "app/Consumer.fs", "Domain") == null);
+}
+
 test "plan: nested ignore negation security and explicit rebuild agree" {
     var tmp = t.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();

@@ -1461,7 +1461,7 @@ pub fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
             if (fwd) |deps| {
                 var result_list: std.ArrayList([]const u8) = .empty;
                 for (deps) |dep| {
-                    const resolved = @import("../explore/deps.zig").resolveDependency(explorer, dep) orelse dep;
+                    const resolved = @import("../explore/deps.zig").resolveDependency(explorer, path, dep) orelse dep;
                     const d = alloc.dupe(u8, resolved) catch continue;
                     result_list.append(alloc, d) catch {
                         alloc.free(d);
