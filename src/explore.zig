@@ -262,6 +262,7 @@ pub const Explorer = struct {
     pub const findAllSymbols = @import("explore/deps.zig").findAllSymbols;
 
     pub const searchContent = @import("explore/search.zig").searchContent;
+    pub const searchContentFiltered = @import("explore/search.zig").searchContentFiltered;
 
     pub const rerankAndFinalize = @import("explore/search.zig").rerankAndFinalize;
 
@@ -272,6 +273,7 @@ pub const Explorer = struct {
     pub const searchContentRanked = @import("explore/search.zig").searchContentRanked;
 
     pub const searchContentRegex = @import("explore/search.zig").searchContentRegex;
+    pub const searchContentRegexFiltered = @import("explore/search.zig").searchContentRegexFiltered;
 
     pub const searchWord = @import("explore/search.zig").searchWord;
 
@@ -418,12 +420,14 @@ pub const Explorer = struct {
     pub const ScopedSearchResult = @import("explore/search.zig").ScopedSearchResult;
 
     pub const searchContentWithScope = @import("explore/search.zig").searchContentWithScope;
+    pub const searchContentWithScopeFiltered = @import("explore/search.zig").searchContentWithScopeFiltered;
 
     pub const findTypeReferences = @import("explore/search.zig").findTypeReferences;
 
     pub const searchReferencesWithScope = @import("explore/search.zig").searchReferencesWithScope;
 
     pub const searchContentRegexWithScope = @import("explore/search.zig").searchContentRegexWithScope;
+    pub const searchContentRegexWithScopeFiltered = @import("explore/search.zig").searchContentRegexWithScopeFiltered;
 
     pub const searchInContentWithScope = @import("explore/search.zig").searchInContentWithScope;
 

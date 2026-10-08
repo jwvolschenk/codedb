@@ -23,7 +23,30 @@ const pathHasSegment = parse_utils.pathHasSegment;
 const pathHasSegmentIgnoreCase = parse_utils.pathHasSegmentIgnoreCase;
 const fuzzyScore = parse_utils.fuzzyScore;
 
+/// Applied before retrieval quotas, including query-pipeline file sets.
+pub const SearchFilter = struct {
+    path_glob: ?[]const u8 = null,
+    file_set: ?[]const []const u8 = null,
+    exclude_generated: bool = false,
+
+    fn allows(self: SearchFilter, path: []const u8) bool {
+        if (self.exclude_generated and @import("../watcher/skip_rules.zig").isGeneratedPath(path)) return false;
+        if (self.path_glob) |pattern| {
+            if (!@import("../mcp/pathglob.zig").globMatch(pattern, path)) return false;
+        }
+        if (self.file_set) |paths| {
+            for (paths) |p| { if (std.mem.eql(u8, p, path)) return true; }
+            return false;
+        }
+        return true;
+    }
+};
+
 pub fn searchContent(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const SearchResult {
+    return searchContentFiltered(self, query, allocator, max_results, .{});
+}
+
+pub fn searchContentFiltered(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize, filter: SearchFilter) ![]const SearchResult {
     self.mu.lockShared();
     defer self.mu.unlockShared();
 
@@ -55,7 +78,7 @@ pub fn searchContent(self: *Explorer, query: []const u8, allocator: std.mem.Allo
 
         for (word_hits, 0..) |hit, ordinal| {
             const hit_path = self.word_index.hitPath(hit);
-            if (hit_path.len == 0) continue;
+            if (hit_path.len == 0 or !filter.allows(hit_path)) continue;
             const gop = tier0_files_by_path.getOrPut(hit_path) catch continue;
             if (!gop.found_existing) {
                 gop.value_ptr.* = .{
@@ -91,6 +114,7 @@ pub fn searchContent(self: *Explorer, query: []const u8, allocator: std.mem.Allo
         const tier0_per_file_cap: usize = if (tier0_files.items.len <= 1) max_results else @max(1, max_results / 5);
         for (tier0_files.items) |stats| {
             if (result_list.items.len >= max_results) break;
+            if (!filter.allows(stats.path)) continue;
             const ref = self.readContentForSearch(stats.path, allocator) orelse continue;
             defer ref.deinit();
             searched.put(stats.path, {}) catch {};
@@ -103,12 +127,12 @@ pub fn searchContent(self: *Explorer, query: []const u8, allocator: std.mem.Allo
     // Tier 0.5: prefix expansion — find all indexed keys that begin with the query.
     // Activates when Tier 0 found nothing and query is ≥3 chars, catching partial
     // identifier queries like "searchC" that match "searchContent" in the word index.
-    if (result_list.items.len == 0 and query.len >= 3) {
+    if (result_list.items.len == 0 and query.len >= 3 and filter.path_glob == null and filter.file_set == null and !filter.exclude_generated) {
         const prefix_hits = try self.word_index.searchPrefix(query, allocator, max_results);
         defer allocator.free(prefix_hits);
         for (prefix_hits) |hit| {
             const hit_path = self.word_index.hitPath(hit);
-            if (hit_path.len == 0) continue;
+            if (hit_path.len == 0 or !filter.allows(hit_path)) continue;
             const ref = self.readContentForSearch(hit_path, allocator) orelse continue;
             defer ref.deinit();
             const line_text = extractLineByNumber(ref.data, hit.line_num) orelse continue;
@@ -168,6 +192,7 @@ pub fn searchContent(self: *Explorer, query: []const u8, allocator: std.mem.Allo
             const max_per_file = @max(@as(usize, 1), max_results / @max(@as(usize, 1), estimated_total));
             for (cp) |path| {
                 if (searched.contains(path)) continue;
+                if (!filter.allows(path)) continue;
                 const ref = self.readContentForSearch(path, allocator) orelse continue;
                 defer ref.deinit();
                 try searchInContent(path, ref.data, query, allocator, max_per_file, max_results, &result_list);
@@ -189,6 +214,7 @@ pub fn searchContent(self: *Explorer, query: []const u8, allocator: std.mem.Allo
         if (sparse_paths) |sp| {
             for (sp) |path| {
                 if (searched.contains(path)) continue;
+                if (!filter.allows(path)) continue;
                 const ref = self.readContentForSearch(path, allocator) orelse continue;
                 defer ref.deinit();
                 searched.put(path, {}) catch {};
@@ -203,6 +229,7 @@ pub fn searchContent(self: *Explorer, query: []const u8, allocator: std.mem.Allo
         var skip_iter = self.skip_trigram_files.keyIterator();
         while (skip_iter.next()) |key_ptr| {
             if (searched.contains(key_ptr.*)) continue;
+            if (!filter.allows(key_ptr.*)) continue;
             const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
             defer ref.deinit();
             searched.put(key_ptr.*, {}) catch {};
@@ -221,6 +248,7 @@ pub fn searchContent(self: *Explorer, query: []const u8, allocator: std.mem.Allo
             var wp_iter = word_paths.keyIterator();
             while (wp_iter.next()) |key_ptr| {
                 if (searched.contains(key_ptr.*)) continue;
+                if (!filter.allows(key_ptr.*)) continue;
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
                 searched.put(key_ptr.*, {}) catch {};
@@ -236,6 +264,7 @@ pub fn searchContent(self: *Explorer, query: []const u8, allocator: std.mem.Allo
         var iter = self.outlines.keyIterator();
         while (iter.next()) |key_ptr| {
             if (searched.contains(key_ptr.*)) continue;
+            if (!filter.allows(key_ptr.*)) continue;
             const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
             defer ref.deinit();
             try searchInContent(key_ptr.*, ref.data, query, allocator, max_results, max_results, &result_list);
@@ -250,7 +279,7 @@ pub fn searchContent(self: *Explorer, query: []const u8, allocator: std.mem.Allo
     // "that's everything"; silently dropping a hit to a per-file cap breaks
     // that contract (issue-bug5).
     if (result_list.items.len < max_results) {
-        refillCappedFiles(self, &searched, query, allocator, max_results, &result_list) catch {};
+        refillCappedFiles(self, &searched, query, allocator, max_results, &result_list, filter) catch {};
     }
 
     return self.rerankAndFinalize(&result_list, query, allocator);
@@ -263,6 +292,7 @@ fn refillCappedFiles(
     allocator: std.mem.Allocator,
     max_results: usize,
     result_list: *std.ArrayList(SearchResult),
+    filter: SearchFilter,
 ) !void {
     var have = std.StringHashMap(void).init(allocator);
     defer {
@@ -279,6 +309,7 @@ fn refillCappedFiles(
     var s_iter = searched.keyIterator();
     while (s_iter.next()) |key_ptr| {
         if (result_list.items.len >= max_results) return;
+        if (!filter.allows(key_ptr.*)) continue;
         const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
         defer ref.deinit();
 
@@ -667,6 +698,10 @@ pub fn searchContentRanked(self: *Explorer, query: []const u8, allocator: std.me
 /// Decomposes the regex to extract literal trigrams for candidate filtering,
 /// then does actual regex matching on candidates.
 pub fn searchContentRegex(self: *Explorer, pattern: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const SearchResult {
+    return searchContentRegexFiltered(self, pattern, allocator, max_results, .{});
+}
+
+pub fn searchContentRegexFiltered(self: *Explorer, pattern: []const u8, allocator: std.mem.Allocator, max_results: usize, filter: SearchFilter) ![]const SearchResult {
     self.mu.lockShared();
     defer self.mu.unlockShared();
 
@@ -676,6 +711,7 @@ pub fn searchContentRegex(self: *Explorer, pattern: []const u8, allocator: std.m
     var query = idx.decomposeRegex(pattern, self.allocator) catch {
         var iter = self.outlines.keyIterator();
         while (iter.next()) |key_ptr| {
+            if (!filter.allows(key_ptr.*)) continue;
             const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
             defer ref.deinit();
             try searchInContentRegex(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
@@ -691,6 +727,7 @@ pub fn searchContentRegex(self: *Explorer, pattern: []const u8, allocator: std.m
 
     if (use_trigram) {
         for (candidate_paths.?) |path| {
+            if (!filter.allows(path)) continue;
             const ref = self.readContentForSearch(path, allocator) orelse continue;
             defer ref.deinit();
             try searchInContentRegex(path, ref.data, pattern, allocator, max_results, &result_list);
@@ -699,6 +736,7 @@ pub fn searchContentRegex(self: *Explorer, pattern: []const u8, allocator: std.m
     } else {
         var iter = self.outlines.keyIterator();
         while (iter.next()) |key_ptr| {
+            if (!filter.allows(key_ptr.*)) continue;
             const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
             defer ref.deinit();
             try searchInContentRegex(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
@@ -711,6 +749,7 @@ pub fn searchContentRegex(self: *Explorer, pattern: []const u8, allocator: std.m
         var iter = self.outlines.keyIterator();
         while (iter.next()) |key_ptr| {
             if (self.trigram_index.containsFile(key_ptr.*)) continue;
+            if (!filter.allows(key_ptr.*)) continue;
             const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
             defer ref.deinit();
             try searchInContentRegex(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
@@ -824,7 +863,11 @@ pub const ScopedSearchResult = struct {
 
 /// Search content and annotate results with the enclosing symbol scope.
 pub fn searchContentWithScope(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const ScopedSearchResult {
-    const plain_results = try self.searchContent(query, allocator, max_results);
+    return searchContentWithScopeFiltered(self, query, allocator, max_results, .{});
+}
+
+pub fn searchContentWithScopeFiltered(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize, filter: SearchFilter) ![]const ScopedSearchResult {
+    const plain_results = try searchContentFiltered(self, query, allocator, max_results, filter);
     defer {
         for (plain_results) |r| {
             allocator.free(r.line_text);
@@ -1060,6 +1103,10 @@ pub fn searchReferencesWithScope(self: *Explorer, name: []const u8, allocator: s
 /// Scoped regex search: same as searchContentWithScope but uses regex matching
 /// against each line instead of literal substring. Trigram-accelerated.
 pub fn searchContentRegexWithScope(self: *Explorer, pattern: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const ScopedSearchResult {
+    return searchContentRegexWithScopeFiltered(self, pattern, allocator, max_results, .{});
+}
+
+pub fn searchContentRegexWithScopeFiltered(self: *Explorer, pattern: []const u8, allocator: std.mem.Allocator, max_results: usize, filter: SearchFilter) ![]const ScopedSearchResult {
     self.mu.lockShared();
     defer self.mu.unlockShared();
 
@@ -1076,6 +1123,7 @@ pub fn searchContentRegexWithScope(self: *Explorer, pattern: []const u8, allocat
     var query = idx.decomposeRegex(pattern, self.allocator) catch {
         var iter = self.outlines.keyIterator();
         while (iter.next()) |key_ptr| {
+            if (!filter.allows(key_ptr.*)) continue;
             const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
             defer ref.deinit();
             try self.searchInContentRegexWithScope(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
@@ -1091,6 +1139,7 @@ pub fn searchContentRegexWithScope(self: *Explorer, pattern: []const u8, allocat
 
     if (use_trigram) {
         for (candidate_paths.?) |path| {
+            if (!filter.allows(path)) continue;
             const ref = self.readContentForSearch(path, allocator) orelse continue;
             defer ref.deinit();
             try self.searchInContentRegexWithScope(path, ref.data, pattern, allocator, max_results, &result_list);
@@ -1099,6 +1148,7 @@ pub fn searchContentRegexWithScope(self: *Explorer, pattern: []const u8, allocat
     } else {
         var iter = self.outlines.keyIterator();
         while (iter.next()) |key_ptr| {
+            if (!filter.allows(key_ptr.*)) continue;
             const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
             defer ref.deinit();
             try self.searchInContentRegexWithScope(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
@@ -1111,6 +1161,7 @@ pub fn searchContentRegexWithScope(self: *Explorer, pattern: []const u8, allocat
         var iter = self.outlines.keyIterator();
         while (iter.next()) |key_ptr| {
             if (self.trigram_index.containsFile(key_ptr.*)) continue;
+            if (!filter.allows(key_ptr.*)) continue;
             const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
             defer ref.deinit();
             try self.searchInContentRegexWithScope(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);

@@ -7,6 +7,38 @@ const deps = @import("../explore/deps.zig");
 const Store = @import("../store.zig").Store;
 const Walker = @import("../watcher/filtered_walker.zig").FilteredWalker;
 
+test "release: search scopes and pipeline file sets are applied before a one-hit quota" {
+    var exp = Explorer.init(t.allocator);
+    defer exp.deinit();
+    try exp.indexFile("other.ts", "const needle = 1;\nneedle();\nneedle();\n");
+    try exp.indexFile("wanted.ts", "export function needle() {}\n");
+    for ([_]bool{ false, true }) |regex| {
+        const rows = if (regex)
+            try exp.searchContentRegexFiltered("needle", t.allocator, 1, .{ .path_glob = "wanted.ts" })
+        else
+            try exp.searchContentFiltered("needle", t.allocator, 1, .{ .file_set = &.{"wanted.ts"} });
+        defer {
+            for (rows) |r| { t.allocator.free(r.path); t.allocator.free(r.line_text); }
+            t.allocator.free(rows);
+        }
+        try t.expectEqual(@as(usize, 1), rows.len);
+        try t.expectEqualStrings("wanted.ts", rows[0].path);
+        const scoped = if (regex)
+            try exp.searchContentRegexWithScopeFiltered("needle", t.allocator, 1, .{ .file_set = &.{"wanted.ts"} })
+        else
+            try exp.searchContentWithScopeFiltered("needle", t.allocator, 1, .{ .path_glob = "wanted.ts" });
+        defer {
+            for (scoped) |r| { t.allocator.free(r.path); t.allocator.free(r.line_text); if (r.scope_name) |n| t.allocator.free(n); }
+            t.allocator.free(scoped);
+        }
+        try t.expectEqual(@as(usize, 1), scoped.len);
+        try t.expectEqualStrings("wanted.ts", scoped[0].path);
+    }
+    const empty = try exp.searchContentFiltered("needle", t.allocator, 1, .{ .file_set = &.{} });
+    defer t.allocator.free(empty);
+    try t.expectEqual(@as(usize, 0), empty.len);
+}
+
 test "plan: callers apply whole-file lexical filtering before limits and scope" {
     var exp = Explorer.init(t.allocator);
     defer exp.deinit();
@@ -55,9 +87,9 @@ test "plan: nested ignore negation security and explicit rebuild agree" {
     var tmp = t.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     try tmp.dir.createDir(io, "nested", .default_dir);
-    try tmp.dir.writeFile(io, .{ .sub_path = ".gitignore", .data = "*.skip.ts\n!keep.skip.ts\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = ".gitignore", .data = "*.skip.ts\n!keep.skip.ts\n*.[Pp]ublish.xml\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = "nested/.gitignore", .data = "/hidden.ts\n" });
-    for ([_][]const u8{"keep.skip.ts", "drop.skip.ts", "nested/hidden.ts", "nested/open.ts", ".ENV"}) |p| {
+    for ([_][]const u8{"keep.skip.ts", "drop.skip.ts", "nested/hidden.ts", "nested/open.ts", ".ENV", "nested/Debug.publish.xml"}) |p| {
         try tmp.dir.writeFile(io, .{ .sub_path = p, .data = "export const probe = 1;\n" });
     }
     var walker = try Walker.init(io, tmp.dir, t.allocator);
@@ -67,6 +99,7 @@ test "plan: nested ignore negation security and explicit rebuild agree" {
         try t.expect(!std.mem.eql(u8, entry.path, "drop.skip.ts"));
         try t.expect(!std.mem.eql(u8, entry.path, "nested/hidden.ts"));
         try t.expect(!std.mem.eql(u8, entry.path, ".ENV"));
+        try t.expect(!std.mem.eql(u8, entry.path, "nested/Debug.publish.xml"));
         if (std.mem.endsWith(u8, entry.path, ".ts")) found += 1;
     }
     try t.expectEqual(@as(usize, 2), found);

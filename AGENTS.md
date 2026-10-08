@@ -14,6 +14,12 @@
 
 Run these before merging any MCP-related change:
 
+Use Zig **0.16.0** explicitly when another version is on PATH. On Windows use
+`codedb.exe` and an isolated `CODEDB_CACHE_DIR` for the E2E suite. See
+[release validation](docs/release-validation.md) for the five-root performance,
+corpus parity, real-client and rollback checks. A recorded failing 10% gate
+blocks release; it must not be presented as a successful benchmark.
+
 ```bash
 zig build test                                          # unit tests
 python3 scripts/e2e_mcp_test.py \

@@ -415,6 +415,16 @@ MCP exposes the full compatibility tool set by default. Set
 tool availability remains explicit and additive. The profile does not enable
 remote queries or hosted embeddings.
 
+The 3.1.0 candidate's native Windows measurements, client smoke results, cache
+policy versions, and rollback procedure are documented in
+[release validation](docs/release-validation.md). The release gate remains
+strict: a critical-path regression over 10% blocks release even when correctness
+improves. Source-backed evaluation data stays in ignored local evidence.
+
+An explicit positional root stays pinned when a client reports changed workspace
+roots. Restart with the new root, or use an explicit `project=` selection backed
+by that root's own cache. A child root never implicitly expands to its parent.
+
 ### Settings reference
 
 | Setting | Default | Increase when | Decrease when |

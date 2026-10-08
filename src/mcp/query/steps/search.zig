@@ -5,7 +5,6 @@ const mcpj = @import("mcp").json;
 const getStr = mcpj.getStr;
 const getInt = mcpj.getInt;
 const getBool = mcpj.getBool;
-const globMatch = @import("../../pathglob.zig").globMatch;
 const mcp = @import("../../../mcp.zig");
 const finishQueryWithFailure = mcp.finishQueryWithFailure;
 const combo_boost = @import("../combo_boost.zig");
@@ -22,7 +21,7 @@ pub fn run(ctx: *shared.Context, step: *const std.json.ObjectMap, step_i: usize)
     const max: usize = if (getInt(step, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
     const include_generated = getBool(step, "include_generated");
     const exclude_generated = !include_generated;
-    const results = ctx.explorer.searchContent(query, ctx.alloc, max) catch {
+    const results = ctx.explorer.searchContentFiltered(query, ctx.alloc, max, .{ .path_glob = getStr(step, "path_glob"), .file_set = if (ctx.have_set.*) ctx.file_set.items else null, .exclude_generated = exclude_generated }) catch {
         w.print("error: search failed\n", .{}) catch {};
         return false;
     };

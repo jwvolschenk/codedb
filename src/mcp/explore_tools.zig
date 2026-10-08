@@ -692,7 +692,7 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
     } else null;
 
     if (scope and is_regex) {
-        const orig = explorer.searchContentRegexWithScope(query, alloc, max_results) catch {
+        const orig = explorer.searchContentRegexWithScopeFiltered(query, alloc, max_results, .{ .path_glob = path_glob, .exclude_generated = exclude_generated }) catch {
             out.appendSlice(alloc, "error: scoped regex search failed") catch {};
             return;
         };
@@ -749,7 +749,7 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
         appendSearchHints(alloc, out, query, visible_total, dir_set.count());
         appendGlobalCapMarker(alloc, out, orig.len, max_results);
     } else if (scope) {
-        const orig = explorer.searchContentWithScope(query, alloc, max_results) catch {
+        const orig = explorer.searchContentWithScopeFiltered(query, alloc, max_results, .{ .path_glob = path_glob, .exclude_generated = exclude_generated }) catch {
             out.appendSlice(alloc, "error: search failed") catch {};
             return;
         };
@@ -825,7 +825,7 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
         appendSearchHints(alloc, out, query, visible_total, dir_set.count());
         appendGlobalCapMarker(alloc, out, orig.len, max_results);
     } else if (is_regex) {
-        const orig = explorer.searchContentRegex(query, alloc, max_results) catch {
+        const orig = explorer.searchContentRegexFiltered(query, alloc, max_results, .{ .path_glob = path_glob, .exclude_generated = exclude_generated }) catch {
             out.appendSlice(alloc, "error: regex search failed") catch {};
             return;
         };
@@ -892,7 +892,7 @@ pub fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
         appendSearchHints(alloc, out, query, visible_total, dir_set.count());
         appendGlobalCapMarker(alloc, out, orig.len, max_results);
     } else {
-        const orig = explorer.searchContent(query, alloc, max_results) catch {
+        const orig = explorer.searchContentFiltered(query, alloc, max_results, .{ .path_glob = path_glob, .exclude_generated = exclude_generated }) catch {
             out.appendSlice(alloc, "error: search failed") catch {};
             return;
         };

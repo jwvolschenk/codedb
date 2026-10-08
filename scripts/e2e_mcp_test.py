@@ -617,6 +617,13 @@ def run_scenario_5_restart_staleness(binary: str) -> list[TestResult]:
             r = t("first run: snapshot persisted")
             deadline = time.monotonic() + 30.0
             snap = Path(proj, "codedb.snapshot")
+            # An explicit isolated cache deliberately suppresses in-root snapshots.
+            # Find the canonical project entry, not an unrelated cached snapshot.
+            if cache_override := os.environ.get("CODEDB_CACHE_DIR"):
+                for info in (Path(cache_override) / "projects").glob("*/project.txt"):
+                    if os.path.normcase(info.read_text().strip()) == os.path.normcase(proj):
+                        snap = info.with_name("codedb.snapshot")
+                        break
             while time.monotonic() < deadline and not snap.exists():
                 time.sleep(0.5)
             if not snap.exists():

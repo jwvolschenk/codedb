@@ -3,19 +3,41 @@
 
 ## Unreleased
 
+### 3.1.0 candidate — local security, navigation and release validation
+
+- Packages 1–5 retain edit/remote tools, all fork languages and Zig 0.16 while
+  hardening root-confined file access, mandatory secret exclusions, snapshots,
+  installer verification, ignore semantics and live-index freshness.
+- MCP legacy/current negotiation gates newer envelopes, annotates actual tool
+  behavior, offers explicit full/navigation profiles, and keeps repeat-query
+  guidance sensitive to index generation. Telemetry is off by default with no
+  configured upload destination; explicit opt-in records local aggregates.
+- Scoped literal/regex search and query-pipeline file sets now filter candidates
+  before applying result limits. The five-root evaluation reproduced a false
+  empty result when out-of-scope matches previously consumed the quota.
+- Align executable/package versions at 3.1.0. Snapshot format 4, semantic/policy
+  index 5, word format 4 and trigram format 4 reject incompatible old caches.
+- Add paired Windows benchmarks, private golden-corpus/result-parity reports,
+  real-client smoke drivers, root/cache/junction evidence and documented rollback.
+  This candidate is **not published**; see the measured release gate and remaining
+  blockers in [the evidence](plans/evidence/release-2026-10-08/README.md).
+
 ### Upstream merge-down: agent-efficiency and correctness hardening (Tier 1)
 
 A curated set of independently-valuable fixes brought down from `justrach/codedb` after a divergence assessment, adapted to this fork's architecture (multi-language parsers, retained `codedb_edit`/`codedb_remote`, basename/stem-based dependency graph). None of upstream's product-direction changes (read-only mode, DeepWiki) were adopted.
 
-- **MCP 2026-07-28 protocol support.** Added version negotiation (`SUPPORTED_PROTOCOL_VERSIONS`, newest/oldest fallback for unrecognized versions), a `server/discover` stateless probe RPC, per-request `params._meta` protocol pinning with `-32022 UnsupportedProtocolVersionError`, and a `resultType`/`_meta` envelope spliced onto every MCP result. Previously the server only ever echoed a hardcoded `2025-06-18` with no negotiation and no `instructions` field.
+- **MCP protocol support.** Added version negotiation, a `server/discover` probe and validated per-request metadata. Newer `resultType`/`_meta` envelopes are gated by the negotiated protocol; legacy results retain the compatible envelope.
 - **Agent-facing output caps.** `codedb_symbol body=true` caps at 32 KB and rangeless `codedb_read` caps at 64 KB (both with an elision note pointing at outline/ranged reads); `raw=true` reads stay byte-exact and uncapped. `codedb_tree` now drops 0-symbol files and dotfiles behind a one-line "N non-code files omitted" summary (falls back to showing everything for docs-only repos). `codedb_outline` collapses consecutive import runs into one `imports: a, b, c (xN)` line and drops the byte-count header.
-- **Convergence governor.** A per-session ring buffer nudges an agent that repeats an identical `search`/`find`/`word`/`read`/`outline`/`symbol`/`callers` call (2nd occurrence — results are deterministic within a session) or keeps reformulating the same query tool with drifting args (4th occurrence). Nudges land in the existing guidance content block, never the raw tool result.
+- **Convergence governor.** A per-session ring buffer nudges repeated identical queries and repeated reformulations. Generation changes reset repetition history; results can change while the index is live. Nudges remain separate from source data.
 - **Stale-index guard for secondary `project=` lookups.** The MCP server's own root was already covered by the live filesystem watcher, and one-shot CLI queries were already covered by the existing warm-start `reconcileAfterLoad`/`reconcileWorkingTree` mechanism. The one real gap was `ProjectCache`'s cross-project `project=` path: a secondary project was loaded once and served from the in-process LRU for the server's lifetime with no refresh. It now reconciles on first load and on cache hits (throttled to once per 2s per entry).
 - **`codedb_deps`/`getImportedBy` ambiguity guard.** When 2+ indexed files share a queried path's basename or file stem, the basename/stem fallback match is now skipped entirely instead of attributing a bare import to every same-named candidate (mirrors upstream's #572/#588 fix, generalized to our shared basename/stem-matching dependency graph rather than upstream's TS/JS-specific exact-path resolution).
 - **Word-index `removeFile` stale-posting fix.** Files indexed while `skip_file_words` is set (the bulk cold-scan memory optimization) had no per-file word list, so `removeFile` silently no-op'd for them — re-indexing left ghost postings at stale lines and doubled BM25 term frequency forever. `removeFile` now falls back to an index-wide posting sweep when no per-file word list exists. Exposure was narrow (a `codedb serve` process cold-started with no snapshot, then live-edited) since MCP mode and warm-started processes never set this flag.
 - **CLI argument-arity hardening.** `tree`, `hot`, `serve`, `outline`, `find`, `word`, `search`, and `snapshot` now reject unexpected trailing arguments with a usage error and exit 1, instead of silently ignoring them (e.g. `codedb word foo bar` used to search for `foo` and drop `bar` without a hint).
 
-Verified: multi-project TS/JS dependency-graph correctness (multi-line imports, re-exports, no bogus deps from comments/strings, relative-import resolution) was investigated and found already correct by construction (token-based lexer, generic basename/stem dependency matching) — no changes needed there.
+The initial unique-basename dependency tests did not establish exact relative
+resolution. Packages 1–5 subsequently added exact local JS/TS paths and bounded
+aliases, with duplicate-basename tests; unresolved and heuristic language edges
+must not be presented as compiler-resolved relationships.
 
 ### MCP — `codedb_relations` text output omits empty sections ([P3])
 

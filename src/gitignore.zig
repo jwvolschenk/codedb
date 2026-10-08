@@ -3,7 +3,7 @@
 //!
 //! Subset of git's rules: comments, `!` negation, trailing-`/` directories,
 //! leading-`/` (or mid-slash) anchored to the ignore file's directory, `*` / `?`
-//! in a path segment, and `**` across segments. A parent directory that wins
+//! and bracket classes/ranges in a path segment, and `**` across segments. A parent directory that wins
 //! as ignored hides its children (a `!` on a child does not pierce it).
 //! `.git` itself is the walker's job, not this file.
 
@@ -88,8 +88,49 @@ fn globSeg(pat: []const u8, s: []const u8) bool {
         return false;
     }
     if (s.len == 0) return false;
+    if (pat[0] == '[') {
+        var i: usize = 1;
+        const negated = i < pat.len and (pat[i] == '!' or pat[i] == '^');
+        if (negated) i += 1;
+        const first = i;
+        var matched = false;
+        // A closing bracket is literal in the first class position.
+        if (i < pat.len and pat[i] == ']') {
+            matched = s[0] == ']';
+            i += 1;
+        }
+        while (i < pat.len and pat[i] != ']') {
+            var lo = pat[i];
+            if (lo == '\\' and i + 1 < pat.len) { i += 1; lo = pat[i]; }
+            i += 1;
+            if (i + 1 < pat.len and pat[i] == '-' and pat[i + 1] != ']') {
+                i += 1;
+                if (pat[i] == '\\' and i + 1 < pat.len) i += 1;
+                const hi = pat[i];
+                i += 1;
+                matched = matched or (s[0] >= lo and s[0] <= hi);
+            } else matched = matched or s[0] == lo;
+        }
+        if (i < pat.len and i > first) {
+            return (matched != negated) and globSeg(pat[i + 1 ..], s[1..]);
+        }
+        // An unterminated class matches a literal '[' (Git wildmatch).
+    }
+    if (pat[0] == '\\' and pat.len > 1) return pat[1] == s[0] and globSeg(pat[2..], s[1..]);
     if (pat[0] == '?' or pat[0] == s[0]) return globSeg(pat[1..], s[1..]);
     return false;
+}
+
+test "gitignore bracket classes ranges and malformed classes" {
+    try std.testing.expect(globSeg("*.[Pp]ublish.xml", "Autumn_Debug_.publish.xml"));
+    try std.testing.expect(globSeg("[Dd]ebug", "Debug"));
+    try std.testing.expect(globSeg("file[0-9].ts", "file7.ts"));
+    try std.testing.expect(!globSeg("file[!0-9].ts", "file7.ts"));
+    try std.testing.expect(globSeg("file[!0-9].ts", "filex.ts"));
+    try std.testing.expect(globSeg("file[].].ts", "file].ts"));
+    try std.testing.expect(!globSeg("[Pp", "p"));
+    try std.testing.expect(globSeg("[Pp", "[Pp"));
+    try std.testing.expect(globSeg("file\\?.ts", "file?.ts"));
 }
 
 const Segment = struct {

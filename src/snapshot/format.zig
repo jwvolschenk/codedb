@@ -36,7 +36,8 @@ pub const FORMAT_VERSION: u16 = 4;
 /// outlines without them, so they must be rescanned, not warm-loaded.
 /// v4: JavaScript/TypeScript outlines use source-wide lexical declaration parsing.
 /// v5: root-confined source reads and case-insensitive secret exclusions.
-pub const INDEX_VERSION: u32 = 5;
+/// v6: ignore character classes/ranges exclude previously restored files.
+pub const INDEX_VERSION: u32 = 6;
 
 pub const SectionId = enum(u32) {
     tree = 1,

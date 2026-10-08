@@ -3,6 +3,8 @@
 # Build artifacts
 .build/
 .release/
+# Private release corpus, questions, transcripts and machine-specific results
+plans/evidence/local/
 zig-out/
 .zig-cache/
 zig-cache/
