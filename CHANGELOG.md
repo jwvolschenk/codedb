@@ -3,6 +3,20 @@
 
 ## Unreleased
 
+### 4.0.0 - 4.0.7 â€” ASP.NET accuracy and reliability
+
+- **`codedb_config_xref`** no longer reports false positives. String constants are resolved by
+  the type that declares them, files with a byte-order mark are read correctly, and sources are
+  read from disk when they are not in the content cache, so large repos no longer report zero reads.
+- **`codedb_routes`** windows its output. It shows a page of results with "showing N-M of T routes";
+  use `max_results` and `offset` to page, and `controller`, `method` or `path_glob` to filter.
+- **`path_glob`** accepts brace alternation, e.g. `src/Views/{Models,Portfolios}/*.{cshtml,js}`.
+- **Type index** no longer leaves stale or missing hits for types defined in more than one file.
+- **`codedb_callers`** marks its output `truncated: true` when it stops at `max_results`.
+- Case and byte-order-mark handling fixes for C# and Razor sources.
+- After upgrading, restart the MCP server and run `codedb_index` with `force=true`; cached
+  indexes are keyed by path, not by version.
+
 ### 3.1.0 candidate — local security, navigation and release validation
 
 - Packages 1–5 retain edit/remote tools, all fork languages and Zig 0.16 while

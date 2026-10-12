@@ -439,10 +439,17 @@ by that root's own cache. A child root never implicitly expands to its parent.
 
 ### Agent Precision Defaults
 
-- `codedb_callers` defaults to `match_mode="semantic"`, a fast heuristic that keeps
+- `codedb_callers` defaults to `match_mode="semantic"` for methods, a fast heuristic that keeps
   invocation-looking call sites (`Probe(...)`, `service.Probe(...)`, `Probe<T>(...)`) and
-  drops strings/comments/plain mentions. Pass `match_mode="text"` for the older broad
-  whole-word behavior or `match_mode="both"` for maximum recall.
+  drops strings/comments/plain mentions. For types (class, interface, struct, enum) it
+  broadens automatically to `match_mode="references"`: whole-word uses in fields, generics,
+  base clauses and parameters, excluding strings and comments. Pass `match_mode="text"` for
+  raw whole-word matches (also finds `Url.Action("Name", ...)` strings and config keys) or
+  `match_mode="both"` for maximum recall. Output is marked `truncated: true` when it stops at
+  `max_results`.
+- `codedb_routes` lists controller actions with their routes. Output is paged ("showing 1-5 of 13
+  routes"); filter with `controller`, `method` or `path_glob`, and page with `max_results`/`offset`.
+- `path_glob` supports `*`, `**`, `?` and brace alternation such as `{Models,Portfolios}/*.{cshtml,js}`.
 - `codedb_deps direction="imported_by"` now includes type-usage edges for C#/F#/JVM and
   TypeScript-style files. Return types, parameter types, fields, and properties can create
   dependency edges, so entity files surface repository/service/controller dependents even
@@ -778,6 +785,13 @@ prereleases. Build-only runs restore the original version files.
 | `codedb_index` | varies | Index a folder |
 | `codedb_status` | <1ms | Index info |
 | `codedb_changes` | <1ms | File changes |
+| `codedb_callers` | <10ms | Call sites and type references |
+| `codedb_relations` | <10ms | Definitions, bases, users and callers in one call |
+| `codedb_hierarchy` | <2ms | Direct subclasses and implementations |
+| `codedb_types` | <5ms | Methods by parameter or return type |
+| `codedb_routes` | <5ms | ASP.NET controller actions and routes (paged) |
+| `codedb_config_xref` | <50ms | appsettings keys vs configuration reads (keys only) |
+| `codedb_glob` | <5ms | File paths by pattern (`path_glob` supports `{a,b}`) |
 
 ---
 
