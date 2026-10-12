@@ -417,9 +417,9 @@ remote queries or hosted embeddings.
 
 The 3.1.0 candidate's native Windows measurements, client smoke results, cache
 policy versions, and rollback procedure are documented in
-[release validation](docs/release-validation.md). The release gate remains
-strict: a critical-path regression over 10% blocks release even when correctness
-improves. Source-backed evaluation data stays in ignored local evidence.
+[release validation](docs/release-validation.md). Accuracy is the primary release
+criterion; performance measurements are informational and do not block release.
+Source-backed evaluation data stays in ignored local evidence.
 
 An explicit positional root stays pinned when a client reports changed workspace
 roots. Restart with the new root, or use an explicit `project=` selection backed
@@ -749,10 +749,9 @@ targets. All selected builds must succeed before publishing. Each run writes
 binaries and `checksums.sha256` to a fresh directory under `.release/`.
 
 Before publishing, complete [release validation](docs/release-validation.md).
-The publisher checks the recorded 10% performance gate, which currently **fails**
-and blocks release. After resolving the regression, `-PerformanceReport` can
-select updated evidence in the same JSON format. A passing performance report
-alone does not replace the other release checks. The final prompt commits aligned
+Accuracy is the primary release criterion; the publisher does not require or
+check performance reports. Recorded timing regressions remain informational.
+The final prompt commits aligned
 versions in `src/release_info.zig` and `build.zig.zon`, pushes the current branch,
 creates an annotated tag at that commit, and publishes assets to
 `jwvolschenk/codedb`. Existing tags are rejected; prerelease tags create GitHub

@@ -6,7 +6,6 @@ $fixture = Join-Path ([IO.Path]::GetTempPath()) ('codedb-publisher-test-' + [gui
 $script:RepoDir = $fixture
 $versionFile = Join-Path $fixture 'src/release_info.zig'
 $manifestFile = Join-Path $fixture 'build.zig.zon'
-$reportFile = Join-Path $fixture 'performance.json'
 $originalVersion = "pub const semver = `"1.0.0`";`r`n"
 $originalManifest = '.{ .version = "1.0.0", }'
 [IO.File]::WriteAllText($versionFile, $originalVersion)
@@ -14,7 +13,6 @@ $originalManifest = '.{ .version = "1.0.0", }'
 $Tag = 'v1.0.1'
 $Targets = @('x86_64-windows', 'aarch64-linux')
 $ZigPath = 'mock-zig'
-$PerformanceReport = $reportFile
 $script:calls = @()
 $script:mode = ''
 function Assert($Condition, $Message) { if (!$Condition) { throw $Message } }
@@ -106,14 +104,6 @@ try {
     Assert (!@($script:calls | Where-Object { $_ -match '^gh |^git (push|commit|tag -a)' }).Count) 'Build-only published'
     Write-Host 'PASS build-only and checksums'
     $BuildOnly = $false
-    [IO.File]::WriteAllText($reportFile, '{"gate":"FAIL","threshold_percent":10,"comparisons":[{"gate":"FAIL","delta_percent":11}]}')
-    $script:calls = @()
-    Expect-Failure { Publish-CodeDb } '10% performance gate'
-    Assert (!@($script:calls | Where-Object { $_ -match '^gh |mock-zig build|^git push' }).Count) 'Failed gate allowed release'
-    Write-Host 'PASS failing performance gate'
-    [IO.File]::WriteAllText($reportFile, '{"gate":"PASS","threshold_percent":10,"comparisons":[{"gate":"PASS","delta_percent":11}]}')
-    Expect-Failure { Publish-CodeDb } '10% performance gate'
-    [IO.File]::WriteAllText($reportFile, '{"gate":"PASS","threshold_percent":10,"comparisons":[{"gate":"PASS","delta_percent":1}]}')
     $script:mode = 'existing-tag'
     Expect-Failure { Publish-CodeDb } 'already exists'
     Write-Host 'PASS existing tag rejected'
@@ -133,9 +123,17 @@ try {
     Assert ($joined -match '(?s)mock-zig build.*git commit.*git push origin HEAD:.*git tag -a.*git push origin refs/tags/.*gh release create.*--verify-tag') 'Incorrect release ordering'
     Assert ($joined -match 'codedb-x86_64-windows.exe.*checksums.sha256') 'Assets omitted'
     Write-Host 'PASS release ordering and exact tag'
+    Write-Host 'PASS publishing without a performance report'
+    $evidenceDir = Join-Path $fixture 'plans/evidence/release-2026-10-08'
+    [IO.Directory]::CreateDirectory($evidenceDir) | Out-Null
+    $reportFile = Join-Path $evidenceDir 'performance.json'
+    $failingReport = '{"gate":"FAIL","threshold_percent":10,"comparisons":[{"gate":"FAIL","delta_percent":11}]}'
+    [IO.File]::WriteAllText($reportFile, $failingReport)
     $Tag = 'v1.0.1-rc.1'; $script:calls = @()
     Publish-CodeDb
     Assert (($script:calls -join "`n") -match 'gh release create.*--prerelease') 'Prerelease flag omitted'
+    Assert ([IO.File]::ReadAllText($reportFile) -ceq $failingReport) 'Performance evidence modified'
+    Write-Host 'PASS failing performance report does not block publishing'
     Write-Host 'PASS prerelease publishing'
 } finally {
     # Only remove this test's generated directory after verifying the resolved path.

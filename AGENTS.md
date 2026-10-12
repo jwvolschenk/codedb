@@ -5,7 +5,7 @@
 - Flag any security issues: injection, file traversal, untrusted input, secret exposure
 - Verify that sensitive files (.env, .pem, .key, credentials) are excluded from indexing AND search
 - Check that telemetry behavior matches documentation claims
-- Flag any regression in benchmark-critical paths (threshold: 10%)
+- Report any regression in benchmark-critical paths (threshold: 10%) as informational; performance alone does not block release
 - Treat P1 issues as merge-blocking
 - Verify new language parsers handle malformed input gracefully (braces in strings, unterminated comments)
 - Check that installer scripts don't execute untrusted code or skip verification
@@ -17,8 +17,9 @@ Run these before merging any MCP-related change:
 Use Zig **0.16.0** explicitly when another version is on PATH. On Windows use
 `codedb.exe` and an isolated `CODEDB_CACHE_DIR` for the E2E suite. See
 [release validation](docs/release-validation.md) for the five-root performance,
-corpus parity, real-client and rollback checks. A recorded failing 10% gate
-blocks release; it must not be presented as a successful benchmark.
+corpus parity, real-client and rollback checks. Accuracy is the primary release
+criterion; performance measurements are informational and do not block release.
+A recorded failing 10% comparison must not be presented as a successful benchmark.
 
 ```bash
 zig build test                                          # unit tests

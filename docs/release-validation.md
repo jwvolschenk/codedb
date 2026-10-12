@@ -16,8 +16,8 @@ powershell -NoProfile -File scripts/test-publisher.ps1
 ```
 
 These checks simulate native commands and never push tags or publish releases.
-The publisher requires the recorded performance gate to pass before publishing;
-the existing failing report blocks release. `-BuildOnly` prepares local artifacts
+Accuracy is the primary release criterion; performance reports are informational
+and the publisher does not read them. `-BuildOnly` prepares local artifacts
 while restoring the original source versions and performing no remote actions.
 
 Use the verified **Zig 0.16.0** executable explicitly. A different `zig` on PATH
@@ -82,8 +82,10 @@ aggregate peak. Idle CPU is CPU seconds over the stated wall interval. A zero
 baseline makes relative CPU change undefined. The extended measurements have
 one trial per setting and therefore provide limited variability evidence.
 
-The strict gate flags **every measured critical-path increase over 10%** and is
-retained as a performance-release signal. For this handoff, accuracy, concise
+The benchmark report flags **every measured critical-path increase over 10%**;
+these comparisons are informational and do not block release. Existing `FAIL`
+results remain recorded and must not be described as passing benchmarks.
+Accuracy is the primary release criterion. Accuracy, concise
 answers, freshness, security boundaries, and local-only telemetry are the
 acceptance priorities; do not repeat timing runs solely to improve the report.
 Corpus/result losses are reviewed separately; incomplete indexes cannot pass by

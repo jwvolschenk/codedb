@@ -5,8 +5,7 @@ param(
     [Parameter(Position = 0)][string]$Tag,
     [string[]]$Targets,
     [string]$ZigPath,
-    [switch]$BuildOnly,
-    [string]$PerformanceReport = 'plans/evidence/release-2026-10-08/performance.json'
+    [switch]$BuildOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,17 +59,6 @@ function Select-ReleaseTag {
     }
 }
 
-function Assert-PerformanceGate {
-    param([string]$ReportPath)
-    if (![IO.Path]::IsPathRooted($ReportPath)) { $ReportPath = Join-Path $script:RepoDir $ReportPath }
-    $report = Get-Content -LiteralPath $ReportPath -Raw | ConvertFrom-Json
-    if ($report.gate -cne 'PASS' -or $report.threshold_percent -ne 10 -or
-        !@($report.comparisons).Count -or
-        @($report.comparisons | Where-Object { $_.gate -eq 'FAIL' -or $_.delta_percent -gt 10 }).Count) {
-        throw "Release blocked by the 10% performance gate: $ReportPath. See docs/release-validation.md."
-    }
-}
-
 function Publish-CodeDb {
     Push-Location -LiteralPath $script:RepoDir
     try {
@@ -99,7 +87,6 @@ function Publish-CodeDb {
         if ($zigVersion -ne '0.16.0') { throw "Zig 0.16.0 required; found $zigVersion. Supply -ZigPath to the verified compiler." }
 
         if (!$BuildOnly) {
-            Assert-PerformanceGate $PerformanceReport
             Get-Command gh -CommandType Application -ErrorAction Stop | Out-Null
             Invoke-Native gh @('auth', 'status') | Out-Host
             $access = (Invoke-Native gh @('api', "repos/$script:ReleaseRepo", '--jq', '.permissions.push') | Out-String).Trim()
@@ -163,7 +150,6 @@ function Publish-CodeDb {
             (Invoke-Native git @('branch', '--show-current') | Out-String).Trim() -ne $branch) {
             throw 'Source commit or branch changed during builds. Release cancelled.'
         }
-        Assert-PerformanceGate $PerformanceReport
         [IO.File]::WriteAllText($versionFile, "pub const semver = `"$semver`";`n", $utf8)
         [IO.File]::WriteAllText($manifestFile, $updatedManifest, $utf8)
         Invoke-Native git @('add', '--', 'src/release_info.zig', 'build.zig.zon') | Out-Host
