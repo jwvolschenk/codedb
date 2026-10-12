@@ -8,6 +8,18 @@ decision and measured blockers are recorded in the
 
 ## Reproduce the Windows checks
 
+The native publisher is `scripts/publish-codedb.ps1` (see the README for usage).
+Its offline safety checks run with either Windows PowerShell 5.1 or PowerShell 7:
+
+```powershell
+powershell -NoProfile -File scripts/test-publisher.ps1
+```
+
+These checks simulate native commands and never push tags or publish releases.
+The publisher requires the recorded performance gate to pass before publishing;
+the existing failing report blocks release. `-BuildOnly` prepares local artifacts
+while restoring the original source versions and performing no remote actions.
+
 Use the verified **Zig 0.16.0** executable explicitly. A different `zig` on PATH
 is not an equivalent test. Verify the compiler archive against
 `scripts/zig-0.16.0-sha256.txt`, then run:

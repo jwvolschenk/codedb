@@ -731,6 +731,33 @@ bash scripts/publish-codedb.sh
 
 Requires `gh auth login`. Builds from local source, uploads to GitHub Releases.
 
+On Windows, use the native PowerShell publisher (PowerShell 5.1 or later):
+
+```powershell
+powershell -NoProfile -File scripts/publish-codedb.ps1
+# Or choose an explicit version:
+powershell -NoProfile -File scripts/publish-codedb.ps1 v3.1.1
+# Prepare artifacts locally without committing, tagging, pushing, or publishing:
+powershell -NoProfile -File scripts/publish-codedb.ps1 v3.1.1 -BuildOnly
+```
+
+The PowerShell script requires a clean working tree and Zig **0.16.0**. It prefers
+the verified compiler at `.build/zig-x86_64-windows-0.16.0/zig.exe`; use `-ZigPath`
+to select another verified installation. It builds all six targets by default;
+`-Targets x86_64-windows` selects one, or set `PLATFORMS` to space-separated Zig
+targets. All selected builds must succeed before publishing. Each run writes
+binaries and `checksums.sha256` to a fresh directory under `.release/`.
+
+Before publishing, complete [release validation](docs/release-validation.md).
+The publisher checks the recorded 10% performance gate, which currently **fails**
+and blocks release. After resolving the regression, `-PerformanceReport` can
+select updated evidence in the same JSON format. A passing performance report
+alone does not replace the other release checks. The final prompt commits aligned
+versions in `src/release_info.zig` and `build.zig.zon`, pushes the current branch,
+creates an annotated tag at that commit, and publishes assets to
+`jwvolschenk/codedb`. Existing tags are rejected; prerelease tags create GitHub
+prereleases. Build-only runs restore the original version files.
+
 ---
 
 ## MCP Tools
