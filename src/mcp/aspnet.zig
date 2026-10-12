@@ -309,8 +309,12 @@ fn isAspNetConfigJsonPath(path: []const u8, language: explore_mod.Language) bool
     return std.mem.startsWith(u8, base, "appsettings") and std.mem.endsWith(u8, base, ".json");
 }
 
-fn collectJsonConfigDefinitions(alloc: std.mem.Allocator, path: []const u8, content: []const u8, definitions: *std.StringHashMap(usize)) !void {
+fn collectJsonConfigDefinitions(alloc: std.mem.Allocator, path: []const u8, raw_content: []const u8, definitions: *std.StringHashMap(usize)) !void {
     _ = path;
+    // Editors such as Visual Studio save appsettings.json with a UTF-8 BOM, which
+    // std.json rejects; without this the file is silently dropped and every
+    // configuration read is reported as a missing definition.
+    const content = if (std.mem.startsWith(u8, raw_content, "\xEF\xBB\xBF")) raw_content[3..] else raw_content;
     // ASP.NET tooling writes JSONC — appsettings files routinely carry
     // `//` and `/* */` comments that std.json rejects. Strip them (outside
     // strings) so real-world files parse.

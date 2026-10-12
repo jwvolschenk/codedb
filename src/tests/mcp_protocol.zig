@@ -1135,6 +1135,49 @@ test "codedb_config_xref ignores non-config strings and treats section reads as 
     try testing.expect(std.mem.indexOf(u8, out.items, "missing_definitions:\n    (none)") != null);
 }
 
+test "codedb_config_xref parses appsettings that start with a UTF-8 BOM and contain comments" {
+    // Visual Studio and some editors save appsettings.json with a BOM. std.json
+    // rejects a leading BOM, so the whole file was silently dropped: definitions
+    // came back as 0 and every configuration read was reported as missing.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    try explorer.indexFile("appsettings.json", "\xEF\xBB\xBF" ++
+        \\{
+        \\  // connection settings
+        \\  "ConnectionStrings": { "Default": "Server=." },
+        \\  "Features": { "Enabled": true } // inline comment
+        \\}
+    );
+    try explorer.indexFile("Services/Reader.cs",
+        \\public class Reader {
+        \\    public Reader(IConfiguration configuration) {
+        \\        var cs = configuration["ConnectionStrings:Default"];
+        \\    }
+        \\}
+    );
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"framework\":\"aspnet\"}", .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_config_xref, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "definitions: 2") != null);
+    // The read is satisfied by a definition, so nothing is "missing".
+    try testing.expect(std.mem.indexOf(u8, out.items, "missing_definitions:\n    (none)") != null);
+    // The unread key is reported as unused.
+    try testing.expect(std.mem.indexOf(u8, out.items, "Features:Enabled") != null);
+}
+
 test "codedb_config_xref resolves string constants used as configuration keys" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
