@@ -148,20 +148,28 @@ pub fn handleConfigXref(io: std.Io, alloc: std.mem.Allocator, args: *const std.j
     // Pass 1: string constants, so `GetSection(Constants.SSRS_CONFIG)` resolves.
     var consts = ConstMap.init(alloc);
     defer freeConstMap(alloc, &consts);
+    // Content comes from the in-memory cache when present and from disk
+    // otherwise (`readContentForSearch`): large repositories keep nothing
+    // cached, and taking cache hits only made every C# file look empty. The
+    // language check comes first so only relevant files are ever read.
     for (paths.items) |path| {
         const outline = explorer.outlines.get(path) orelse continue;
         if (outline.language != .c_sharp) continue;
-        const content = explorer.contents.get(path) orelse continue;
-        collectCSharpConstants(alloc, path, content, &outline, &consts) catch {};
+        const ref = explorer.readContentForSearch(path, alloc) orelse continue;
+        defer ref.deinit();
+        collectCSharpConstants(alloc, path, ref.data, &outline, &consts) catch {};
     }
 
     for (paths.items) |path| {
         const outline = explorer.outlines.get(path) orelse continue;
-        const content = explorer.contents.get(path) orelse continue;
-        if (isAspNetConfigJsonPath(path, outline.language)) {
-            collectJsonConfigDefinitions(alloc, path, content, &definitions) catch {};
-        } else if (outline.language == .c_sharp) {
-            collectCSharpConfigReads(alloc, path, content, &outline, &consts, &reads, &read_hits) catch {};
+        const is_config_json = isAspNetConfigJsonPath(path, outline.language);
+        if (!is_config_json and outline.language != .c_sharp) continue;
+        const ref = explorer.readContentForSearch(path, alloc) orelse continue;
+        defer ref.deinit();
+        if (is_config_json) {
+            collectJsonConfigDefinitions(alloc, path, ref.data, &definitions) catch {};
+        } else {
+            collectCSharpConfigReads(alloc, path, ref.data, &outline, &consts, &reads, &read_hits) catch {};
         }
     }
 

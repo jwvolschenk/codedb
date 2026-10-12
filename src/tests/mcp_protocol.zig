@@ -1178,6 +1178,63 @@ test "codedb_config_xref parses appsettings that start with a UTF-8 BOM and cont
     try testing.expect(std.mem.indexOf(u8, out.items, "Features:Enabled") != null);
 }
 
+test "codedb_config_xref reads source from disk when file content is not cached" {
+    // Large repositories keep no file content in memory (status shows
+    // contents_cached: 0). config_xref used to take content from the cache only,
+    // so it skipped every C# file and reported 0 reads: every appsettings key
+    // came back "unused". It must fall back to reading the file from disk.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp_dir.dir.realPathFile(io, ".", &dir_buf);
+    const dir_path = dir_buf[0..dir_path_len];
+
+    const Source = struct { name: []const u8, text: []const u8 };
+    const sources = [_]Source{
+        .{ .name = "appsettings.json", .text = "{ \"FeatureFlags\": { \"Enabled\": true }, \"ConnectionStrings\": { \"Default\": \"x\" }, \"Unused\": { \"Key\": 1 } }" },
+        .{ .name = "Constants.cs", .text = "public static class Constants\n{\n    public const string SECTION = \"FeatureFlags\";\n}\n" },
+        .{ .name = "Program.cs", .text = "public class Program\n{\n    public void Run(IConfiguration configuration)\n    {\n        var a = configuration.GetSection(Constants.SECTION);\n        var b = configuration[\"ConnectionStrings:Default\"];\n    }\n}\n" },
+    };
+
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    explorer.setRoot(io, dir_path);
+    for (sources) |s| {
+        const full = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ dir_path, s.name });
+        defer testing.allocator.free(full);
+        const f = try std.Io.Dir.cwd().createFile(io, full, .{ .truncate = true });
+        defer f.close(io);
+        try f.writePositionalAll(io, s.text, 0);
+        try explorer.indexFile(s.name, s.text);
+    }
+    // Drop every cached copy: only the outlines and the files on disk remain.
+    explorer.releaseContents();
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, dir_path);
+    defer bench_ctx.deinit();
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"framework\":\"aspnet\"}", .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_config_xref, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "reads: 2") != null);
+    const tail_start = std.mem.indexOf(u8, out.items, "unused_definitions:") orelse return error.TestUnexpectedResult;
+    const tail = out.items[tail_start..];
+    // Read through a constant and through an indexer, both found on disk.
+    try testing.expect(std.mem.indexOf(u8, tail, "FeatureFlags:Enabled") == null);
+    try testing.expect(std.mem.indexOf(u8, tail, "ConnectionStrings:Default") == null);
+    // The key nothing reads is still reported.
+    try testing.expect(std.mem.indexOf(u8, tail, "Unused:Key") != null);
+}
+
 test "codedb_config_xref resolves constants declared in files holding several classes" {
     // Options classes are often declared next to the service that uses them
     // (ReadingWorkQueueOptions inside ItcRabbitMqService.cs), so the declaring
