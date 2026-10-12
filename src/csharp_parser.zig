@@ -684,6 +684,11 @@ fn extractMethodSignature(line: []const u8) ?Symbol {
     })) return null;
     if (containsAny(line, &.{ " class ", " interface ", " enum ", " struct ", " record ", " delegate " })) return null;
     const first_open = findSignatureOpen(line) orelse return null;
+    // A `(` inside a string literal is text, not a parameter list. Multi-line
+    // expressions put string arguments on their own line, e.g.
+    // `".k-master-row:not(.detailgrid-row)"),` — which would otherwise parse as
+    // a method named "not".
+    if (isInsideString(line, first_open)) return null;
     // Tuple-return methods (`public (string, int) Parse(string input)`) have
     // their return type as the *first* `(`. Detect that and use the real
     // parameter-list `(` instead. Falls through unchanged for normal methods.

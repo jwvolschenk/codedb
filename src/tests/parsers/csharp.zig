@@ -383,6 +383,29 @@ test "csharp parser: object instantiation is not misclassified as a method" {
     }
 }
 
+test "csharp parser: parenthesis inside a string literal is not a method signature" {
+    // A multi-line call argument such as `".k-master-row:not(.detailgrid-row)"),`
+    // used to parse as a method named "not", which then mis-scoped every
+    // reference inside the enclosing action in codedb_callers.
+    switch (csharp_parser.parseLine("                \".k-master-row:not(.detailgrid-row)\"),")) {
+        .none => {},
+        .symbol, .import => return error.TestUnexpectedResult,
+    }
+    switch (csharp_parser.parseLine("    var selector = \"a:not(.b)\";")) {
+        .symbol => |sym| try testing.expect(sym.kind != csharp_parser.Kind.method),
+        else => {},
+    }
+    // A real method whose parameter list follows a string elsewhere on the line
+    // still parses.
+    switch (csharp_parser.parseLine("public string Describe(int id) // \"x(\"")) {
+        .symbol => |sym| {
+            try testing.expectEqualStrings("Describe", sym.name);
+            try testing.expectEqual(csharp_parser.Kind.method, sym.kind);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "csharp parser: tuple-return method signatures" {
     // `(string, int) Parse(string input)` was misparsed before: the return-type
     // `(` was mistaken for the parameter list, yielding a method named "int"
