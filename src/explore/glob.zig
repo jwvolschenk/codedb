@@ -1,7 +1,69 @@
 // codedb — glob pattern matching for path filters.
 const std = @import("std");
 
+/// Brace alternation (`{a,b}`) is expanded before matching, so
+/// `**/*.{cs,cshtml}` and `src/{Foo,Bar}Controller.cs` behave as in a shell.
+/// Groups may nest and alternatives may be empty (`file{,.bak}.txt`). A `{`
+/// with no matching `}` is an ordinary character.
 pub fn matchGlob(pattern: []const u8, path: []const u8) bool {
+    return matchBraces(pattern, path, 0);
+}
+
+const max_brace_depth = 8;
+const brace_buf_len = 512;
+
+fn matchBraces(pattern: []const u8, path: []const u8, depth: usize) bool {
+    const open = std.mem.indexOfScalar(u8, pattern, '{') orelse return matchGlobPlain(pattern, path);
+    const close = findBraceClose(pattern, open) orelse return matchGlobPlain(pattern, path);
+    if (depth >= max_brace_depth) return false;
+
+    const pre = pattern[0..open];
+    const body = pattern[open + 1 .. close];
+    const post = pattern[close + 1 ..];
+
+    var buf: [brace_buf_len]u8 = undefined;
+    var alt_start: usize = 0;
+    var i: usize = 0;
+    var nest: usize = 0;
+    while (i <= body.len) : (i += 1) {
+        if (i < body.len) {
+            switch (body[i]) {
+                '{' => nest += 1,
+                '}' => nest -= 1,
+                else => {},
+            }
+            if (!(body[i] == ',' and nest == 0)) continue;
+        }
+        // End of one top-level alternative: splice it between pre and post.
+        const alt = body[alt_start..i];
+        alt_start = i + 1;
+        if (pre.len + alt.len + post.len > buf.len) continue;
+        @memcpy(buf[0..pre.len], pre);
+        @memcpy(buf[pre.len .. pre.len + alt.len], alt);
+        @memcpy(buf[pre.len + alt.len .. pre.len + alt.len + post.len], post);
+        if (matchBraces(buf[0 .. pre.len + alt.len + post.len], path, depth + 1)) return true;
+    }
+    return false;
+}
+
+/// Index of the `}` closing the `{` at `open`, honouring nested groups.
+fn findBraceClose(pattern: []const u8, open: usize) ?usize {
+    var nest: usize = 0;
+    var i = open;
+    while (i < pattern.len) : (i += 1) {
+        switch (pattern[i]) {
+            '{' => nest += 1,
+            '}' => {
+                nest -= 1;
+                if (nest == 0) return i;
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn matchGlobPlain(pattern: []const u8, path: []const u8) bool {
     // Fast path: `**/*X` where X is a literal — degenerates to endsWith(X).
     // Covers the common agent-style pattern `**/*.ext`.
     if (globIsPureSuffix(pattern)) |suffix| {

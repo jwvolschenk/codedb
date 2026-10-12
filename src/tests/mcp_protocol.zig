@@ -265,6 +265,56 @@ test "issue-359: mcp.globMatch backtracks across **/* boundary" {
     try testing.expect(!mcp_mod.globMatch("docs/*.md", "src/mcp.zig"));
 }
 
+test "globMatch expands brace alternation" {
+    // Previously `{a,b}` was matched as literal characters, so these returned
+    // nothing (and path_glob silently yielded 0 results).
+    try testing.expect(mcp_mod.globMatch("src/Controllers/{XRef,Portfolios}Controller.cs", "src/Controllers/XRefController.cs"));
+    try testing.expect(mcp_mod.globMatch("src/Controllers/{XRef,Portfolios}Controller.cs", "src/Controllers/PortfoliosController.cs"));
+    try testing.expect(!mcp_mod.globMatch("src/Controllers/{XRef,Portfolios}Controller.cs", "src/Controllers/HomeController.cs"));
+
+    // Extension groups, including the `**/*X` fast path.
+    try testing.expect(mcp_mod.globMatch("**/*.{cs,cshtml}", "src/Views/Home/Index.cshtml"));
+    try testing.expect(mcp_mod.globMatch("**/*.{cs,cshtml}", "src/Controllers/HomeController.cs"));
+    try testing.expect(!mcp_mod.globMatch("**/*.{cs,cshtml}", "src/Scripts/app.js"));
+    try testing.expect(mcp_mod.globMatch("src/*.{zig}", "src/main.zig"));
+
+    // Multiple groups, nested groups, and an empty alternative.
+    try testing.expect(mcp_mod.globMatch("{src,lib}/{a,b}.zig", "lib/b.zig"));
+    try testing.expect(!mcp_mod.globMatch("{src,lib}/{a,b}.zig", "lib/c.zig"));
+    try testing.expect(mcp_mod.globMatch("src/{a,b/{c,d}}/*.zig", "src/b/d/x.zig"));
+    try testing.expect(mcp_mod.globMatch("src/{a,b/{c,d}}/*.zig", "src/a/x.zig"));
+    try testing.expect(!mcp_mod.globMatch("src/{a,b/{c,d}}/*.zig", "src/b/x.zig"));
+    try testing.expect(mcp_mod.globMatch("file{,.bak}.txt", "file.txt"));
+    try testing.expect(mcp_mod.globMatch("file{,.bak}.txt", "file.bak.txt"));
+
+    // Braces mix with the existing wildcards; single * still stops at '/'.
+    try testing.expect(mcp_mod.globMatch("src/{Views,Models}/**/*.cs", "src/Models/sub/Thing.cs"));
+    try testing.expect(!mcp_mod.globMatch("src/{Views,Models}/*.cs", "src/Models/sub/Thing.cs"));
+
+    // An unmatched `{` is an ordinary character, as before.
+    try testing.expect(mcp_mod.globMatch("a{b", "a{b"));
+    try testing.expect(!mcp_mod.globMatch("a{b", "ab"));
+}
+
+test "globPaths and path_glob accept brace patterns" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    try explorer.indexFile("src/Controllers/XRefController.cs", "public class XRefController {}");
+    try explorer.indexFile("src/Controllers/HomeController.cs", "public class HomeController {}");
+    try explorer.indexFile("src/Views/Home/Index.cshtml", "@model Foo");
+    try explorer.indexFile("src/Scripts/app.js", "export const a = 1;");
+
+    const hits = try explorer.globPaths(testing.allocator, "src/**/*.{cs,cshtml}", 50);
+    defer testing.allocator.free(hits);
+    try testing.expectEqual(@as(usize, 3), hits.len);
+
+    const one = try explorer.globPaths(testing.allocator, "src/Controllers/{XRef,Missing}Controller.cs", 50);
+    defer testing.allocator.free(one);
+    try testing.expectEqual(@as(usize, 1), one.len);
+    try testing.expectEqualStrings("src/Controllers/XRefController.cs", one[0]);
+}
+
 test "issue-357: bundle preserves nested 'arguments' for codedb_outline" {
     var explorer = Explorer.init(testing.allocator);
     defer explorer.deinit();
