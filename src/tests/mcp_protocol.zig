@@ -1178,6 +1178,88 @@ test "codedb_config_xref parses appsettings that start with a UTF-8 BOM and cont
     try testing.expect(std.mem.indexOf(u8, out.items, "Features:Enabled") != null);
 }
 
+test "codedb_config_xref resolves constants declared in files holding several classes" {
+    // Options classes are often declared next to the service that uses them
+    // (ReadingWorkQueueOptions inside ItcRabbitMqService.cs), so the declaring
+    // type, not the file name, has to qualify the constant. Keying by file name
+    // left every such section unresolved and its keys reported as unused.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    try explorer.indexFile("appsettings.json",
+        \\{
+        \\  "ReadingWorkQueue": { "MaxAttempts": 3 },
+        \\  "Authentication": { "Jwt": { "Issuer": "x" } },
+        \\  "Decoy": { "Key": "y" },
+        \\  "Local": { "Value": "z" }
+        \\}
+    );
+    try explorer.indexFile("Services/ItcRabbitMqService.cs",
+        \\public class ReadingWorkQueueOptions
+        \\{
+        \\    public const string ConfigKey = "ReadingWorkQueue";
+        \\}
+        \\
+        \\public class DecoyOptions
+        \\{
+        \\    public const string ConfigKey = "Decoy";
+        \\}
+        \\
+        \\public class ItcRabbitMqService
+        \\{
+        \\}
+    );
+    try explorer.indexFile("Services/AuthService.cs",
+        \\public class AuthService
+        \\{
+        \\}
+        \\
+        \\public class LMAuthServiceJWTOptions
+        \\{
+        \\    public const string ConfigKey = "Authentication:Jwt";
+        \\}
+    );
+    try explorer.indexFile("Program.cs",
+        \\public class Program
+        \\{
+        \\    private const string LocalSection = "Local";
+        \\
+        \\    public void Configure(IConfiguration configuration)
+        \\    {
+        \\        var a = configuration.GetSection(ReadingWorkQueueOptions.ConfigKey);
+        \\        var b = configuration.GetSection(LMAuthServiceJWTOptions.ConfigKey);
+        \\        var c = configuration.GetSection(LocalSection);
+        \\    }
+        \\}
+    );
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"framework\":\"aspnet\"}", .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_config_xref, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    const tail_start = std.mem.indexOf(u8, out.items, "unused_definitions:") orelse return error.TestUnexpectedResult;
+    const tail = out.items[tail_start..];
+
+    // Sections read through a constant declared in another class are used.
+    try testing.expect(std.mem.indexOf(u8, tail, "ReadingWorkQueue:MaxAttempts") == null);
+    try testing.expect(std.mem.indexOf(u8, tail, "Authentication:Jwt:Issuer") == null);
+    // An unqualified constant resolves against the class that contains the read.
+    try testing.expect(std.mem.indexOf(u8, tail, "Local:Value") == null);
+    // The same-named ConfigKey in DecoyOptions is a different constant and is never read.
+    try testing.expect(std.mem.indexOf(u8, tail, "Decoy:Key") != null);
+    try testing.expect(std.mem.indexOf(u8, tail, "missing_definitions:\n    (none)") != null);
+}
+
 test "codedb_config_xref resolves string constants used as configuration keys" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

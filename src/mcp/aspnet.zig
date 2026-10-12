@@ -152,7 +152,7 @@ pub fn handleConfigXref(io: std.Io, alloc: std.mem.Allocator, args: *const std.j
         const outline = explorer.outlines.get(path) orelse continue;
         if (outline.language != .c_sharp) continue;
         const content = explorer.contents.get(path) orelse continue;
-        collectCSharpConstants(alloc, path, content, &consts) catch {};
+        collectCSharpConstants(alloc, path, content, &outline, &consts) catch {};
     }
 
     for (paths.items) |path| {
@@ -161,7 +161,7 @@ pub fn handleConfigXref(io: std.Io, alloc: std.mem.Allocator, args: *const std.j
         if (isAspNetConfigJsonPath(path, outline.language)) {
             collectJsonConfigDefinitions(alloc, path, content, &definitions) catch {};
         } else if (outline.language == .c_sharp) {
-            collectCSharpConfigReads(alloc, path, content, &consts, &reads, &read_hits) catch {};
+            collectCSharpConfigReads(alloc, path, content, &outline, &consts, &reads, &read_hits) catch {};
         }
     }
 
@@ -395,16 +395,41 @@ fn walkJsonConfigValue(alloc: std.mem.Allocator, value: *const std.json.Value, s
     }
 }
 
-/// String constants (`const string Name = "Value"`) keyed by `<file stem>.<Name>`
-/// so `Constants.SSRS_CONFIG` and `ReportAzureStorageServiceOptions.ConfigKey`
-/// resolve to the section names they hold. Keys and values are allocator-owned.
+/// String constants (`const string Name = "Value"`) keyed by `<declaring type>.<Name>`
+/// so `Constants.SSRS_CONFIG` and `ReadingWorkQueueOptions.ConfigKey` resolve to
+/// the section names they hold. The declaring type comes from the file outline, so
+/// several options classes can share one file; the file stem is only a fallback
+/// when a constant sits outside any type. Keys and values are allocator-owned.
 const ConstMap = std.StringHashMap([]const u8);
 
 const ConfigCtx = struct {
     consts: *const ConstMap,
-    /// File stem of the file being scanned; resolves unqualified constants.
+    /// Outline of the file being scanned, used to find the type enclosing a line.
+    outline: *const explore_mod.FileOutline,
+    /// File stem of the file being scanned; fallback for unqualified constants.
     stem: []const u8,
+    /// 1-based line of the read being resolved (0 until set per line).
+    line: u32 = 0,
 };
+
+/// Name of the innermost class/struct/interface/enum whose span contains `line`.
+fn enclosingTypeName(outline: *const explore_mod.FileOutline, line: u32) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var best_span: u32 = std.math.maxInt(u32);
+    for (outline.symbols.items) |sym| {
+        switch (sym.kind) {
+            .class_def, .struct_def, .interface_def, .enum_def => {},
+            else => continue,
+        }
+        if (sym.line_start > line or sym.line_end < line) continue;
+        const span = sym.line_end - sym.line_start;
+        if (span < best_span) {
+            best = sym.name;
+            best_span = span;
+        }
+    }
+    return best;
+}
 
 fn freeConstMap(alloc: std.mem.Allocator, consts: *ConstMap) void {
     var iter = consts.iterator();
@@ -420,10 +445,12 @@ fn fileStem(path: []const u8) []const u8 {
     return if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| base[0..dot] else base;
 }
 
-fn collectCSharpConstants(alloc: std.mem.Allocator, path: []const u8, content: []const u8, consts: *ConstMap) !void {
+fn collectCSharpConstants(alloc: std.mem.Allocator, path: []const u8, content: []const u8, outline: *const explore_mod.FileOutline, consts: *ConstMap) !void {
     const stem = fileStem(path);
     var lines = std.mem.splitScalar(u8, content, '\n');
+    var line_num: u32 = 0;
     while (lines.next()) |line| {
+        line_num += 1;
         const marker = std.mem.indexOf(u8, line, "string ") orelse continue;
         if (std.mem.indexOf(u8, line[0..marker], "const ") == null and std.mem.indexOf(u8, line[0..marker], "static readonly") == null) continue;
         var i = marker + "string ".len;
@@ -437,7 +464,8 @@ fn collectCSharpConstants(alloc: std.mem.Allocator, path: []const u8, content: [
         while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
         if (i >= line.len or line[i] != '"') continue;
         const close = std.mem.indexOfScalarPos(u8, line, i + 1, '"') orelse continue;
-        const key = try std.fmt.allocPrint(alloc, "{s}.{s}", .{ stem, name });
+        const owner = enclosingTypeName(outline, line_num) orelse stem;
+        const key = try std.fmt.allocPrint(alloc, "{s}.{s}", .{ owner, name });
         errdefer alloc.free(key);
         const value = try alloc.dupe(u8, line[i + 1 .. close]);
         errdefer alloc.free(value);
@@ -454,11 +482,12 @@ fn collectCSharpConfigReads(
     alloc: std.mem.Allocator,
     path: []const u8,
     content: []const u8,
+    outline: *const explore_mod.FileOutline,
     consts: *const ConstMap,
     reads: *std.StringHashMap(usize),
     read_hits: *std.ArrayList(ConfigReadHit),
 ) !void {
-    const ctx = ConfigCtx{ .consts = consts, .stem = fileStem(path) };
+    const ctx = ConfigCtx{ .consts = consts, .outline = outline, .stem = fileStem(path) };
     var line_num: u32 = 1;
     var start: usize = 0;
     while (start <= content.len) {
@@ -484,9 +513,11 @@ fn collectConfigReadsFromLine(
     // read. Matching every string on a line that merely mentions
     // "Configuration" (e.g. `ToolbarConfiguration.GetX("Grid")`) reports
     // unrelated literals as config keys.
+    var line_ctx = ctx;
+    line_ctx.line = line_num;
     var pos: usize = 0;
     while (pos < line.len) {
-        const hit = nextConfigAccessorKey(line, pos, ctx) orelse break;
+        const hit = nextConfigAccessorKey(line, pos, line_ctx) orelse break;
         pos = hit.next;
         if (!looksLikeConfigKey(hit.key)) continue;
         const owned_key = try alloc.dupe(u8, hit.key);
@@ -593,12 +624,12 @@ fn configArgAt(line: []const u8, start: usize, ctx: ConfigCtx) ?ConfigAccessorHi
     return .{ .key = key, .next = end };
 }
 
-/// Resolve `Class.NAME` (last two segments) or an unqualified `NAME` (looked
-/// up in the current file's class) against the collected string constants.
+/// Resolve `Class.NAME` (last two segments) or an unqualified `NAME` (looked up
+/// in the type enclosing the read) against the collected string constants.
 fn resolveConstant(expr: []const u8, ctx: ConfigCtx) ?[]const u8 {
     var buf: [256]u8 = undefined;
     const name = if (std.mem.lastIndexOfScalar(u8, expr, '.')) |dot| expr[dot + 1 ..] else expr;
-    var qualifier = ctx.stem;
+    var qualifier = enclosingTypeName(ctx.outline, ctx.line) orelse ctx.stem;
     if (std.mem.lastIndexOfScalar(u8, expr, '.')) |dot| {
         const head = expr[0..dot];
         qualifier = if (std.mem.lastIndexOfScalar(u8, head, '.')) |d2| head[d2 + 1 ..] else head;
