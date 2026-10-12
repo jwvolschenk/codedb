@@ -440,6 +440,58 @@ test "type_index: index and query by return type and param type" {
     try testing.expectEqual(@as(usize, 0), after_remove.len);
 }
 
+test "type_index: types shared across files are cleaned up per file" {
+    // A file only recorded the type keys it was the FIRST to introduce, so hits
+    // it added under a type another file had already created were never removed
+    // on re-index or removeFile. Those stale hits kept pointing at the old
+    // outline's path/name strings, which were then freed — codedb_types printed
+    // garbage for any type used by more than one file.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("A.cs",
+        \\public class A
+        \\{
+        \\    public Task<Shared> FromA(int id) { }
+        \\}
+    );
+    try explorer.indexFile("B.cs",
+        \\public class B
+        \\{
+        \\    public Task<Shared> FromB(int id) { }
+        \\}
+    );
+    try testing.expectEqual(@as(usize, 2), explorer.type_index.findByReturnType("Task<Shared>").len);
+    try testing.expectEqual(@as(usize, 2), explorer.type_index.findByParamType("int").len);
+
+    // Re-indexing B (B is not the file that introduced either type) must drop
+    // its previous hits, not accumulate them.
+    try explorer.indexFile("B.cs",
+        \\public class B
+        \\{
+        \\    public Task<Shared> Renamed(int id) { }
+        \\}
+    );
+    const hits = explorer.type_index.findByReturnType("Task<Shared>");
+    try testing.expectEqual(@as(usize, 2), hits.len);
+    for (hits) |h| try testing.expect(!std.mem.eql(u8, h.symbol_name, "FromB"));
+    try testing.expectEqual(@as(usize, 2), explorer.type_index.findByParamType("int").len);
+
+    // Removing B leaves only A's hits.
+    explorer.removeFile("B.cs");
+    const after = explorer.type_index.findByReturnType("Task<Shared>");
+    try testing.expectEqual(@as(usize, 1), after.len);
+    try testing.expectEqualStrings("FromA", after[0].symbol_name);
+    try testing.expectEqualStrings("A.cs", after[0].path);
+    try testing.expectEqual(@as(usize, 1), explorer.type_index.findByParamType("int").len);
+
+    // Removing the file that introduced the types clears them entirely.
+    explorer.removeFile("A.cs");
+    try testing.expectEqual(@as(usize, 0), explorer.type_index.findByReturnType("Task<Shared>").len);
+    try testing.expectEqual(@as(usize, 0), explorer.type_index.findByParamType("int").len);
+}
+
 test "content hash: format as hex string" {
     const content = "hello world";
     const hash = std.hash.Wyhash.hash(0, content);

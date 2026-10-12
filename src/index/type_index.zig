@@ -74,30 +74,39 @@ pub const TypeIndex = struct {
     pub fn indexFileSymbols(self: *TypeIndex, path: []const u8, symbols: anytype) !void {
         self.removeFile(path);
 
+        // The per-file lists hold the map's own (canonical) key slices, so a type
+        // the file shares with other files is still recorded and its hits are
+        // removed again on re-index/removeFile. Recording only the types this
+        // file happened to create left stale hits behind, pointing at outline
+        // strings that were freed when the file was re-indexed.
+        // Reserve everything the commit step needs BEFORE adding any hits, so
+        // the final bookkeeping cannot fail and strand hits we cannot clean up.
+        try self.file_return_types.ensureUnusedCapacity(1);
+        try self.file_param_types.ensureUnusedCapacity(1);
+        const rt_key = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(rt_key);
+        const pt_key = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(pt_key);
+
         var rt_types: std.ArrayList([]const u8) = .empty;
-        errdefer {
-            for (rt_types.items) |t| self.allocator.free(t);
-            rt_types.deinit(self.allocator);
-        }
+        defer rt_types.deinit(self.allocator);
         var pt_types: std.ArrayList([]const u8) = .empty;
-        errdefer {
-            for (pt_types.items) |t| self.allocator.free(t);
-            pt_types.deinit(self.allocator);
-        }
+        defer pt_types.deinit(self.allocator);
+        var rt_seen = std.StringHashMap(void).init(self.allocator);
+        defer rt_seen.deinit();
+        var pt_seen = std.StringHashMap(void).init(self.allocator);
+        defer pt_seen.deinit();
+        var committed = false;
+        defer if (!committed) {
+            // Failed part-way: drop whatever hits this file already added.
+            self.dropFileHits(&self.return_type_map, rt_types.items, path);
+            self.dropFileHits(&self.param_type_map, pt_types.items, path);
+        };
 
         for (symbols) |sym| {
             if (sym.return_type) |rt| {
-                const rt_copy = try self.allocator.dupe(u8, rt);
-                errdefer self.allocator.free(rt_copy);
-
-                const gop = try self.return_type_map.getOrPut(rt_copy);
-                if (!gop.found_existing) {
-                    gop.value_ptr.* = std.ArrayList(TypeHit).empty;
-                    try rt_types.append(self.allocator, rt_copy);
-                } else {
-                    self.allocator.free(rt_copy);
-                }
-                try gop.value_ptr.append(self.allocator, .{
+                const list = try self.trackedHitList(&self.return_type_map, &rt_types, &rt_seen, rt);
+                try list.append(self.allocator, .{
                     .path = path,
                     .symbol_name = sym.name,
                     .line_start = sym.line_start,
@@ -105,17 +114,8 @@ pub const TypeIndex = struct {
             }
 
             for (sym.param_types) |pt| {
-                const pt_copy = try self.allocator.dupe(u8, pt);
-                errdefer self.allocator.free(pt_copy);
-
-                const gop = try self.param_type_map.getOrPut(pt_copy);
-                if (!gop.found_existing) {
-                    gop.value_ptr.* = std.ArrayList(TypeHit).empty;
-                    try pt_types.append(self.allocator, pt_copy);
-                } else {
-                    self.allocator.free(pt_copy);
-                }
-                try gop.value_ptr.append(self.allocator, .{
+                const list = try self.trackedHitList(&self.param_type_map, &pt_types, &pt_seen, pt);
+                try list.append(self.allocator, .{
                     .path = path,
                     .symbol_name = sym.name,
                     .line_start = sym.line_start,
@@ -123,59 +123,77 @@ pub const TypeIndex = struct {
             }
         }
 
-        try self.file_return_types.put(try self.allocator.dupe(u8, path), try rt_types.toOwnedSlice(self.allocator));
-        try self.file_param_types.put(try self.allocator.dupe(u8, path), try pt_types.toOwnedSlice(self.allocator));
+        // Copy (not move) the lists so a failure here still leaves rt_types and
+        // pt_types intact for the cleanup above.
+        const rt_owned = try self.allocator.dupe([]const u8, rt_types.items);
+        errdefer self.allocator.free(rt_owned);
+        const pt_owned = try self.allocator.dupe([]const u8, pt_types.items);
+        errdefer self.allocator.free(pt_owned);
+        self.file_return_types.putAssumeCapacity(rt_key, rt_owned);
+        self.file_param_types.putAssumeCapacity(pt_key, pt_owned);
+        committed = true;
+    }
+
+    /// Hit list for `type_name`, creating the entry on first use, and note the
+    /// map's canonical key in `file_types` once per file.
+    fn trackedHitList(
+        self: *TypeIndex,
+        map: *std.StringHashMap(std.ArrayList(TypeHit)),
+        file_types: *std.ArrayList([]const u8),
+        seen: *std.StringHashMap(void),
+        type_name: []const u8,
+    ) !*std.ArrayList(TypeHit) {
+        if (map.getEntry(type_name) == null) {
+            const key = try self.allocator.dupe(u8, type_name);
+            errdefer self.allocator.free(key);
+            try map.put(key, std.ArrayList(TypeHit).empty);
+        }
+        const entry = map.getEntry(type_name).?;
+        const first_use = try seen.getOrPut(entry.key_ptr.*);
+        if (!first_use.found_existing) {
+            try file_types.append(self.allocator, entry.key_ptr.*);
+        }
+        return entry.value_ptr;
+    }
+
+    /// Remove `path`'s hits from each of `types` in `map`, deleting entries that
+    /// become empty.
+    fn dropFileHits(
+        self: *TypeIndex,
+        map: *std.StringHashMap(std.ArrayList(TypeHit)),
+        types: []const []const u8,
+        path: []const u8,
+    ) void {
+        for (types) |type_name| {
+            const list = map.getPtr(type_name) orelse continue;
+            var i: usize = 0;
+            while (i < list.items.len) {
+                if (std.mem.eql(u8, list.items[i].path, path)) {
+                    _ = list.orderedRemove(i);
+                } else {
+                    i += 1;
+                }
+            }
+            if (list.items.len == 0) {
+                if (map.fetchRemove(type_name)) |kv| {
+                    var mutable_list = kv.value;
+                    mutable_list.deinit(self.allocator);
+                    self.allocator.free(kv.key);
+                }
+            }
+        }
     }
 
     /// Remove all entries for a given file path.
     pub fn removeFile(self: *TypeIndex, path: []const u8) void {
         if (self.file_return_types.fetchRemove(path)) |removed| {
             self.allocator.free(removed.key);
-            for (removed.value) |rt| {
-                // Remove hits for this path from the return_type_map entry
-                if (self.return_type_map.getPtr(rt)) |list| {
-                    var i: usize = 0;
-                    while (i < list.items.len) {
-                        if (std.mem.eql(u8, list.items[i].path, path)) {
-                            _ = list.orderedRemove(i);
-                        } else {
-                            i += 1;
-                        }
-                    }
-                    // If the list is now empty, remove the entire entry
-                    if (list.items.len == 0) {
-                        if (self.return_type_map.fetchRemove(rt)) |kv| {
-                            var mutable_list = kv.value;
-                            mutable_list.deinit(self.allocator);
-                            self.allocator.free(kv.key);
-                        }
-                    }
-                }
-            }
+            self.dropFileHits(&self.return_type_map, removed.value, path);
             self.allocator.free(removed.value);
         }
-
         if (self.file_param_types.fetchRemove(path)) |removed| {
             self.allocator.free(removed.key);
-            for (removed.value) |pt| {
-                if (self.param_type_map.getPtr(pt)) |list| {
-                    var i: usize = 0;
-                    while (i < list.items.len) {
-                        if (std.mem.eql(u8, list.items[i].path, path)) {
-                            _ = list.orderedRemove(i);
-                        } else {
-                            i += 1;
-                        }
-                    }
-                    if (list.items.len == 0) {
-                        if (self.param_type_map.fetchRemove(pt)) |kv| {
-                            var mutable_list = kv.value;
-                            mutable_list.deinit(self.allocator);
-                            self.allocator.free(kv.key);
-                        }
-                    }
-                }
-            }
+            self.dropFileHits(&self.param_type_map, removed.value, path);
             self.allocator.free(removed.value);
         }
     }
