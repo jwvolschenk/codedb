@@ -12,6 +12,7 @@ const explore_mod = @import("../explore.zig");
 const Explorer = explore_mod.Explorer;
 const mcp_lib = @import("mcp");
 const mcpj = mcp_lib.json;
+const pathglob = @import("pathglob.zig");
 
 pub fn handleRoutes(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const framework = getStr(args, "framework") orelse "aspnet";
@@ -19,6 +20,15 @@ pub fn handleRoutes(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
         out.appendSlice(alloc, "error: unsupported framework; currently supported: aspnet") catch {};
         return;
     }
+
+    // Large controllers sets (hundreds of actions) overflow client tool-result
+    // limits, so output is windowed and filterable. Defaults keep small
+    // projects byte-identical: the cap only bites past `max_results` routes.
+    const max_results: usize = if (mcpj.getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 5000))) else default_max_routes;
+    const offset: usize = if (mcpj.getInt(args, "offset")) |n| @intCast(@max(0, n)) else 0;
+    const controller_filter = getStr(args, "controller");
+    const method_filter = getStr(args, "method");
+    const glob_filter = getStr(args, "path_glob");
 
     const w = cio.listWriter(out, alloc);
     w.writeAll("ASP.NET routes:\n") catch {};
@@ -39,12 +49,27 @@ pub fn handleRoutes(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
         }
     }.lt);
 
+    var shown: usize = 0;
     for (paths.items) |path| {
+        if (glob_filter) |g| {
+            if (!pathglob.globMatch(g, path)) continue;
+        }
         const outline = explorer.outlines.get(path) orelse continue;
         for (outline.symbols.items) |sym| {
             if (sym.kind != .method) continue;
             const method = aspNetHttpMethod(sym.decorators) orelse if (decoratorsContain(sym.decorators, "Route")) "ANY" else continue;
+            if (method_filter) |m| {
+                if (!std.ascii.eqlIgnoreCase(m, method)) continue;
+            }
             const controller = findEnclosingController(&outline, sym.line_start) orelse continue;
+            if (controller_filter) |c| {
+                if (!containsAsciiIgnoreCase(controller.name, c)) continue;
+            }
+            // Matching routes beyond the window are counted but not printed.
+            const index = route_count;
+            route_count += 1;
+            if (index < offset or shown >= max_results) continue;
+            shown += 1;
             const action_template = aspNetRouteTemplate(sym.decorators) orelse "";
             const class_template = aspNetRouteTemplate(controller.decorators) orelse "[controller]/[action]";
             var route_buf: [512]u8 = undefined;
@@ -57,16 +82,19 @@ pub fn handleRoutes(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, o
             if (antiforgery) w.writeAll(" [antiforgery]") catch {};
             if (missing_antiforgery) w.writeAll(" [missing_antiforgery]") catch {};
             w.writeAll("\n") catch {};
-            route_count += 1;
         }
     }
 
     if (route_count == 0) {
         w.writeAll("  (none)\n") catch {};
-    } else {
+    } else if (shown == route_count) {
         w.print("({d} routes)\n", .{route_count}) catch {};
+    } else {
+        w.print("(showing {d}-{d} of {d} routes; narrow with controller=, method=, path_glob= or page with offset=/max_results=)\n", .{ if (shown == 0) 0 else offset + 1, offset + shown, route_count }) catch {};
     }
 }
+
+const default_max_routes: usize = 150;
 
 pub const ConfigReadHit = struct {
     key: []const u8,
@@ -117,13 +145,23 @@ pub fn handleConfigXref(io: std.Io, alloc: std.mem.Allocator, args: *const std.j
         }
     }.lt);
 
+    // Pass 1: string constants, so `GetSection(Constants.SSRS_CONFIG)` resolves.
+    var consts = ConstMap.init(alloc);
+    defer freeConstMap(alloc, &consts);
+    for (paths.items) |path| {
+        const outline = explorer.outlines.get(path) orelse continue;
+        if (outline.language != .c_sharp) continue;
+        const content = explorer.contents.get(path) orelse continue;
+        collectCSharpConstants(alloc, path, content, &consts) catch {};
+    }
+
     for (paths.items) |path| {
         const outline = explorer.outlines.get(path) orelse continue;
         const content = explorer.contents.get(path) orelse continue;
         if (isAspNetConfigJsonPath(path, outline.language)) {
             collectJsonConfigDefinitions(alloc, path, content, &definitions) catch {};
         } else if (outline.language == .c_sharp) {
-            collectCSharpConfigReads(alloc, path, content, &reads, &read_hits) catch {};
+            collectCSharpConfigReads(alloc, path, content, &consts, &reads, &read_hits) catch {};
         }
     }
 
@@ -173,12 +211,26 @@ pub fn handleConfigXref(io: std.Io, alloc: std.mem.Allocator, args: *const std.j
         }
     }
 
-    w.writeAll("  unused_definitions:\n") catch {};
-    var unused_count: usize = 0;
     const def_keys = sortedMapKeys(alloc, &definitions) catch &.{};
     defer if (def_keys.len > 0) alloc.free(def_keys);
+    const read_keys = sortedMapKeys(alloc, &reads) catch &.{};
+    defer if (read_keys.len > 0) alloc.free(read_keys);
+
+    // A definition is used when a read names it exactly OR names an ancestor
+    // section (`GetSection("PowerBI")` / options binding consumes every key
+    // under PowerBI). A read is missing only when no definition equals it or
+    // sits beneath it.
+    w.writeAll("  unused_definitions:\n") catch {};
+    var unused_count: usize = 0;
     for (def_keys) |key| {
-        if (reads.contains(key)) continue;
+        var covered = false;
+        for (read_keys) |read_key| {
+            if (keyCoveredBySection(key, read_key)) {
+                covered = true;
+                break;
+            }
+        }
+        if (covered) continue;
         w.print("    {s}\n", .{key}) catch {};
         unused_count += 1;
     }
@@ -186,10 +238,15 @@ pub fn handleConfigXref(io: std.Io, alloc: std.mem.Allocator, args: *const std.j
 
     w.writeAll("  missing_definitions:\n") catch {};
     var missing_count: usize = 0;
-    const read_keys = sortedMapKeys(alloc, &reads) catch &.{};
-    defer if (read_keys.len > 0) alloc.free(read_keys);
     for (read_keys) |key| {
-        if (definitions.contains(key)) continue;
+        var defined = false;
+        for (def_keys) |def_key| {
+            if (keyCoveredBySection(def_key, key)) {
+                defined = true;
+                break;
+            }
+        }
+        if (defined) continue;
         w.print("    {s}\n", .{key}) catch {};
         missing_count += 1;
     }
@@ -334,19 +391,76 @@ fn walkJsonConfigValue(alloc: std.mem.Allocator, value: *const std.json.Value, s
     }
 }
 
+/// String constants (`const string Name = "Value"`) keyed by `<file stem>.<Name>`
+/// so `Constants.SSRS_CONFIG` and `ReportAzureStorageServiceOptions.ConfigKey`
+/// resolve to the section names they hold. Keys and values are allocator-owned.
+const ConstMap = std.StringHashMap([]const u8);
+
+const ConfigCtx = struct {
+    consts: *const ConstMap,
+    /// File stem of the file being scanned; resolves unqualified constants.
+    stem: []const u8,
+};
+
+fn freeConstMap(alloc: std.mem.Allocator, consts: *ConstMap) void {
+    var iter = consts.iterator();
+    while (iter.next()) |entry| {
+        alloc.free(entry.key_ptr.*);
+        alloc.free(entry.value_ptr.*);
+    }
+    consts.deinit();
+}
+
+fn fileStem(path: []const u8) []const u8 {
+    const base = std.fs.path.basename(path);
+    return if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| base[0..dot] else base;
+}
+
+fn collectCSharpConstants(alloc: std.mem.Allocator, path: []const u8, content: []const u8, consts: *ConstMap) !void {
+    const stem = fileStem(path);
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const marker = std.mem.indexOf(u8, line, "string ") orelse continue;
+        if (std.mem.indexOf(u8, line[0..marker], "const ") == null and std.mem.indexOf(u8, line[0..marker], "static readonly") == null) continue;
+        var i = marker + "string ".len;
+        const name_start = i;
+        while (i < line.len and (std.ascii.isAlphanumeric(line[i]) or line[i] == '_')) i += 1;
+        if (i == name_start) continue;
+        const name = line[name_start..i];
+        while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+        if (i >= line.len or line[i] != '=') continue;
+        i += 1;
+        while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+        if (i >= line.len or line[i] != '"') continue;
+        const close = std.mem.indexOfScalarPos(u8, line, i + 1, '"') orelse continue;
+        const key = try std.fmt.allocPrint(alloc, "{s}.{s}", .{ stem, name });
+        errdefer alloc.free(key);
+        const value = try alloc.dupe(u8, line[i + 1 .. close]);
+        errdefer alloc.free(value);
+        const gop = try consts.getOrPut(key);
+        if (gop.found_existing) {
+            alloc.free(key);
+            alloc.free(gop.value_ptr.*);
+        }
+        gop.value_ptr.* = value;
+    }
+}
+
 fn collectCSharpConfigReads(
     alloc: std.mem.Allocator,
     path: []const u8,
     content: []const u8,
+    consts: *const ConstMap,
     reads: *std.StringHashMap(usize),
     read_hits: *std.ArrayList(ConfigReadHit),
 ) !void {
+    const ctx = ConfigCtx{ .consts = consts, .stem = fileStem(path) };
     var line_num: u32 = 1;
     var start: usize = 0;
     while (start <= content.len) {
         const end = std.mem.indexOfScalarPos(u8, content, start, '\n') orelse content.len;
         const line = content[start..end];
-        try collectConfigReadsFromLine(alloc, path, line, line_num, reads, read_hits);
+        try collectConfigReadsFromLine(alloc, path, line, line_num, ctx, reads, read_hits);
         if (end == content.len) break;
         start = end + 1;
         line_num += 1;
@@ -358,25 +472,147 @@ fn collectConfigReadsFromLine(
     path: []const u8,
     line: []const u8,
     line_num: u32,
+    ctx: ConfigCtx,
     reads: *std.StringHashMap(usize),
     read_hits: *std.ArrayList(ConfigReadHit),
 ) !void {
-    if (!containsAsciiIgnoreCase(line, "configuration")) return;
+    // Only a key that is the direct argument of a configuration accessor is a
+    // read. Matching every string on a line that merely mentions
+    // "Configuration" (e.g. `ToolbarConfiguration.GetX("Grid")`) reports
+    // unrelated literals as config keys.
     var pos: usize = 0;
-    while (std.mem.indexOfScalarPos(u8, line, pos, '"')) |start_quote| {
-        const end_quote = std.mem.indexOfScalarPos(u8, line, start_quote + 1, '"') orelse break;
-        const key = line[start_quote + 1 .. end_quote];
-        pos = end_quote + 1;
-        if (!looksLikeConfigKey(key)) continue;
-        const owned_key = try alloc.dupe(u8, key);
+    while (pos < line.len) {
+        const hit = nextConfigAccessorKey(line, pos, ctx) orelse break;
+        pos = hit.next;
+        if (!looksLikeConfigKey(hit.key)) continue;
+        const owned_key = try alloc.dupe(u8, hit.key);
         errdefer alloc.free(owned_key);
         try incrementOwnedKey(alloc, reads, owned_key);
         try read_hits.append(alloc, .{
-            .key = try alloc.dupe(u8, key),
+            .key = try alloc.dupe(u8, hit.key),
             .path = try alloc.dupe(u8, path),
             .line = line_num,
         });
     }
+}
+
+// `.Bind("Section", target)` reads a section by key; `section.Bind(target)` has
+// no key argument and is ignored because `target` is not a known string constant.
+const config_accessors = [_][]const u8{ ".GetSection", ".GetRequiredSection", ".GetValue", ".GetConnectionString", ".Bind" };
+
+const ConfigAccessorHit = struct {
+    key: []const u8,
+    next: usize,
+};
+
+/// Find the next configuration read at or after `from`: either
+/// `<receiver>["Key"]` where the receiver identifier mentions "config"
+/// (`configuration`, `_config`, `Configuration`), or the first string argument
+/// of `.GetSection(`, `.GetRequiredSection(`, `.GetValue<T>(` or
+/// `.GetConnectionString(`.
+fn nextConfigAccessorKey(line: []const u8, from: usize, ctx: ConfigCtx) ?ConfigAccessorHit {
+    var best: ?ConfigAccessorHit = null;
+    var best_start: usize = line.len;
+
+    for (config_accessors) |accessor| {
+        var search = from;
+        while (std.mem.indexOfPos(u8, line, search, accessor)) |at| {
+            search = at + accessor.len;
+            var i = search;
+            // Optional generic arguments: `.GetValue<bool>(`.
+            if (i < line.len and line[i] == '<') {
+                var depth: usize = 0;
+                while (i < line.len) : (i += 1) {
+                    if (line[i] == '<') depth += 1;
+                    if (line[i] == '>') {
+                        depth -= 1;
+                        if (depth == 0) {
+                            i += 1;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (i >= line.len or line[i] != '(') continue;
+            if (configArgAt(line, i + 1, ctx)) |hit| {
+                if (at < best_start) {
+                    best = hit;
+                    best_start = at;
+                }
+                break;
+            }
+        }
+    }
+
+    var search = from;
+    while (std.mem.indexOfScalarPos(u8, line, search, '[')) |open| {
+        search = open + 1;
+        var recv_start = open;
+        while (recv_start > 0 and (std.ascii.isAlphanumeric(line[recv_start - 1]) or line[recv_start - 1] == '_')) recv_start -= 1;
+        if (!containsAsciiIgnoreCase(line[recv_start..open], "config")) continue;
+        if (configArgAt(line, open + 1, ctx)) |hit| {
+            if (open < best_start) {
+                best = hit;
+                best_start = open;
+            }
+            break;
+        }
+    }
+    return best;
+}
+
+/// If the argument at `line[start..]` (after optional spaces) is a string
+/// literal or a known string constant (`Constants.SSRS_CONFIG`) followed by
+/// `)`, `]` or `,`, return the key it names and the offset just past it.
+fn configArgAt(line: []const u8, start: usize, ctx: ConfigCtx) ?ConfigAccessorHit {
+    var i = start;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    if (i >= line.len) return null;
+
+    var key: []const u8 = undefined;
+    var end: usize = undefined;
+    if (line[i] == '"') {
+        const close = std.mem.indexOfScalarPos(u8, line, i + 1, '"') orelse return null;
+        key = line[i + 1 .. close];
+        end = close + 1;
+    } else if (std.ascii.isAlphabetic(line[i]) or line[i] == '_') {
+        var j = i;
+        while (j < line.len and (std.ascii.isAlphanumeric(line[j]) or line[j] == '_' or line[j] == '.')) j += 1;
+        key = resolveConstant(line[i..j], ctx) orelse return null;
+        end = j;
+    } else return null;
+
+    var after = end;
+    while (after < line.len and (line[after] == ' ' or line[after] == '\t')) after += 1;
+    // `GetValue<T>("Key", default)` is still a read of "Key".
+    if (after >= line.len or (line[after] != ')' and line[after] != ']' and line[after] != ',')) return null;
+    return .{ .key = key, .next = end };
+}
+
+/// Resolve `Class.NAME` (last two segments) or an unqualified `NAME` (looked
+/// up in the current file's class) against the collected string constants.
+fn resolveConstant(expr: []const u8, ctx: ConfigCtx) ?[]const u8 {
+    var buf: [256]u8 = undefined;
+    const name = if (std.mem.lastIndexOfScalar(u8, expr, '.')) |dot| expr[dot + 1 ..] else expr;
+    var qualifier = ctx.stem;
+    if (std.mem.lastIndexOfScalar(u8, expr, '.')) |dot| {
+        const head = expr[0..dot];
+        qualifier = if (std.mem.lastIndexOfScalar(u8, head, '.')) |d2| head[d2 + 1 ..] else head;
+    }
+    const joined = std.fmt.bufPrint(&buf, "{s}.{s}", .{ qualifier, name }) catch return null;
+    return ctx.consts.get(joined);
+}
+
+fn keysEqual(a: []const u8, b: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(a, b);
+}
+
+/// True when `key` is `section` itself or lives underneath it
+/// (`PowerBI:ClientId` is under `PowerBI`). Configuration keys are
+/// case-insensitive in .NET.
+fn keyCoveredBySection(key: []const u8, section: []const u8) bool {
+    if (keysEqual(key, section)) return true;
+    return key.len > section.len and key[section.len] == ':' and keysEqual(key[0..section.len], section);
 }
 
 fn containsAsciiIgnoreCase(haystack: []const u8, needle: []const u8) bool {

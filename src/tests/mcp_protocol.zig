@@ -1041,6 +1041,175 @@ test "codedb_config_xref compares appsettings keys to IConfiguration reads" {
     try testing.expect(std.mem.indexOf(u8, out.items, "Services/OptionsReader.cs:3") != null);
 }
 
+test "codedb_config_xref ignores non-config strings and treats section reads as covering their keys" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    try explorer.indexFile("appsettings.json",
+        \\{
+        \\  "PowerBI": { "ClientId": "x", "TenantId": "y" },
+        \\  "Other": { "Key": "z" }
+        \\}
+    );
+    try explorer.indexFile("Controllers/AccountsController.cs",
+        \\public class AccountsController {
+        \\    public void Index() {
+        \\        vm.SetViewModelBaseProperties("a", "ClientAccountsGrid", ln, ToolbarConfiguration.GetAccountsToolbar(user), user);
+        \\        var pbi = _configuration.GetSection("powerbi");
+        \\    }
+        \\}
+    );
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"framework\":\"aspnet\"}", .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_config_xref, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // A string passed to `ToolbarConfiguration.GetX(...)` is not a config read.
+    try testing.expect(std.mem.indexOf(u8, out.items, "ClientAccountsGrid") == null);
+    // Reading the section (any case) consumes every key beneath it.
+    try testing.expect(std.mem.indexOf(u8, out.items, "PowerBI:ClientId") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "PowerBI:TenantId") == null);
+    // ...but an unread section is still reported, and the section read itself
+    // is not "missing" because definitions exist beneath it.
+    try testing.expect(std.mem.indexOf(u8, out.items, "Other:Key") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "missing_definitions:\n    (none)") != null);
+}
+
+test "codedb_config_xref resolves string constants used as configuration keys" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    try explorer.indexFile("appsettings.json",
+        \\{
+        \\  "SSRS": { "ServiceUrl": "x" },
+        \\  "ReportAzureStorage": { "ShareName": "y" },
+        \\  "UploadAzureStorage": { "ShareName": "z" },
+        \\  "KeyVault": { "KeyVaultUri": "u" }
+        \\}
+    );
+    try explorer.indexFile("Constants.cs",
+        \\internal static class Constants {
+        \\    internal const string SSRS_CONFIG = "SSRS";
+        \\}
+    );
+    try explorer.indexFile("Models/ReportAzureStorageServiceOptions.cs",
+        \\public class ReportAzureStorageServiceOptions {
+        \\    public const string ConfigKey = "ReportAzureStorage";
+        \\}
+    );
+    try explorer.indexFile("Models/UploadAzureStorageServiceOptions.cs",
+        \\public class UploadAzureStorageServiceOptions {
+        \\    public const string ConfigKey = "UploadAzureStorage";
+        \\}
+    );
+    try explorer.indexFile("Startup.cs",
+        \\public class Startup {
+        \\    public void ConfigureServices() {
+        \\        services.Configure<A>(Configuration.GetSection(Constants.SSRS_CONFIG));
+        \\        services.Configure<B>(Configuration.GetSection(ReportAzureStorageServiceOptions.ConfigKey));
+        \\        var uri = c.GetValue<string>("KeyVault:KeyVaultUri");
+        \\    }
+        \\}
+    );
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"framework\":\"aspnet\"}", .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_config_xref, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Only the unused/missing sections matter: read_sites legitimately lists
+    // the keys that were read.
+    const tail_start = std.mem.indexOf(u8, out.items, "unused_definitions:") orelse return error.TestUnexpectedResult;
+    const tail = out.items[tail_start..];
+
+    // Constants resolve, including same-named `ConfigKey` in two classes.
+    try testing.expect(std.mem.indexOf(u8, tail, "SSRS:ServiceUrl") == null);
+    try testing.expect(std.mem.indexOf(u8, tail, "ReportAzureStorage:ShareName") == null);
+    // A literal key read through a short receiver name (`c`) is still a read.
+    try testing.expect(std.mem.indexOf(u8, tail, "KeyVault:KeyVaultUri") == null);
+    // The un-read sibling that shares the constant name is still unused.
+    try testing.expect(std.mem.indexOf(u8, tail, "UploadAzureStorage:ShareName") != null);
+}
+
+test "codedb_routes windows output and filters by controller, method and path" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    try explorer.indexFile("Controllers/AccountsController.cs",
+        \\public class AccountsController {
+        \\    [HttpGet("list")]
+        \\    public IActionResult List() { return View(); }
+        \\    [HttpPost("save")]
+        \\    public IActionResult Save() { return View(); }
+        \\}
+    );
+    try explorer.indexFile("Controllers/OrdersController.cs",
+        \\public class OrdersController {
+        \\    [HttpGet("open")]
+        \\    public IActionResult Open() { return View(); }
+        \\}
+    );
+
+    const Case = struct { args: []const u8, expect: []const []const u8, absent: []const []const u8 };
+    const cases = [_]Case{
+        // Window: 3 routes total, print only the first.
+        .{ .args = "{\"max_results\":1}", .expect = &.{ "AccountsController.List", "showing 1-1 of 3 routes" }, .absent = &.{ "AccountsController.Save", "OrdersController.Open" } },
+        // Offset pages onward.
+        .{ .args = "{\"max_results\":1,\"offset\":1}", .expect = &.{ "AccountsController.Save", "showing 2-2 of 3 routes" }, .absent = &.{"AccountsController.List"} },
+        // No window needed: legacy footer is unchanged.
+        .{ .args = "{}", .expect = &.{ "(3 routes)", "OrdersController.Open" }, .absent = &.{"showing"} },
+        .{ .args = "{\"controller\":\"orders\"}", .expect = &.{ "OrdersController.Open", "(1 routes)" }, .absent = &.{"AccountsController"} },
+        .{ .args = "{\"method\":\"post\"}", .expect = &.{ "AccountsController.Save", "(1 routes)" }, .absent = &.{ "List", "Open" } },
+        .{ .args = "{\"path_glob\":\"Controllers/Orders*\"}", .expect = &.{"OrdersController.Open"}, .absent = &.{"AccountsController"} },
+    };
+    for (cases) |c| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, c.args, .{});
+        defer parsed.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        bench_ctx.runDispatch(io, testing.allocator, .codedb_routes, &parsed.value.object, &out, &store, &explorer, &agents);
+        for (c.expect) |needle| {
+            if (std.mem.indexOf(u8, out.items, needle) == null) {
+                std.debug.print("args {s}: missing '{s}' in:\n{s}\n", .{ c.args, needle, out.items });
+                return error.TestUnexpectedResult;
+            }
+        }
+        for (c.absent) |needle| {
+            if (std.mem.indexOf(u8, out.items, needle) != null) {
+                std.debug.print("args {s}: unexpected '{s}' in:\n{s}\n", .{ c.args, needle, out.items });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+}
+
 // test "codedb ls outline and tree include deterministic descriptors" {
 //     var arena = std.heap.ArenaAllocator.init(testing.allocator);
 //     defer arena.deinit();
